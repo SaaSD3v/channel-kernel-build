@@ -65,21 +65,80 @@ jobs:
       - name: Set build start time
         run: echo "START_TIME=$(date +%s)" >> $GITHUB_ENV
 
-      - name: Download AOSP Clang r365631c
+      - name: Set Clang and toolchain versions
         run: |
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r365631c.tar.gz
+          LINEAGE="${{ github.event.inputs.LINEAGE }}"
+          case "$LINEAGE" in
+            16.0)
+              CLANG_VERSION="clang-r353983c"
+              CLANG_BRANCH="android9.0.0_r1"
+              GCC_BRANCH="android9.0.0_r1"
+              ;;
+            17.1)
+              CLANG_VERSION="clang-r365631c"
+              CLANG_BRANCH="android10.0.0_r1"
+              GCC_BRANCH="android10.0.0_r1"
+              ;;
+            18.1)
+              CLANG_VERSION="clang-r383902b1"
+              CLANG_BRANCH="android11.0.0_r1"
+              GCC_BRANCH="android11.0.0_r1"
+              ;;
+            19.1)
+              CLANG_VERSION="clang-r416183b"
+              CLANG_BRANCH="android12.0.0_r1"
+              GCC_BRANCH="android12.0.0_r1"
+              ;;
+            20)
+              CLANG_VERSION="clang-r475365b"
+              CLANG_BRANCH="android13.0.0_r1"
+              GCC_BRANCH="android13.0.0_r1"
+              ;;
+            21)
+              CLANG_VERSION="clang-r498229b"
+              CLANG_BRANCH="android14.0.0_r1"
+              GCC_BRANCH="android14.0.0_r1"
+              ;;
+            22.0)
+              CLANG_VERSION="clang-r522817"
+              CLANG_BRANCH="android15.0.0_r1"
+              GCC_BRANCH="android15.0.0_r1"
+              ;;
+            22.1)
+              CLANG_VERSION="clang-r530567"
+              CLANG_BRANCH="android15.0.0_r1"
+              GCC_BRANCH="android15.0.0_r1"
+              ;;
+            22.2)
+              CLANG_VERSION="clang-r536225"
+              CLANG_BRANCH="android15.0.0_r1"
+              GCC_BRANCH="android15.0.0_r1"
+              ;;
+            23.0)
+              CLANG_VERSION="clang-r536225"
+              CLANG_BRANCH="android16.0.0_r1"
+              GCC_BRANCH="android16.0.0_r1"
+              ;;
+          esac
+          echo "CLANG_VERSION=$CLANG_VERSION" >> $GITHUB_ENV
+          echo "CLANG_BRANCH=$CLANG_BRANCH" >> $GITHUB_ENV
+          echo "GCC_BRANCH=$GCC_BRANCH" >> $GITHUB_ENV
+
+      - name: Download AOSP Clang
+        run: |
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/${CLANG_BRANCH}/${CLANG_VERSION}.tar.gz
           mkdir -p toolchains/clang-host-linux-x86
-          tar -xzf clang-r365631c.tar.gz -C toolchains/clang-host-linux-x86
+          tar -xzf ${CLANG_VERSION}.tar.gz -C toolchains/clang-host-linux-x86
           echo "CLANG_BIN=${PWD}/toolchains/clang-host-linux-x86/bin" >> $GITHUB_ENV
 
       - name: Download GCC 4.9 AArch64
         run: |
-          git clone --depth=1 -b android11-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchains/gcc-aarch64-4.9
+          git clone --depth=1 -b ${GCC_BRANCH} https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchains/gcc-aarch64-4.9
           echo "GCC64_BIN=${PWD}/toolchains/gcc-aarch64-4.9/bin" >> $GITHUB_ENV
 
       - name: Download GCC 4.9 ARM32
         run: |
-          git clone --depth=1 -b android11-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 toolchains/arm-linux-androideabi-4.9
+          git clone --depth=1 -b ${GCC_BRANCH} https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 toolchains/arm-linux-androideabi-4.9
           echo "GCC32_BIN=${PWD}/toolchains/arm-linux-androideabi-4.9/bin" >> $GITHUB_ENV
 
       - name: Configure kernel
@@ -113,6 +172,7 @@ jobs:
           echo "========================================="
           echo "  Channel Kernel ${{ github.event.inputs.LINEAGE }}"
           echo "  Device: Moto G7 Play (channel)"
+          echo "  Clang: $CLANG_VERSION"
           echo "  Build duration: $BUILD_DURATION"
           echo "========================================="
 
