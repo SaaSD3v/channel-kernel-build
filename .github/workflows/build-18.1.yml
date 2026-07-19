@@ -38,17 +38,17 @@ jobs:
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" >> arch/arm64/configs/channel_defconfig
       - name: Download AOSP Clang clang-r383902b1
         run: |
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11.0.0_r1/clang-r383902b1.tar.gz
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902b1.tar.gz
           mkdir -p toolchains/clang-host-linux-x86
           tar -xzf clang-r383902b1.tar.gz -C toolchains/clang-host-linux-x86
           echo "CLANG_BIN=${PWD}/toolchains/clang-host-linux-x86/bin" >> $GITHUB_ENV
       - name: Download GCC 4.9 AArch64
         run: |
-          git clone --depth=1 -b android11.0.0_r1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchains/gcc-aarch64-4.9
+          git clone --depth=1 -b android11-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 toolchains/gcc-aarch64-4.9
           echo "GCC64_BIN=${PWD}/toolchains/gcc-aarch64-4.9/bin" >> $GITHUB_ENV
       - name: Download GCC 4.9 ARM32
         run: |
-          git clone --depth=1 -b android11.0.0_r1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 toolchains/arm-linux-androideabi-4.9
+          git clone --depth=1 -b android11-release https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 toolchains/arm-linux-androideabi-4.9
           echo "GCC32_BIN=${PWD}/toolchains/arm-linux-androideabi-4.9/bin" >> $GITHUB_ENV
       - name: Configure kernel
         run: |
