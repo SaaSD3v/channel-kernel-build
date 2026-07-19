@@ -36,11 +36,11 @@ jobs:
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y" >> arch/arm64/configs/channel_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y" >> arch/arm64/configs/channel_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" >> arch/arm64/configs/channel_defconfig
-      - name: Download AOSP Clang clang-r383902b1
+      - name: Download AOSP Clang clang-r365631c
         run: |
-          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r383902b1.tar.gz
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r365631c.tar.gz
           mkdir -p toolchains/clang-host-linux-x86
-          tar -xzf clang-r383902b1.tar.gz -C toolchains/clang-host-linux-x86
+          tar -xzf clang-r365631c.tar.gz -C toolchains/clang-host-linux-x86
           echo "CLANG_BIN=${PWD}/toolchains/clang-host-linux-x86/bin" >> $GITHUB_ENV
       - name: Download GCC 4.9 AArch64
         run: |
