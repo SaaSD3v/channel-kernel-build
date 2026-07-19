@@ -25,7 +25,7 @@ supported.vendorpatchlevels=
 # boot shell variables
 BLOCK=/dev/block/bootdevice/by-name/boot;
 IS_SLOT_DEVICE=0;
-RAMDISK_COMPRESSION=auto;
+RAMDISK_COMPRESSION=none;
 PATCH_VBMETA_FLAG=auto;
 
 # import functions/variables and setup patching - see for reference (DO NOT REMOVE)
