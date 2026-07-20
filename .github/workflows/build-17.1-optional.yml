@@ -1,4 +1,4 @@
-name: Build Channel Kernel 17.1 (OPCIONAL)
+name: Build Channel Kernel 17.1 (OPTIONAL)
 on:
   workflow_dispatch:
 jobs:
@@ -36,14 +36,18 @@ jobs:
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y" >> arch/arm64/configs/channel_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y" >> arch/arm64/configs/channel_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" >> arch/arm64/configs/channel_defconfig
-      - name: Apply optional fragment (Firewall)
+      - name: Remove optional configs (Firewall)
         run: |
           cd kernel
-          echo "CONFIG_IP_SET=y" >> arch/arm64/configs/channel_defconfig
-          echo "CONFIG_IP_SET_HASH_IP=y" >> arch/arm64/configs/channel_defconfig
-          echo "CONFIG_IP_SET_HASH_NET=y" >> arch/arm64/configs/channel_defconfig
-          echo "CONFIG_NETFILTER_XT_SET=y" >> arch/arm64/configs/channel_defconfig
-          echo "CONFIG_NETFILTER_XT_MATCH_RECENT=y" >> arch/arm64/configs/channel_defconfig
+          sed -i '/CONFIG_IP_SET=y/d' arch/arm64/configs/channel_defconfig
+          sed -i '/CONFIG_IP_SET_HASH_IP=y/d' arch/arm64/configs/channel_defconfig
+          sed -i '/CONFIG_IP_SET_HASH_NET=y/d' arch/arm64/configs/channel_defconfig
+          sed -i '/CONFIG_NETFILTER_XT_SET=y/d' arch/arm64/configs/channel_defconfig
+          sed -i '/CONFIG_NETFILTER_XT_MATCH_RECENT=y/d' arch/arm64/configs/channel_defconfig
+          sed -i '/# CONFIG_IP_SET is not set/d' arch/arm64/configs/channel_defconfig
+          sed -i '/# CONFIG_IP_VS is not set/d' arch/arm64/configs/channel_defconfig
+          echo "# CONFIG_IP_SET is not set" >> arch/arm64/configs/channel_defconfig
+          echo "# CONFIG_IP_VS is not set" >> arch/arm64/configs/channel_defconfig
       - name: Download AOSP Clang clang-r365631c
         run: |
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-release/clang-r365631c.tar.gz
@@ -72,8 +76,8 @@ jobs:
           cp build/arch/arm64/boot/Image.gz-dtb anykernel/
           cp anykernel.sh anykernel/
           cd anykernel
-          zip -r9 ../channel-kernel-17.1-opcional.zip * -x '*.git*'
+          zip -r9 ../channel-kernel-17.1-optional.zip * -x '*.git*'
       - uses: actions/upload-artifact@v4
         with:
-          name: channel-kernel-17.1-opcional
-          path: channel-kernel-17.1-opcional.zip
+          name: channel-kernel-17.1-optional
+          path: channel-kernel-17.1-optional.zip
