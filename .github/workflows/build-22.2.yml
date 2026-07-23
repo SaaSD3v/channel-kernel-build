@@ -10,7 +10,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y bc bison flex libssl-dev make libncurses-dev zip python3
+          sudo apt-get install -y bc bison flex libssl-dev make libncurses-dev zip python3 device-tree-compiler
       - name: Clone kernel source
         run: |
           git clone --depth=1 -b lineage-22.2 https://github.com/SaaSD3v/android_kernel_motorola_sdm632.git kernel
@@ -57,6 +57,7 @@ jobs:
       - name: Build kernel
         run: |
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PWD/kernel/scripts:$PATH"
+          export DTC_FLAGS="-W no-interrupt_provider"
           make -C kernel O=$PWD/build ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc) Image.gz-dtb
       - name: Package with AnyKernel
         run: |
