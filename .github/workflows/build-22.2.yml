@@ -57,8 +57,8 @@ jobs:
       - name: Build kernel
         run: |
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PWD/kernel/scripts:$PATH"
-          export DTC_FLAGS="-W no-interrupt_provider"
-          make -C kernel O=$PWD/build ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 -j$(nproc) Image.gz-dtb
+          export DTC=/usr/bin/dtc
+          make -C kernel O=$PWD/build ARCH=arm64 CC=clang HOSTCC=clang CROSS_COMPILE=aarch64-linux-android- CROSS_COMPILE_ARM32=arm-linux-androideabi- CLANG_TRIPLE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1 DTC=/usr/bin/dtc -j$(nproc) Image.gz-dtb
       - name: Package with AnyKernel
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
