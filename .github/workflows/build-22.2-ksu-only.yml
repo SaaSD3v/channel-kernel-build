@@ -36,6 +36,27 @@ jobs:
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_SETUID_HOOK=y" >> arch/arm64/configs/channel_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INITRC_HOOK=y" >> arch/arm64/configs/channel_defconfig
           echo "CONFIG_KSU_MANUAL_HOOK_AUTO_INPUT_HOOK=y" >> arch/arm64/configs/channel_defconfig
+      - name: Remove DroidSpaces + Firewall commits (pure defconfig)
+        run: |
+          cd kernel
+          sed -i '/^CONFIG_SYSVIPC=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_POSIX_MQUEUE=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_CGROUP_DEVICE=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_MEMCG=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_UTS_NS=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_USER_NS=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_PID_NS=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_IPC_NS=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_BRIDGE_NETFILTER=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_CGROUP_NET_PRIO=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_DEVTMPFS=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_VETH=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_IP_SET=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_IP_SET_HASH_IP=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_IP_SET_HASH_NET=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_NETFILTER_XT_SET=y$/d' arch/arm64/configs/channel_defconfig
+          sed -i '/^CONFIG_NETFILTER_XT_MATCH_RECENT=y$/d' arch/arm64/configs/channel_defconfig
       - name: Download AOSP Clang clang-r536225
         run: |
           wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android16-release/clang-r536225.tar.gz
