@@ -66,6 +66,16 @@ jobs:
           cp anykernel.sh anykernel/
           cd anykernel
           zip -r9 ../channel-kernel-22.2.zip * -x '*.git*'
+      - name: Upload to GoFile
+        run: |
+          SERVER=$(curl -s https://api.gofile.io/servers | jq -r '.data.servers[0].name')
+          RESPONSE=$(curl -s -X POST "https://${SERVER}.gofile.io/contents/uploadfile" \
+            -H "Authorization: Bearer ${{ secrets.GOFILE_TOKEN }}" \
+            -F "file=@channel-kernel-22.2.zip")
+          echo "$RESPONSE" | jq .
+          DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage')
+          echo "GoFile link: $DOWNLOAD_PAGE" >> $GITHUB_STEP_SUMMARY
+
       - uses: actions/upload-artifact@v4
         with:
           name: channel-kernel-22.2
