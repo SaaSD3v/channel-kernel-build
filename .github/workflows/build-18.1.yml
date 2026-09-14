@@ -19,11 +19,19 @@ jobs:
         run: git clone --depth=1 -b lineage-18.1 https://github.com/SaaSD3v/android_kernel_motorola_sdm632.git kernel
 
       - name: Clone ReSukiSU
-        run: git clone --depth=1 https://github.com/ReSukiSU/ReSukiSU.git kernel/KernelSU
+        run: |
+          # Fix legacy FBE allowlist saves failing with ENOKEY (-126).
+          # https://github.com/ReSukiSU/ReSukiSU/commit/7ad75c5df35781f560f62c5cd6663ba60de56a7c
+          RESUKISU_REF=7ad75c5df35781f560f62c5cd6663ba60de56a7c
+          git init kernel/KernelSU
+          git -C kernel/KernelSU remote add origin https://github.com/ReSukiSU/ReSukiSU.git
+          git -C kernel/KernelSU fetch --depth=1 origin "$RESUKISU_REF"
+          git -C kernel/KernelSU checkout --detach FETCH_HEAD
+          git -C kernel/KernelSU log -1 --format='ReSukiSU: %H %s' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download and apply ReSukiSU patch
         run: |
-          wget -q https://raw.githubusercontent.com/ReSukiSU/ReSukiSU_Patches/main/scope-minimized/kernel-4.9.patch -O /tmp/ksu.patch
+          wget -q https://raw.githubusercontent.com/ReSukiSU/ReSukiSU_Patches/b6f202c007475934e0dd5392f0cfddf9b87be81c/scope-minimized/kernel-4.9.patch -O /tmp/ksu.patch
           cd kernel
           git apply /tmp/ksu.patch
 
