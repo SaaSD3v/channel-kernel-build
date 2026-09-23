@@ -212,13 +212,47 @@ jobs:
 
       - name: Download exact TWRP 3.5.2_10-0 base image
         run: |
-          curl -fL --retry 5 --retry-all-errors \
-            -A "Mozilla/5.0" \
-            "$TWRP_BASE_URL" \
-            -o twrp-base.img
+          set -euo pipefail
 
+          NAME="twrp-3.5.2_10-0-channel.img"
+          PAGE="https://dl.twrp.me/channel/$NAME.html"
+
+          PAGE_HTML=$(curl -fLsS --retry 3 --retry-delay 2 \
+            -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-DroidSpaces' "$PAGE")
+
+          FILE_HREF=$(printf '%s' "$PAGE_HTML" \
+            | grep -oE 'href="[^"]*twrp-3\.5\.2_10-0-channel\.img"' \
+            | head -n1 | cut -d'"' -f2 || true)
+
+          case "$FILE_HREF" in
+            http://*|https://*) FILE_URL="$FILE_HREF" ;;
+            /*) FILE_URL="https://dl.twrp.me$FILE_HREF" ;;
+            "") FILE_URL="" ;;
+            *) FILE_URL="https://dl.twrp.me/channel/$FILE_HREF" ;;
+          esac
+
+          ok=0
+          for URL in \
+            "https://eu.dl.twrp.me/channel/$NAME" \
+            "$FILE_URL" \
+            "https://dl.twrp.me/channel/$NAME?download=1"
+          do
+            [ -n "$URL" ] || continue
+            rm -f twrp-base.img.part
+            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
+              -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-DroidSpaces' \
+              -e "$PAGE" -o twrp-base.img.part "$URL"; then
+              if [ "$(stat -c%s twrp-base.img.part)" -gt 20000000 ] && \
+                 [ "$(head -c 8 twrp-base.img.part)" = "ANDROID!" ]; then
+                mv twrp-base.img.part twrp-base.img
+                ok=1
+                break
+              fi
+            fi
+          done
+
+          [ "$ok" -eq 1 ]
           echo "$TWRP_BASE_SHA256  twrp-base.img" | sha256sum -c -
-          test "$(head -c 8 twrp-base.img)" = "ANDROID!"
 
       - name: Replace only kernel in TWRP base image
         run: |
