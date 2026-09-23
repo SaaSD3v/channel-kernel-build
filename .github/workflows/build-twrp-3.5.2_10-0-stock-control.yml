@@ -12,11 +12,11 @@ permissions:
   contents: read
 
 env:
-  TWRP_KERNEL_REPO: https://github.com/SyberHexen/android_kernel_motorola_sdm632.git
-  TWRP_KERNEL_REF: 6f90eaecaa8525282c23edc398b404ec01c815eb
+  TWRP_KERNEL_REPO: https://github.com/TeamWin/android_kernel_motorola_sdm632.git
+  TWRP_KERNEL_REF: 0fba78718c25ef55a211dd7608cb255a226dd8bf
   TWRP_BASE_URL: https://dl.twrp.me/channel/twrp-3.5.2_10-0-channel.img
   TWRP_BASE_SHA256: 486c3e11250c1233112372129c796b55e0cd5d0f4ac605906d90b0f9b574056c
-  OUTPUT_IMG: channel-twrp-3.5.2_10-0-stock-rebuild.img
+  OUTPUT_IMG: channel-twrp-3.5.2_10-0-stock-teamwin-twrp10.img
 
 jobs:
   build:
@@ -45,6 +45,72 @@ jobs:
           echo "TWRP kernel base:" >> "$GITHUB_STEP_SUMMARY"
           git -C kernel log -1 --format='- %H %s' >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Download exact TWRP 3.5.2_10-0 base image
+        run: |
+          set -euo pipefail
+
+          NAME="twrp-3.5.2_10-0-channel.img"
+          PAGE="https://dl.twrp.me/channel/$NAME.html"
+
+          PAGE_HTML=$(curl -fLsS --retry 3 --retry-delay 2 \
+            -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-Stock-Control' "$PAGE")
+
+          FILE_HREF=$(printf '%s' "$PAGE_HTML" \
+            | grep -oE 'href="[^"]*twrp-3\\.5\\.2_10-0-channel\\.img"' \
+            | head -n1 | cut -d'"' -f2 || true)
+
+          case "$FILE_HREF" in
+            http://*|https://*) FILE_URL="$FILE_HREF" ;;
+            /*) FILE_URL="https://dl.twrp.me$FILE_HREF" ;;
+            "") FILE_URL="" ;;
+            *) FILE_URL="https://dl.twrp.me/channel/$FILE_HREF" ;;
+          esac
+
+          ok=0
+          for URL in \
+            "https://eu.dl.twrp.me/channel/$NAME" \
+            "$FILE_URL" \
+            "https://dl.twrp.me/channel/$NAME?download=1"
+          do
+            [ -n "$URL" ] || continue
+            rm -f twrp-base.img.part
+            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
+              -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-Stock-Control' \
+              -e "$PAGE" -o twrp-base.img.part "$URL"; then
+              if [ "$(stat -c%s twrp-base.img.part)" -gt 20000000 ] && \
+                 [ "$(head -c 8 twrp-base.img.part)" = "ANDROID!" ]; then
+                mv twrp-base.img.part twrp-base.img
+                ok=1
+                break
+              fi
+            fi
+          done
+
+          [ "$ok" -eq 1 ]
+          echo "$TWRP_BASE_SHA256  twrp-base.img" | sha256sum -c -
+
+      - name: Extract exact official TWRP kernel config
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+
+          base = Path("twrp-base.img").read_bytes()
+          kernel_size = struct.unpack_from("<I", base, 8)[0]
+          page_size = struct.unpack_from("<I", base, 36)[0]
+          Path("official-twrp-Image.gz-dtb").write_bytes(
+              base[page_size:page_size + kernel_size]
+          )
+          PY
+
+          chmod +x kernel/scripts/extract-ikconfig
+          kernel/scripts/extract-ikconfig official-twrp-Image.gz-dtb > official-twrp.config
+
+          test -s official-twrp.config
+          echo "bb1430e6ceccb76c1f0a5d8633e10f8aa71933953cb1ee9cee29b1613c46b335  official-twrp.config" | sha256sum -c -
+
       - name: Download AOSP Clang r353983c1
         run: |
           curl -fL --retry 5 \
@@ -69,9 +135,12 @@ jobs:
             toolchains/gcc-arm-4.9
           echo "GCC32_BIN=$GITHUB_WORKSPACE/toolchains/gcc-arm-4.9/bin" >> "$GITHUB_ENV"
 
-      - name: Configure TWRP kernel
+      - name: Configure from exact official TWRP config
         run: |
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+
+          mkdir -p "$GITHUB_WORKSPACE/build"
+          cp official-twrp.config "$GITHUB_WORKSPACE/build/.config"
 
           make -C kernel \
             O="$GITHUB_WORKSPACE/build" \
@@ -82,9 +151,17 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-androideabi- \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             LLVM=1 LLVM_IAS=1 \
-            channel_defconfig
+            olddefconfig
+
+          cp "$GITHUB_WORKSPACE/build/.config" official-twrp-after-olddefconfig.config
+          diff -u official-twrp.config official-twrp-after-olddefconfig.config | tee official-config-source-diff.txt || true
 
       - name: Build Image.gz-dtb
+        env:
+          KBUILD_BUILD_USER: nobody
+          KBUILD_BUILD_HOST: android-build
+          KBUILD_BUILD_TIMESTAMP: Thu Dec 17 04:30:48 PST 2020
+          KBUILD_BUILD_VERSION: "1"
         run: |
           export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
 
@@ -102,50 +179,6 @@ jobs:
 
           test -s build/arch/arm64/boot/Image.gz-dtb
           sha256sum build/arch/arm64/boot/Image.gz-dtb | tee kernel.sha256
-
-      - name: Download exact TWRP 3.5.2_10-0 base image
-        run: |
-          set -euo pipefail
-
-          NAME="twrp-3.5.2_10-0-channel.img"
-          PAGE="https://dl.twrp.me/channel/$NAME.html"
-
-          PAGE_HTML=$(curl -fLsS --retry 3 --retry-delay 2 \
-            -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-DroidSpaces' "$PAGE")
-
-          FILE_HREF=$(printf '%s' "$PAGE_HTML" \
-            | grep -oE 'href="[^"]*twrp-3\.5\.2_10-0-channel\.img"' \
-            | head -n1 | cut -d'"' -f2 || true)
-
-          case "$FILE_HREF" in
-            http://*|https://*) FILE_URL="$FILE_HREF" ;;
-            /*) FILE_URL="https://dl.twrp.me$FILE_HREF" ;;
-            "") FILE_URL="" ;;
-            *) FILE_URL="https://dl.twrp.me/channel/$FILE_HREF" ;;
-          esac
-
-          ok=0
-          for URL in \
-            "https://eu.dl.twrp.me/channel/$NAME" \
-            "$FILE_URL" \
-            "https://dl.twrp.me/channel/$NAME?download=1"
-          do
-            [ -n "$URL" ] || continue
-            rm -f twrp-base.img.part
-            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
-              -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-DroidSpaces' \
-              -e "$PAGE" -o twrp-base.img.part "$URL"; then
-              if [ "$(stat -c%s twrp-base.img.part)" -gt 20000000 ] && \
-                 [ "$(head -c 8 twrp-base.img.part)" = "ANDROID!" ]; then
-                mv twrp-base.img.part twrp-base.img
-                ok=1
-                break
-              fi
-            fi
-          done
-
-          [ "$ok" -eq 1 ]
-          echo "$TWRP_BASE_SHA256  twrp-base.img" | sha256sum -c -
 
       - name: Replace only kernel in TWRP base image
         run: |
@@ -263,7 +296,8 @@ jobs:
             echo "### Channel TWRP stock kernel rebuild control"
             echo
             echo "- TWRP base: 3.5.2_10-0 official channel image"
-            echo "- TWRP kernel source: $TWRP_KERNEL_REF"
+            echo "- TWRP kernel source: TeamWin/android_kernel_motorola_sdm632 @ $TWRP_KERNEL_REF (twrp-10.0)"
+            echo "- Kernel config: extracted byte-for-byte from official TWRP 3.5.2_10-0 kernel"
             echo "- DroidSpaces changes: NONE (stock rebuild control)"
             echo "- KernelSU/ReSukiSU: not added"
             echo
@@ -274,10 +308,13 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: channel-twrp-3.5.2_10-0-stock-rebuild
+          name: channel-twrp-3.5.2_10-0-stock-teamwin-twrp10
           path: |
             ${{ env.OUTPUT_IMG }}
             build/arch/arm64/boot/Image.gz-dtb
+            official-twrp.config
+            official-twrp-after-olddefconfig.config
+            official-config-source-diff.txt
             kernel.sha256
             twrp-stock-rebuild.sha256
           if-no-files-found: error
