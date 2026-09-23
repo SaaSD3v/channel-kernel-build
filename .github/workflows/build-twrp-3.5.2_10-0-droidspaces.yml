@@ -2,6 +2,11 @@ name: Build Channel TWRP 3.5.2 DroidSpaces
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - twrp-3.5.2_10-0-droidspaces
+    paths:
+      - .github/workflows/build-twrp-3.5.2_10-0-droidspaces.yml
 
 permissions:
   contents: read
@@ -43,9 +48,9 @@ jobs:
       - name: Apply DroidSpaces cgroup noprefix fix
         run: |
           # SaaSD3v/android_kernel_motorola_sdm632:
-          # c6f0507da463 - fix: cgroups noprefix
+          # c6f0507da463205a4d6d9ca4fb1130218530feb3 - fix: cgroups noprefix
           curl -fL --retry 5 \
-            "https://github.com/SaaSD3v/android_kernel_motorola_sdm632/commit/c6f0507da463.patch" \
+            "https://github.com/SaaSD3v/android_kernel_motorola_sdm632/commit/c6f0507da463205a4d6d9ca4fb1130218530feb3.patch" \
             -o /tmp/droidspaces-cgroup-noprefix.patch
 
           git -C kernel apply --check /tmp/droidspaces-cgroup-noprefix.patch
@@ -54,11 +59,11 @@ jobs:
       - name: Create DroidSpaces Kconfig fragment
         run: |
           # This fragment carries the configuration changes from:
-          # ee9637adaa0c - Kernel configurations for full DroidSpaces support
-          # e310252413ff - Firewall Support (UFW/Fail2ban) - Optional
-          # f09c342d80aa - disable CONFIG_ANDROID_PARANOID_NETWORK
+          # ee9637adaa0c38f9105feb4902531d608298df81 - Kernel configurations for full DroidSpaces support
+          # e310252413ffb052e86092d32f7f8b4fabd5eae2 - Firewall Support (UFW/Fail2ban) - Optional
+          # f09c342d80aaa93eb852320568b9313d2768386b - disable CONFIG_ANDROID_PARANOID_NETWORK
           #
-          # The source-code fix c6f0507da463 is applied separately above.
+          # The source-code fix c6f0507da463205a4d6d9ca4fb1130218530feb3 is applied separately above.
           cat > droidspaces.fragment <<'EOF'
           CONFIG_SYSVIPC=y
           CONFIG_POSIX_MQUEUE=y
@@ -332,8 +337,8 @@ jobs:
             echo
             echo "- TWRP base: 3.5.2_10-0 official channel image"
             echo "- TWRP kernel source: $TWRP_KERNEL_REF"
-            echo "- DroidSpaces config commits: ee9637adaa0c, e310252413ff, f09c342d80aa"
-            echo "- DroidSpaces source fix: c6f0507da463"
+            echo "- DroidSpaces config commits: ee9637adaa0c38f9105feb4902531d608298df81, e310252413ffb052e86092d32f7f8b4fabd5eae2, f09c342d80aaa93eb852320568b9313d2768386b"
+            echo "- DroidSpaces source fix: c6f0507da463205a4d6d9ca4fb1130218530feb3"
             echo "- KernelSU/ReSukiSU: not added"
             echo
             echo "SHA-256:"
