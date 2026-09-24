@@ -11,6 +11,7 @@ WPACLI=/sbin/wpa_cli.ds
 WPAPASS=/sbin/wpa_passphrase.ds
 WCNSS=/sbin/wcnss-recovery
 STATE=/tmp/ds-wifi
+STOCK_VENDOR="$STATE/vendor-stock"
 CTRL="$STATE/ctrl"
 CONF="$STATE/wpa_supplicant.conf"
 LOG="$STATE/wpa_supplicant.log"
@@ -81,8 +82,12 @@ feed_pending_firmware() {
         name="${req##*/}"
         src=""
         for p in \
+            "$STOCK_VENDOR/firmware/$name" \
+            "$STOCK_VENDOR/firmware/wlan/prima/$name" \
             "/vendor/firmware/$name" \
             "/vendor/firmware/wlan/prima/$name" \
+            "/lib/firmware/$name" \
+            "/lib/firmware/wlan/prima/$name" \
             "/vendor/firmware_mnt/image/$name" \
             "/firmware/image/$name" \
             "/firmware/$name" \
@@ -103,7 +108,17 @@ prepare() {
     mkdir_state
     : > "$PREPLOG"
 
-    mount_partition /vendor vendor && log "vendor mounted" || log "vendor mount unavailable"
+    # Keep the recovery ramdisk's /vendor visible. If TWRP has not already
+    # mounted the stock vendor partition, mount it read-only at a private path.
+    if is_mounted /vendor; then
+        STOCK_VENDOR=/vendor
+        log "vendor already mounted by recovery; using /vendor"
+    elif mount_partition "$STOCK_VENDOR" vendor; then
+        log "vendor stock mounted read-only at $STOCK_VENDOR"
+    else
+        log "vendor stock mount unavailable"
+    fi
+
     mount_partition /firmware modem && log "firmware/modem mounted at /firmware" || log "firmware mount unavailable at /firmware"
     # The recovery ueventd configuration and vendor firmware symlinks use
     # /vendor/firmware_mnt/image, while TWRP's recovery.fstab names the same
@@ -127,10 +142,9 @@ prepare() {
         fi
     fi
 
-    # Also expose the traditional Linux firmware path used by firmware_class.
-    if [ -d "$STOCK_VENDOR/firmware" ] && ! is_mounted /lib/firmware; then
-        "$BB" mount --bind "$STOCK_VENDOR/firmware" /lib/firmware 2>/dev/null || true
-    fi
+    # /lib/firmware remains the recovery fallback tree. The kernel searches
+    # firmware_class.path first, then /lib/firmware, so stock vendor firmware
+    # wins while the embedded PRONTO cfg.ini remains available as fallback.
 
     feed_pending_firmware
 

@@ -143,31 +143,32 @@ def inject_payload(raw: bytes, payload: Path):
     names, max_ino, trailer_start = parse_cpio(raw)
 
     mapping = [
-        ("wifi", "sbin/wifi"),
-        ("busybox.ds", "sbin/busybox.ds"),
-        ("wpa_supplicant.ds", "sbin/wpa_supplicant.ds"),
-        ("wpa_cli.ds", "sbin/wpa_cli.ds"),
-        ("wpa_passphrase.ds", "sbin/wpa_passphrase.ds"),
-        ("wifi-udhcpc.script", "sbin/wifi-udhcpc.script"),
-        ("wcnss-recovery", "sbin/wcnss-recovery"),
+        ("wifi", "sbin/wifi", 0o755),
+        ("busybox.ds", "sbin/busybox.ds", 0o755),
+        ("wpa_supplicant.ds", "sbin/wpa_supplicant.ds", 0o755),
+        ("wpa_cli.ds", "sbin/wpa_cli.ds", 0o755),
+        ("wpa_passphrase.ds", "sbin/wpa_passphrase.ds", 0o755),
+        ("wifi-udhcpc.script", "sbin/wifi-udhcpc.script", 0o755),
+        ("wcnss-recovery", "sbin/wcnss-recovery", 0o755),
+        ("WCNSS_qcom_cfg.ini", "lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini", 0o644),
     ]
 
-    for _, dst in mapping:
+    for _, dst, _ in mapping:
         if dst in names:
             raise SystemExit(f"Refusing to overwrite existing ramdisk entry: {dst}")
 
     injected = bytearray()
     ino = max_ino + 1
     total = 0
-    for src, dst in mapping:
+    for src, dst, perms in mapping:
         path = payload / src
         if not path.is_file():
             raise SystemExit(f"Missing Wi-Fi payload: {path}")
         data = path.read_bytes()
         total += len(data)
-        injected += newc_entry(dst, data, ino, mode=stat.S_IFREG | 0o755)
+        injected += newc_entry(dst, data, ino, mode=stat.S_IFREG | perms)
         ino += 1
-        print(f"Inject: /{dst} ({len(data)} bytes)")
+        print(f"Inject: /{dst} ({len(data)} bytes, mode {perms:04o})")
 
     return raw[:trailer_start] + bytes(injected) + raw[trailer_start:], total
 
@@ -293,6 +294,7 @@ def main():
         "sbin/wifi", "sbin/busybox.ds", "sbin/wpa_supplicant.ds",
         "sbin/wpa_cli.ds", "sbin/wpa_passphrase.ds",
         "sbin/wifi-udhcpc.script", "sbin/wcnss-recovery",
+        "lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini",
     }
     missing = sorted(required - verify_names)
     if missing:

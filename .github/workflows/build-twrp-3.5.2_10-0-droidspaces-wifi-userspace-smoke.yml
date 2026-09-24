@@ -29,7 +29,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             git ca-certificates autoconf automake libtool pkg-config file \
-            make gcc-aarch64-linux-gnu
+            make gcc-aarch64-linux-gnu python3
+
+      - name: Validate recovery Wi-Fi scripts
+        run: |
+          set -euo pipefail
+          bash -n recovery-wifi/build-userspace.sh
+          sh -n recovery-wifi/wifi
+          sh -n recovery-wifi/wifi-udhcpc.script
+          python3 -m py_compile recovery-wifi/repack_boot.py
+          grep -q '^STOCK_VENDOR=' recovery-wifi/wifi
+          ! grep -q 'mount_partition /vendor vendor' recovery-wifi/wifi
+          grep -q 'WCNSS_qcom_cfg.ini' recovery-wifi/repack_boot.py
+          test -s recovery-wifi/WCNSS_qcom_cfg.ini
 
       - name: Build and verify static recovery Wi-Fi userspace
         run: |

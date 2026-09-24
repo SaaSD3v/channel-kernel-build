@@ -382,4 +382,5 @@ jobs:
             recovery-wifi/wifi
             recovery-wifi/wifi-udhcpc.script
             recovery-wifi/wpa_supplicant.config
+            recovery-wifi/WCNSS_qcom_cfg.ini
           if-no-files-found: error

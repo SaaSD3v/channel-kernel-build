@@ -111,7 +111,13 @@ popd >/dev/null
 
 cp "$ROOT/recovery-wifi/wifi" "$OUT/wifi"
 cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
-chmod 0755 "$OUT"/*
+cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
+
+chmod 0755 \
+  "$OUT/wifi" "$OUT/wifi-udhcpc.script" \
+  "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
+  "$OUT/busybox.ds" "$OUT/wcnss-recovery"
+chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
 
 for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
          "$OUT/busybox.ds" "$OUT/wcnss-recovery"; do
