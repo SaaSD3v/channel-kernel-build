@@ -20,7 +20,8 @@ UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
 IFACE=${WIFI_IFACE:-wlan0}
 
 mkdir_state() {
-    "$BB" mkdir -p "$STATE" "$CTRL" "$STOCK_VENDOR" /vendor /firmware /persist /lib/firmware 2>/dev/null || true
+    "$BB" mkdir -p "$STATE" "$CTRL" "$STOCK_VENDOR" /vendor /firmware /persist \
+        /mnt/vendor/persist /lib/firmware/wlan/prima 2>/dev/null || true
     "$BB" chmod 700 "$STATE" 2>/dev/null || true
 }
 
@@ -73,25 +74,56 @@ mount_partition() {
     "$BB" mount -t vfat -o ro "$dev" "$target" 2>/dev/null
 }
 
+stage_firmware() {
+    "$BB" mkdir -p /lib/firmware/wlan/prima 2>/dev/null || true
+
+    # Motorola's sdm632-common tree creates /vendor/firmware/wlan/prima
+    # symlinks that point absolutely to /vendor/etc/wifi. Because recovery
+    # keeps its own /vendor visible and mounts stock vendor privately, copy the
+    # actual WCNSS files from the stock vendor source directory instead of
+    # following those broken absolute symlinks.
+    if [ -d "$STOCK_VENDOR/etc/wifi" ]; then
+        for src in "$STOCK_VENDOR"/etc/wifi/WCNSS_*; do
+            [ -s "$src" ] || continue
+            name="${src##*/}"
+            "$BB" cat "$src" > "/lib/firmware/wlan/prima/$name" 2>/dev/null || true
+            [ -s "/lib/firmware/wlan/prima/$name" ] && log "staged stock WLAN firmware $name"
+        done
+    fi
+
+    # PIL loads the WCNSS subsystem before the PRONTO network driver starts.
+    # Stage the modem partition's WCNSS image into the same firmware root so
+    # both PIL (wcnss.mdt/bXX) and request_firmware(wlan/prima/...) resolve
+    # with one firmware_class.path.
+    for root in /vendor/firmware_mnt/image /firmware/image; do
+        [ -d "$root" ] || continue
+        for src in "$root"/wcnss.* "$root"/WCNSS.*; do
+            [ -s "$src" ] || continue
+            name="${src##*/}"
+            "$BB" cat "$src" > "/lib/firmware/$name" 2>/dev/null || true
+            [ -s "/lib/firmware/$name" ] && log "staged modem firmware $name"
+        done
+    done
+}
+
 feed_pending_firmware() {
-    # CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y in the channel kernel. If a
-    # built-in driver requested firmware before /vendor was mounted, satisfy
-    # any still-pending request directly through firmware_class sysfs.
+    # CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y in the channel kernel. Firmware
+    # class replaces '/' with '!' in fallback sysfs node names, so decode it
+    # before looking up wlan/prima paths.
     for req in /sys/class/firmware/*; do
         [ -e "$req/loading" ] || continue
-        name="${req##*/}"
+        req_name="${req##*/}"
+        name="$(printf '%s' "$req_name" | "$BB" sed 's|!|/|g')"
+        base="${name##*/}"
         src=""
         for p in \
-            "$STOCK_VENDOR/firmware/$name" \
-            "$STOCK_VENDOR/firmware/wlan/prima/$name" \
-            "/vendor/firmware/$name" \
-            "/vendor/firmware/wlan/prima/$name" \
             "/lib/firmware/$name" \
-            "/lib/firmware/wlan/prima/$name" \
-            "/vendor/firmware_mnt/image/$name" \
-            "/firmware/image/$name" \
-            "/firmware/$name" \
-            "/persist/$name"
+            "/lib/firmware/wlan/prima/$base" \
+            "$STOCK_VENDOR/etc/wifi/$base" \
+            "/vendor/firmware_mnt/image/$base" \
+            "/firmware/image/$base" \
+            "/mnt/vendor/persist/$base" \
+            "/persist/$base"
         do
             [ -f "$p" ] && { src="$p"; break; }
         done
@@ -125,26 +157,17 @@ prepare() {
     # modem partition /firmware. Mount it at both paths when the vendor
     # mountpoint exists so PIL/request_firmware can resolve stock symlinks.
     mount_partition /vendor/firmware_mnt modem && log "firmware/modem mounted at /vendor/firmware_mnt" || log "firmware_mnt mount unavailable"
-    mount_partition /persist persist && log "persist mounted" || log "persist mount unavailable"
+    mount_partition /mnt/vendor/persist persist && log "persist mounted at /mnt/vendor/persist" || log "persist mount unavailable at /mnt/vendor/persist"
+    mount_partition /persist persist >/dev/null 2>&1 || true
 
-    # request_firmware() in this 4.9 tree searches firmware_class.path first.
-    # Prefer the stock vendor firmware tree without masking recovery's /vendor.
+    stage_firmware
+
+    # Use one coherent firmware root for the entire bring-up: WCNSS PIL files
+    # copied from modem plus PRONTO cfg/NV/dictionary copied from stock vendor.
     if [ -w /sys/module/firmware_class/parameters/path ]; then
-        if [ -d "$STOCK_VENDOR/firmware" ]; then
-            echo "$STOCK_VENDOR/firmware" > /sys/module/firmware_class/parameters/path 2>/dev/null || true
-            log "firmware_class.path=$STOCK_VENDOR/firmware"
-        elif [ -d /vendor/firmware ]; then
-            echo /vendor/firmware > /sys/module/firmware_class/parameters/path 2>/dev/null || true
-            log "firmware_class.path=/vendor/firmware"
-        elif [ -d /firmware/image ]; then
-            echo /firmware/image > /sys/module/firmware_class/parameters/path 2>/dev/null || true
-            log "firmware_class.path=/firmware/image"
-        fi
+        echo /lib/firmware > /sys/module/firmware_class/parameters/path 2>/dev/null || true
+        log "firmware_class.path=/lib/firmware"
     fi
-
-    # /lib/firmware remains the recovery fallback tree. The kernel searches
-    # firmware_class.path first, then /lib/firmware, so stock vendor firmware
-    # wins while the embedded PRONTO cfg.ini remains available as fallback.
 
     feed_pending_firmware
 
@@ -378,7 +401,7 @@ cmd_logs() {
     echo "===== nodes ====="
     ls -l /dev/wcnss* /sys/module/wlan/parameters 2>/dev/null || true
     echo "===== mounts ====="
-    "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|lib/firmware|tmp/ds-wifi/vendor-stock) ' /proc/mounts 2>/dev/null || true
+    "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|mnt/vendor/persist|lib/firmware|tmp/ds-wifi/vendor-stock) ' /proc/mounts 2>/dev/null || true
 }
 
 usage() {
