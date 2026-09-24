@@ -9,7 +9,7 @@ CROSS=aarch64-linux-gnu-
 CC=${CROSS}gcc
 STRIP=${CROSS}strip
 
-WPA_COMMIT=f4cfe10ee881f42be7afb2c0eb74e3f4603d70d0
+WPA_COMMIT=8d114c93c83571a574883798865ed68d4caddfba
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
 LIBNL_TAG=libnl3_2_25
 
@@ -30,7 +30,7 @@ make -j"$(nproc)"
 make install
 popd >/dev/null
 
-# Android 11-era wpa_supplicant matching the generation used by channel.
+# Android 10 / LineageOS 17.1 wpa_supplicant matching the TWRP 10.0 channel generation.
 git init "$SRC/wpa"
 git -C "$SRC/wpa" remote add origin https://github.com/LineageOS/android_external_wpa_supplicant_8.git
 git -C "$SRC/wpa" fetch --depth=1 origin "$WPA_COMMIT"
