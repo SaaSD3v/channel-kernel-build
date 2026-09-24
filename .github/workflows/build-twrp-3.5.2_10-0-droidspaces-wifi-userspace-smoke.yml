@@ -67,10 +67,40 @@ jobs:
           OUT=/tmp/twrp-wifi-overlay-smoke.img
           KERNEL=/tmp/official-twrp-kernel
 
-          curl -fL --retry 5 --retry-delay 2 \
-            -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-WiFi-Smoke' \
-            -o "$BASE" \
-            https://eu.dl.twrp.me/channel/twrp-3.5.2_10-0-channel.img
+          NAME=twrp-3.5.2_10-0-channel.img
+          PAGE="https://dl.twrp.me/channel/$NAME.html"
+          PAGE_HTML=$(curl -fLsS --retry 3 --retry-delay 2 \
+            -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-WiFi-Smoke' "$PAGE")
+          FILE_HREF=$(printf '%s' "$PAGE_HTML" \
+            | grep -oE 'href="[^"]*twrp-3\\.5\\.2_10-0-channel\\.img"' \
+            | head -n1 | cut -d'"' -f2 || true)
+          case "$FILE_HREF" in
+            http://*|https://*) FILE_URL="$FILE_HREF" ;;
+            /*) FILE_URL="https://dl.twrp.me$FILE_HREF" ;;
+            "") FILE_URL="" ;;
+            *) FILE_URL="https://dl.twrp.me/channel/$FILE_HREF" ;;
+          esac
+
+          ok=0
+          for URL in \
+            "https://eu.dl.twrp.me/channel/$NAME" \
+            "$FILE_URL" \
+            "https://dl.twrp.me/channel/$NAME?download=1"
+          do
+            [ -n "$URL" ] || continue
+            rm -f "$BASE.part"
+            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
+              -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-WiFi-Smoke' \
+              -e "$PAGE" -o "$BASE.part" "$URL"; then
+              if [ "$(stat -c%s "$BASE.part")" -gt 20000000 ] && \
+                 [ "$(head -c 8 "$BASE.part")" = "ANDROID!" ]; then
+                mv "$BASE.part" "$BASE"
+                ok=1
+                break
+              fi
+            fi
+          done
+          [ "$ok" -eq 1 ]
           echo '486c3e11250c1233112372129c796b55e0cd5d0f4ac605906d90b0f9b574056c  /tmp/twrp-3.5.2_10-0-channel.img' | sha256sum -c -
 
           python3 <<'PY'
