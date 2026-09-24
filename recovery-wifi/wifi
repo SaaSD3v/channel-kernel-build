@@ -19,7 +19,7 @@ UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
 IFACE=${WIFI_IFACE:-wlan0}
 
 mkdir_state() {
-    "$BB" mkdir -p "$STATE" "$CTRL" /vendor /firmware /persist /lib/firmware 2>/dev/null || true
+    "$BB" mkdir -p "$STATE" "$CTRL" "$STOCK_VENDOR" /vendor /firmware /persist /lib/firmware 2>/dev/null || true
     "$BB" chmod 700 "$STATE" 2>/dev/null || true
 }
 
@@ -113,8 +113,12 @@ prepare() {
     mount_partition /persist persist && log "persist mounted" || log "persist mount unavailable"
 
     # request_firmware() in this 4.9 tree searches firmware_class.path first.
+    # Prefer the stock vendor firmware tree without masking recovery's /vendor.
     if [ -w /sys/module/firmware_class/parameters/path ]; then
-        if [ -d /vendor/firmware ]; then
+        if [ -d "$STOCK_VENDOR/firmware" ]; then
+            echo "$STOCK_VENDOR/firmware" > /sys/module/firmware_class/parameters/path 2>/dev/null || true
+            log "firmware_class.path=$STOCK_VENDOR/firmware"
+        elif [ -d /vendor/firmware ]; then
             echo /vendor/firmware > /sys/module/firmware_class/parameters/path 2>/dev/null || true
             log "firmware_class.path=/vendor/firmware"
         elif [ -d /firmware/image ]; then
@@ -124,8 +128,8 @@ prepare() {
     fi
 
     # Also expose the traditional Linux firmware path used by firmware_class.
-    if [ -d /vendor/firmware ]; then
-        "$BB" mount --bind /vendor/firmware /lib/firmware 2>/dev/null || true
+    if [ -d "$STOCK_VENDOR/firmware" ] && ! is_mounted /lib/firmware; then
+        "$BB" mount --bind "$STOCK_VENDOR/firmware" /lib/firmware 2>/dev/null || true
     fi
 
     feed_pending_firmware
@@ -360,7 +364,7 @@ cmd_logs() {
     echo "===== nodes ====="
     ls -l /dev/wcnss* /sys/module/wlan/parameters 2>/dev/null || true
     echo "===== mounts ====="
-    "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|lib/firmware) ' /proc/mounts 2>/dev/null || true
+    "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|lib/firmware|tmp/ds-wifi/vendor-stock) ' /proc/mounts 2>/dev/null || true
 }
 
 usage() {
