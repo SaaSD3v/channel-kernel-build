@@ -83,6 +83,7 @@ feed_pending_firmware() {
         for p in \
             "/vendor/firmware/$name" \
             "/vendor/firmware/wlan/prima/$name" \
+            "/vendor/firmware_mnt/image/$name" \
             "/firmware/image/$name" \
             "/firmware/$name" \
             "/persist/$name"
@@ -103,7 +104,12 @@ prepare() {
     : > "$PREPLOG"
 
     mount_partition /vendor vendor && log "vendor mounted" || log "vendor mount unavailable"
-    mount_partition /firmware modem && log "firmware/modem mounted" || log "firmware mount unavailable"
+    mount_partition /firmware modem && log "firmware/modem mounted at /firmware" || log "firmware mount unavailable at /firmware"
+    # The recovery ueventd configuration and vendor firmware symlinks use
+    # /vendor/firmware_mnt/image, while TWRP's recovery.fstab names the same
+    # modem partition /firmware. Mount it at both paths when the vendor
+    # mountpoint exists so PIL/request_firmware can resolve stock symlinks.
+    mount_partition /vendor/firmware_mnt modem && log "firmware/modem mounted at /vendor/firmware_mnt" || log "firmware_mnt mount unavailable"
     mount_partition /persist persist && log "persist mounted" || log "persist mount unavailable"
 
     # request_firmware() in this 4.9 tree searches firmware_class.path first.
@@ -345,7 +351,7 @@ cmd_logs() {
     echo "===== nodes ====="
     ls -l /dev/wcnss* /sys/module/wlan/parameters 2>/dev/null || true
     echo "===== mounts ====="
-    "$BB" grep -E ' /(vendor|firmware|persist|lib/firmware) ' /proc/mounts 2>/dev/null || true
+    "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|lib/firmware) ' /proc/mounts 2>/dev/null || true
 }
 
 usage() {
