@@ -33,7 +33,17 @@ def decompress_ramdisk(data: bytes):
     try:
         raw = lzma.decompress(data, format=lzma.FORMAT_ALONE)
         if raw.startswith(CPIO_MAGICS):
-            return raw, "lzma"
+            if len(data) < 13:
+                raise SystemExit("Truncated LZMA-alone recovery ramdisk header")
+            props = data[0]
+            if props >= 9 * 5 * 5:
+                raise SystemExit(f"Invalid LZMA-alone properties byte: {props}")
+            lc = props % 9
+            rest = props // 9
+            lp = rest % 5
+            pb = rest // 5
+            dict_size = struct.unpack_from("<I", data, 1)[0]
+            return raw, ("lzma", dict_size, lc, lp, pb)
     except lzma.LZMAError:
         pass
     raise SystemExit("Unsupported/unknown recovery ramdisk compression")
@@ -50,13 +60,41 @@ def external_filter(data: bytes, cmd):
     return p.stdout
 
 
-def compress_ramdisk(raw: bytes, kind: str):
+def compression_name(spec):
+    return spec[0] if isinstance(spec, tuple) else spec
+
+
+def compress_ramdisk(raw: bytes, spec):
+    kind = compression_name(spec)
     if kind == "gzip":
         return gzip.compress(raw, compresslevel=9, mtime=0)
     if kind == "xz":
         return lzma.compress(raw, format=lzma.FORMAT_XZ, preset=9)
     if kind == "lzma":
-        return lzma.compress(raw, format=lzma.FORMAT_ALONE, preset=9)
+        # Preserve the TeamWin ramdisk's LZMA-alone decoder parameters.
+        # Python preset=9 silently changes channel's original 8 MiB dictionary
+        # to 64 MiB, which can make the early kernel initramfs decompressor fail.
+        if not isinstance(spec, tuple) or len(spec) != 5:
+            raise SystemExit("Missing original LZMA-alone parameters")
+        _, dict_size, lc, lp, pb = spec
+        filters = [{
+            "id": lzma.FILTER_LZMA1,
+            "dict_size": dict_size,
+            "lc": lc,
+            "lp": lp,
+            "pb": pb,
+            "mode": lzma.MODE_NORMAL,
+            "nice_len": 64,
+            "mf": lzma.MF_BT4,
+        }]
+        packed = lzma.compress(raw, format=lzma.FORMAT_ALONE, filters=filters)
+        expected = bytes([((pb * 5 + lp) * 9 + lc)]) + struct.pack("<I", dict_size)
+        if packed[:5] != expected:
+            raise SystemExit(
+                f"LZMA-alone properties changed during repack: "
+                f"expected={expected.hex()} got={packed[:5].hex()}"
+            )
+        return packed
     if kind == "lz4-frame":
         return external_filter(raw, ["lz4", "-9", "-q", "-", "-"])
     if kind == "lz4-legacy":
@@ -289,6 +327,11 @@ def main():
 
     # Verify our own result before touching the boot image.
     verify_raw, verify_kind = decompress_ramdisk(modified_ramdisk)
+    if verify_kind != compression:
+        raise SystemExit(
+            f"Ramdisk compression parameters changed: "
+            f"base={compression!r} repacked={verify_kind!r}"
+        )
     verify_names, _, _ = parse_cpio(verify_raw)
     required = {
         "sbin/wifi", "sbin/busybox.ds", "sbin/wpa_supplicant.ds",
@@ -311,7 +354,11 @@ def main():
     print(f"Boot page size       : {parts['page_size']}")
     print(f"Base kernel size     : {parts['kernel_size']}")
     print(f"New kernel size      : {len(new_kernel)}")
-    print(f"Ramdisk compression  : {compression}")
+    print(f"Ramdisk compression  : {compression_name(compression)}")
+    if compression_name(compression) == "lzma":
+        _, dict_size, lc, lp, pb = compression
+        print(f"LZMA dictionary      : {dict_size} bytes")
+        print(f"LZMA lc/lp/pb        : {lc}/{lp}/{pb}")
     print(f"Base ramdisk size    : {parts['ramdisk_size']}")
     print(f"Wi-Fi payload raw    : {payload_size}")
     print(f"New ramdisk size     : {len(modified_ramdisk)}")
