@@ -12,6 +12,7 @@
 #define WCNSS_CTRL "/dev/wcnss_ctrl"
 #define WCNSS_DEVICE "/dev/wcnss_wlan"
 #define CAL_FILE "/tmp/ds-wifi/WCNSS_qcom_wlan_cal.bin"
+#define READY_FILE "/tmp/ds-wifi/wcnss.opened"
 #define CAL_CHUNK (3 * 1024)
 #define WCNSS_USR_HAS_CAL_DATA 2
 
@@ -173,6 +174,19 @@ int main(void)
         fprintf(stderr, "wcnss-recovery: cannot open %s: %s\n",
                 WCNSS_DEVICE, strerror(errno));
         return 1;
+    }
+
+    /*
+     * open(/dev/wcnss_wlan) synchronously runs wcnss_trigger_config(), which
+     * performs subsystem_get("wcnss")/PIL. Publish a marker only after that
+     * open has returned so the recovery controller never kickstarts PRONTO
+     * before the WCNSS subsystem has actually been triggered.
+     */
+    int ready = open(READY_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (ready >= 0) {
+        static const char one[] = "1\n";
+        (void)write(ready, one, sizeof(one) - 1);
+        close(ready);
     }
 
     if (has_cal) {
