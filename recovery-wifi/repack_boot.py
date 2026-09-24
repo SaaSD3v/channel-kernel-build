@@ -154,14 +154,14 @@ def parse_cpio(raw: bytes):
     raise SystemExit("newc TRAILER!!! not found")
 
 
-def newc_entry(name: str, data: bytes, ino: int, mode=0o100755, uid=0, gid=0):
+def newc_entry(name: str, data: bytes, ino: int, mode=0o100755, uid=0, gid=0, nlink=1):
     name_b = name.encode() + b"\x00"
     values = (
         ino,
         mode,
         uid,
         gid,
-        1,   # nlink
+        nlink,
         0,   # mtime
         len(data),
         0, 0, 0, 0,
@@ -179,6 +179,17 @@ def newc_entry(name: str, data: bytes, ino: int, mode=0o100755, uid=0, gid=0):
 
 def inject_payload(raw: bytes, payload: Path):
     names, max_ino, trailer_start = parse_cpio(raw)
+
+    # The stock TeamWin ramdisk has /vendor/firmware but no /lib/firmware
+    # hierarchy. Add real directory entries before placing the PRONTO fallback
+    # config there; a newc pathname does not implicitly create its parents when
+    # the kernel expands the initramfs.
+    directories = [
+        "lib",
+        "lib/firmware",
+        "lib/firmware/wlan",
+        "lib/firmware/wlan/prima",
+    ]
 
     mapping = [
         ("wifi", "sbin/wifi", 0o755),
@@ -198,6 +209,19 @@ def inject_payload(raw: bytes, payload: Path):
     injected = bytearray()
     ino = max_ino + 1
     total = 0
+
+    for dst in directories:
+        if dst in names:
+            continue
+        injected += newc_entry(
+            dst, b"", ino,
+            mode=stat.S_IFDIR | 0o755,
+            nlink=2,
+        )
+        names.add(dst)
+        ino += 1
+        print(f"Inject directory: /{dst}")
+
     for src, dst, perms in mapping:
         path = payload / src
         if not path.is_file():
@@ -337,6 +361,7 @@ def main():
         "sbin/wifi", "sbin/busybox.ds", "sbin/wpa_supplicant.ds",
         "sbin/wpa_cli.ds", "sbin/wpa_passphrase.ds",
         "sbin/wifi-udhcpc.script", "sbin/wcnss-recovery",
+        "lib", "lib/firmware", "lib/firmware/wlan", "lib/firmware/wlan/prima",
         "lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini",
     }
     missing = sorted(required - verify_names)
