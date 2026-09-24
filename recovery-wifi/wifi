@@ -91,6 +91,20 @@ stage_firmware() {
         done
     fi
 
+    # Some Motorola firmware revisions carry real files in this directory,
+    # while Lineage-style vendor images populate it with absolute symlinks.
+    # Copy only real files here; broken/absolute symlinks are already handled
+    # through the stock vendor /etc/wifi source above.
+    if [ -d "$STOCK_VENDOR/firmware/wlan/prima" ]; then
+        for src in "$STOCK_VENDOR"/firmware/wlan/prima/WCNSS_*; do
+            [ -L "$src" ] && continue
+            [ -s "$src" ] || continue
+            name="${src##*/}"
+            "$BB" cat "$src" > "/lib/firmware/wlan/prima/$name" 2>/dev/null || true
+            [ -s "/lib/firmware/wlan/prima/$name" ] && log "staged vendor WLAN firmware $name"
+        done
+    fi
+
     # PIL loads the WCNSS subsystem before the PRONTO network driver starts.
     # Stage the modem partition's WCNSS image into the same firmware root so
     # both PIL (wcnss.mdt/bXX) and request_firmware(wlan/prima/...) resolve
@@ -186,44 +200,52 @@ prepare() {
         return 0
     fi
 
-    # Minimal WCNSS userspace handshake. It intentionally avoids modem/QMI and
-    # stores any runtime calibration only under /tmp. Wait for the character
-    # devices instead of assuming ueventd created them before this command ran.
-    i=0
-    while [ "$i" -lt 10 ] && { [ ! -e /dev/wcnss_ctrl ] || [ ! -e /dev/wcnss_wlan ]; }; do
-        "$BB" sleep 1
-        i=$((i + 1))
-    done
-
-    if [ ! -e /dev/wcnss_ctrl ] || [ ! -e /dev/wcnss_wlan ]; then
-        log "WCNSS control devices did not appear"
-        return 1
-    fi
-
-    "$BB" rm -f "$STATE/wcnss.opened" 2>/dev/null || true
-    if [ -x "$WCNSS" ]; then
-        "$WCNSS" >> "$PREPLOG" 2>&1 &
-        WCNSS_PID=$!
-        log "wcnss recovery helper started pid=$WCNSS_PID"
+    # /dev/wcnss_ctrl is intentionally one-shot in this kernel. If a previous
+    # prepare attempt already completed the WCNSS trigger in this recovery boot,
+    # reuse that state and retry only PRONTO instead of reopening the control
+    # node (which would fail with -EFAULT).
+    if [ -s "$STATE/wcnss.opened" ]; then
+        log "WCNSS subsystem already triggered; reusing existing state"
     else
-        log "missing WCNSS recovery helper"
-        return 1
-    fi
+        # Minimal WCNSS userspace handshake. It intentionally avoids modem/QMI
+        # and stores any runtime calibration only under /tmp. Wait for both
+        # character devices instead of assuming ueventd created them already.
+        i=0
+        while [ "$i" -lt 10 ] && { [ ! -e /dev/wcnss_ctrl ] || [ ! -e /dev/wcnss_wlan ]; }; do
+            "$BB" sleep 1
+            i=$((i + 1))
+        done
 
-    # The helper creates this marker only after open(/dev/wcnss_wlan) returns.
-    # In the Channel kernel that open synchronously performs subsystem_get()
-    # and therefore confirms the PIL trigger happened before PRONTO starts.
-    i=0
-    while [ "$i" -lt 15 ] && [ ! -s "$STATE/wcnss.opened" ]; do
+        if [ ! -e /dev/wcnss_ctrl ] || [ ! -e /dev/wcnss_wlan ]; then
+            log "WCNSS control devices did not appear"
+            return 1
+        fi
+
+        "$BB" rm -f "$STATE/wcnss.opened" 2>/dev/null || true
+        if [ -x "$WCNSS" ]; then
+            "$WCNSS" >> "$PREPLOG" 2>&1 &
+            WCNSS_PID=$!
+            log "wcnss recovery helper started pid=$WCNSS_PID"
+        else
+            log "missing WCNSS recovery helper"
+            return 1
+        fi
+
+        # The helper creates this marker only after open(/dev/wcnss_wlan)
+        # returns. In Channel that open synchronously performs subsystem_get()
+        # and confirms the PIL trigger happened before PRONTO starts.
+        i=0
+        while [ "$i" -lt 15 ] && [ ! -s "$STATE/wcnss.opened" ]; do
+            "$BB" sleep 1
+            i=$((i + 1))
+        done
+        if [ ! -s "$STATE/wcnss.opened" ]; then
+            log "WCNSS subsystem trigger did not complete"
+            return 1
+        fi
+        log "WCNSS subsystem trigger completed"
         "$BB" sleep 1
-        i=$((i + 1))
-    done
-    if [ ! -s "$STATE/wcnss.opened" ]; then
-        log "WCNSS subsystem trigger did not complete"
-        return 1
     fi
-    log "WCNSS subsystem trigger completed"
-    "$BB" sleep 1
 
     # Critical for this kernel: PRONTO_WLAN is built-in and hdd_module_init()
     # deliberately delays hdd_driver_init() until fwpath is changed by userspace.
@@ -430,6 +452,10 @@ cmd_logs() {
     dmesg 2>/dev/null | "$BB" grep -iE 'wlan|wcnss|pronto|firmware|cfg80211|rfkill' | "$BB" tail -n 200 || true
     echo "===== nodes ====="
     ls -l /dev/wcnss* /sys/module/wlan/parameters 2>/dev/null || true
+    echo "===== staged firmware ====="
+    ls -l /lib/firmware /lib/firmware/wlan/prima 2>/dev/null || true
+    echo "===== WCNSS trigger marker ====="
+    ls -l "$STATE/wcnss.opened" 2>/dev/null || true
     echo "===== mounts ====="
     "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|mnt/vendor/persist|lib/firmware|tmp/ds-wifi/vendor-stock) ' /proc/mounts 2>/dev/null || true
 }

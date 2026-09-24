@@ -12,6 +12,8 @@ on:
       - recovery-wifi/wcnss-recovery.c
       - recovery-wifi/wifi
       - recovery-wifi/wifi-udhcpc.script
+      - recovery-wifi/repack_boot.py
+      - recovery-wifi/WCNSS_qcom_cfg.ini
 
 permissions:
   contents: read
@@ -29,7 +31,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             git ca-certificates autoconf automake libtool pkg-config file \
-            make gcc-aarch64-linux-gnu python3
+            make gcc-aarch64-linux-gnu python3 qemu-user-static \
+            curl xz-utils lz4 lzop
 
       - name: Validate recovery Wi-Fi scripts
         run: |
@@ -48,6 +51,77 @@ jobs:
           set -euo pipefail
           chmod +x recovery-wifi/build-userspace.sh
           recovery-wifi/build-userspace.sh
+
+      - name: Execute ARM64 binaries under QEMU
+        run: |
+          set -euo pipefail
+          qemu-aarch64-static recovery-wifi/out/busybox.ds true
+          qemu-aarch64-static recovery-wifi/out/wpa_supplicant.ds -v
+          qemu-aarch64-static recovery-wifi/out/wpa_cli.ds -v
+          qemu-aarch64-static recovery-wifi/out/wpa_passphrase.ds SmokeSSID 12345678 >/dev/null
+
+      - name: Smoke-test real TWRP ramdisk overlay
+        run: |
+          set -euo pipefail
+          BASE=/tmp/twrp-3.5.2_10-0-channel.img
+          OUT=/tmp/twrp-wifi-overlay-smoke.img
+          KERNEL=/tmp/official-twrp-kernel
+
+          curl -fL --retry 5 --retry-delay 2 \
+            -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-WiFi-Smoke' \
+            -o "$BASE" \
+            https://eu.dl.twrp.me/channel/twrp-3.5.2_10-0-channel.img
+          echo '486c3e11250c1233112372129c796b55e0cd5d0f4ac605906d90b0f9b574056c  /tmp/twrp-3.5.2_10-0-channel.img' | sha256sum -c -
+
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+          base = Path("/tmp/twrp-3.5.2_10-0-channel.img").read_bytes()
+          page = struct.unpack_from("<I", base, 36)[0]
+          size = struct.unpack_from("<I", base, 8)[0]
+          Path("/tmp/official-twrp-kernel").write_bytes(base[page:page + size])
+          PY
+
+          python3 recovery-wifi/repack_boot.py \
+            --base "$BASE" \
+            --kernel "$KERNEL" \
+            --payload recovery-wifi/out \
+            --output "$OUT"
+
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+
+          def align(v, n):
+              return (v + n - 1) // n * n
+
+          def fields(data):
+              k = struct.unpack_from("<I", data, 8)[0]
+              r = struct.unpack_from("<I", data, 16)[0]
+              s = struct.unpack_from("<I", data, 24)[0]
+              p = struct.unpack_from("<I", data, 36)[0]
+              d = struct.unpack_from("<I", data, 1632)[0]
+              o = struct.unpack_from("<Q", data, 1636)[0]
+              ko = p
+              ro = align(ko + k, p)
+              so = align(ro + r, p)
+              return k, r, s, p, d, o, ko, ro, so
+
+          base = Path("/tmp/twrp-3.5.2_10-0-channel.img").read_bytes()
+          out = Path("/tmp/twrp-wifi-overlay-smoke.img").read_bytes()
+          bk, br, bs, bp, bd, bo, bko, bro, bso = fields(base)
+          ok, or_, os_, op, od, oo, oko, oro, oso = fields(out)
+
+          assert out[:8] == b"ANDROID!"
+          assert len(out) <= 33554432
+          assert (bk, bs, bp, bd) == (ok, os_, op, od)
+          assert base[bko:bko + bk] == out[oko:oko + ok]
+          assert out[oro:oro + br] == base[bro:bro + br]
+          assert out[oo:oo + od] == base[bo:bo + bd]
+          assert or_ > br
+          print("overlay smoke OK:", len(out), "bytes")
+          print("TeamWin ramdisk prefix preserved:", br, "bytes")
+          PY
 
       - name: Upload smoke artifacts
         uses: actions/upload-artifact@v4
