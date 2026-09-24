@@ -1,7 +1,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -97,29 +97,49 @@ static int write_cal_to_device(int fd_dev, const char *path)
     return n < 0 ? -1 : 0;
 }
 
+static volatile sig_atomic_t cal_read_timed_out;
+
+static void cal_alarm_handler(int signo)
+{
+    (void)signo;
+    cal_read_timed_out = 1;
+}
+
 static void collect_runtime_cal(int fd_dev)
 {
+    struct sigaction sa;
+    struct sigaction old_sa;
     int out = -1;
     int idle_rounds = 0;
     char buf[CAL_CHUNK];
 
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = cal_alarm_handler;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGALRM, &sa, &old_sa) < 0)
+        return;
+
+    /*
+     * This character device has no .poll() file operation. Generic poll would
+     * therefore report it readable even when wcnss_wlan_read() is sleeping in
+     * wait_event_interruptible(). Use SIGALRM so an idle calibration read can
+     * actually be interrupted instead of leaving a helper stuck forever.
+     */
     for (;;) {
-        struct pollfd pfd = { .fd = fd_dev, .events = POLLIN };
-        int pr = poll(&pfd, 1, 1000);
-        if (pr < 0) {
-            if (errno == EINTR)
-                continue;
-            break;
-        }
-        if (pr == 0) {
-            if (++idle_rounds >= 8)
+        ssize_t n;
+        int saved_errno;
+
+        cal_read_timed_out = 0;
+        alarm(1);
+        n = read(fd_dev, buf, sizeof(buf));
+        saved_errno = errno;
+        alarm(0);
+
+        if (n < 0 && (saved_errno == EINTR || saved_errno == EAGAIN)) {
+            if (++idle_rounds >= 20)
                 break;
             continue;
         }
-        if (!(pfd.revents & (POLLIN | POLLHUP | POLLERR)))
-            continue;
-
-        ssize_t n = read(fd_dev, buf, sizeof(buf));
         if (n <= 0)
             break;
 
@@ -132,6 +152,9 @@ static void collect_runtime_cal(int fd_dev)
         if (write(out, buf, (size_t)n) != n)
             break;
     }
+
+    alarm(0);
+    sigaction(SIGALRM, &old_sa, NULL);
     if (out >= 0)
         close(out);
 }

@@ -86,6 +86,20 @@ sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
 sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
 make ARCH=arm64 CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
 make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
+
+# Cross-built ARM64 binaries cannot be executed on the x86 GitHub runner.
+# Validate every applet used by /sbin/wifi from the resolved BusyBox config.
+for symbol in \
+  CONFIG_UDHCPC CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
+  CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
+  CONFIG_CHMOD CONFIG_MKDIR
+do
+  grep -qx "$symbol=y" .config || {
+    echo "Missing required BusyBox setting: $symbol=y" >&2
+    exit 1
+  }
+done
+cp .config "$OUT/busybox.config"
 cp busybox "$OUT/busybox.ds"
 popd >/dev/null
 
@@ -104,13 +118,6 @@ for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
   "$STRIP" --strip-all "$f"
   file "$f"
   file "$f" | grep -q 'statically linked'
-done
-
-for applet in udhcpc ip ifconfig ping grep sed tail pkill mount tee sleep cat chmod mkdir; do
-  "$OUT/busybox.ds" --list | grep -qx "$applet" || {
-    echo "Missing BusyBox applet: $applet" >&2
-    exit 1
-  }
 done
 
 sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
