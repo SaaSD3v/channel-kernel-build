@@ -10,6 +10,7 @@ CC=${CROSS}gcc
 STRIP=${CROSS}strip
 
 WPA_TAG=hostap_2_9
+OPENSSL_TAG=OpenSSL_1_1_1w
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
 LIBNL_TAG=libnl3_2_25
 
@@ -30,6 +31,20 @@ make -j"$(nproc)"
 make install
 popd >/dev/null
 
+# Static OpenSSL backend for SAE/WPA3 and OWE.  The internal hostap crypto
+# backend does not implement the generic EC/ECDH API required by these modes.
+git init "$SRC/openssl"
+git -C "$SRC/openssl" remote add origin https://github.com/openssl/openssl.git
+git -C "$SRC/openssl" fetch --depth=1 origin "refs/tags/$OPENSSL_TAG"
+git -C "$SRC/openssl" checkout --detach FETCH_HEAD
+pushd "$SRC/openssl" >/dev/null
+./Configure linux-aarch64 \
+  --cross-compile-prefix="$CROSS" \
+  no-shared \
+  no-tests
+make -j"$(nproc)" build_libs
+popd >/dev/null
+
 # Standalone upstream wpa_supplicant 2.9.  The Android/LineageOS fork from
 # the same generation includes the Android HIDL notification layer even when
 # built through the standalone Makefile; recovery has no HIDL framework.
@@ -40,8 +55,9 @@ git -C "$SRC/wpa" fetch --depth=1 origin "refs/tags/$WPA_TAG"
 git -C "$SRC/wpa" checkout --detach FETCH_HEAD
 cp "$ROOT/recovery-wifi/wpa_supplicant.config" "$SRC/wpa/wpa_supplicant/.config"
 cat >> "$SRC/wpa/wpa_supplicant/.config" <<EOF
-CFLAGS += -Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3
-LIBS += -L$PREFIX/lib
+CFLAGS += -Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3 -I$SRC/openssl/include
+LIBS += -L$PREFIX/lib -L$SRC/openssl
+LIBS_p += -L$SRC/openssl
 LIBS_c += -L$PREFIX/lib
 EOF
 
