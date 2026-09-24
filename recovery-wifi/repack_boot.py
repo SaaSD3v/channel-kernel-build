@@ -177,13 +177,12 @@ def newc_entry(name: str, data: bytes, ino: int, mode=0o100755, uid=0, gid=0, nl
     return bytes(out)
 
 
-def inject_payload(raw: bytes, payload: Path):
-    names, max_ino, trailer_start = parse_cpio(raw)
+def build_payload_archive(base_raw: bytes, payload: Path):
+    names, max_ino, _ = parse_cpio(base_raw)
 
     # The stock TeamWin ramdisk has /vendor/firmware but no /lib/firmware
-    # hierarchy. Add real directory entries before placing the PRONTO fallback
-    # config there; a newc pathname does not implicitly create its parents when
-    # the kernel expands the initramfs.
+    # hierarchy. The overlay archive therefore carries the missing directories
+    # explicitly before the PRONTO fallback config.
     directories = [
         "lib",
         "lib/firmware",
@@ -206,21 +205,20 @@ def inject_payload(raw: bytes, payload: Path):
         if dst in names:
             raise SystemExit(f"Refusing to overwrite existing ramdisk entry: {dst}")
 
-    injected = bytearray()
+    overlay = bytearray()
     ino = max_ino + 1
     total = 0
 
     for dst in directories:
         if dst in names:
             continue
-        injected += newc_entry(
+        overlay += newc_entry(
             dst, b"", ino,
             mode=stat.S_IFDIR | 0o755,
             nlink=2,
         )
-        names.add(dst)
         ino += 1
-        print(f"Inject directory: /{dst}")
+        print(f"Overlay directory: /{dst}")
 
     for src, dst, perms in mapping:
         path = payload / src
@@ -228,12 +226,16 @@ def inject_payload(raw: bytes, payload: Path):
             raise SystemExit(f"Missing Wi-Fi payload: {path}")
         data = path.read_bytes()
         total += len(data)
-        injected += newc_entry(dst, data, ino, mode=stat.S_IFREG | perms)
+        overlay += newc_entry(dst, data, ino, mode=stat.S_IFREG | perms)
         ino += 1
-        print(f"Inject: /{dst} ({len(data)} bytes, mode {perms:04o})")
+        print(f"Overlay file: /{dst} ({len(data)} bytes, mode {perms:04o})")
 
-    return raw[:trailer_start] + bytes(injected) + raw[trailer_start:], total
-
+    # A standalone newc archive needs its own trailer. The Channel 4.9 kernel's
+    # unpack_to_rootfs() explicitly loops over successive compressed archives,
+    # so this overlay can follow the untouched TeamWin ramdisk as a second
+    # compressed member.
+    overlay += newc_entry("TRAILER!!!", b"", ino, mode=0, nlink=1)
+    return bytes(overlay), total
 
 def unpack_boot(base: bytes):
     if base[:8] != ANDROID_MAGIC:
@@ -346,15 +348,17 @@ def main():
     if not raw.startswith(CPIO_MAGICS):
         raise SystemExit("Decompressed ramdisk is not a newc CPIO archive")
 
-    modified_raw, payload_size = inject_payload(raw, args.payload)
-    modified_ramdisk = compress_ramdisk(modified_raw, compression)
+    overlay_raw, payload_size = build_payload_archive(raw, args.payload)
+    overlay_ramdisk = compress_ramdisk(overlay_raw, compression)
 
-    # Verify our own result before touching the boot image.
-    verify_raw, verify_kind = decompress_ramdisk(modified_ramdisk)
+    # Verify the overlay independently. Most importantly, never recompress or
+    # mutate the TeamWin ramdisk: it remains the exact prefix of the final
+    # ramdisk, and the Wi-Fi archive is appended as a second compressed member.
+    verify_raw, verify_kind = decompress_ramdisk(overlay_ramdisk)
     if verify_kind != compression:
         raise SystemExit(
-            f"Ramdisk compression parameters changed: "
-            f"base={compression!r} repacked={verify_kind!r}"
+            f"Overlay compression parameters changed: "
+            f"base={compression!r} overlay={verify_kind!r}"
         )
     verify_names, _, _ = parse_cpio(verify_raw)
     required = {
@@ -366,7 +370,11 @@ def main():
     }
     missing = sorted(required - verify_names)
     if missing:
-        raise SystemExit(f"Ramdisk verification missing: {missing}")
+        raise SystemExit(f"Overlay verification missing: {missing}")
+
+    modified_ramdisk = parts["ramdisk"] + overlay_ramdisk
+    if modified_ramdisk[:len(parts["ramdisk"])] != parts["ramdisk"]:
+        raise SystemExit("Internal error: TeamWin ramdisk prefix was modified")
 
     output = build_boot(parts, new_kernel, modified_ramdisk)
     if len(output) > 33554432:
@@ -385,7 +393,9 @@ def main():
         print(f"LZMA dictionary      : {dict_size} bytes")
         print(f"LZMA lc/lp/pb        : {lc}/{lp}/{pb}")
     print(f"Base ramdisk size    : {parts['ramdisk_size']}")
+    print(f"Base ramdisk kept    : byte-for-byte")
     print(f"Wi-Fi payload raw    : {payload_size}")
+    print(f"Wi-Fi overlay packed : {len(overlay_ramdisk)}")
     print(f"New ramdisk size     : {len(modified_ramdisk)}")
     print(f"Recovery DTBO size   : {parts['recovery_dtbo_size']}")
     print(f"Final image size     : {len(output)}")
