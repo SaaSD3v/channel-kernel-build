@@ -1,0 +1,161 @@
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
+#define WCNSS_CTRL "/dev/wcnss_ctrl"
+#define WCNSS_DEVICE "/dev/wcnss_wlan"
+#define CAL_FILE "/tmp/ds-wifi/WCNSS_qcom_wlan_cal.bin"
+#define CAL_CHUNK (3 * 1024)
+#define WCNSS_USR_HAS_CAL_DATA 2
+
+static int wait_open(const char *path, int flags, int seconds)
+{
+    int fd;
+    while (seconds-- >= 0) {
+        fd = open(path, flags);
+        if (fd >= 0)
+            return fd;
+        if (errno != ENOENT && errno != ENXIO && errno != EAGAIN)
+            break;
+        sleep(1);
+    }
+    return -1;
+}
+
+static int send_cal_state(int has_cal)
+{
+    unsigned char msg[3];
+    int fd = wait_open(WCNSS_CTRL, O_WRONLY, 8);
+    if (fd < 0) {
+        fprintf(stderr, "wcnss-recovery: cannot open %s: %s\n",
+                WCNSS_CTRL, strerror(errno));
+        return -1;
+    }
+
+    msg[0] = (WCNSS_USR_HAS_CAL_DATA >> 8) & 0xff;
+    msg[1] = WCNSS_USR_HAS_CAL_DATA & 0xff;
+    msg[2] = has_cal ? 1 : 0;
+
+    if (write(fd, msg, sizeof(msg)) != (ssize_t)sizeof(msg)) {
+        fprintf(stderr, "wcnss-recovery: write %s failed: %s\n",
+                WCNSS_CTRL, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+static int write_cal_to_device(int fd_dev, const char *path)
+{
+    struct stat st;
+    int fd;
+    uint32_t size;
+    char buf[CAL_CHUNK];
+    ssize_t n;
+
+    if (stat(path, &st) < 0 || st.st_size <= 0 || st.st_size > 16 * 1024 * 1024)
+        return -1;
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+
+    size = (uint32_t)st.st_size;
+    if (write(fd_dev, &size, sizeof(size)) != (ssize_t)sizeof(size)) {
+        close(fd);
+        return -1;
+    }
+
+    while ((n = read(fd, buf, sizeof(buf))) > 0) {
+        char *p = buf;
+        ssize_t left = n;
+        while (left > 0) {
+            ssize_t w = write(fd_dev, p, (size_t)left);
+            if (w <= 0) {
+                close(fd);
+                return -1;
+            }
+            p += w;
+            left -= w;
+        }
+    }
+    close(fd);
+    return n < 0 ? -1 : 0;
+}
+
+static void collect_runtime_cal(int fd_dev)
+{
+    int out = -1;
+    int idle_rounds = 0;
+    char buf[CAL_CHUNK];
+
+    for (;;) {
+        struct pollfd pfd = { .fd = fd_dev, .events = POLLIN };
+        int pr = poll(&pfd, 1, 1000);
+        if (pr < 0) {
+            if (errno == EINTR)
+                continue;
+            break;
+        }
+        if (pr == 0) {
+            if (++idle_rounds >= 8)
+                break;
+            continue;
+        }
+        if (!(pfd.revents & (POLLIN | POLLHUP | POLLERR)))
+            continue;
+
+        ssize_t n = read(fd_dev, buf, sizeof(buf));
+        if (n <= 0)
+            break;
+
+        idle_rounds = 0;
+        if (out < 0) {
+            out = open(CAL_FILE, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+            if (out < 0)
+                break;
+        }
+        if (write(out, buf, (size_t)n) != n)
+            break;
+    }
+    if (out >= 0)
+        close(out);
+}
+
+int main(void)
+{
+    struct stat st;
+    int has_cal = (stat(CAL_FILE, &st) == 0 && st.st_size > 0);
+
+    fprintf(stderr, "wcnss-recovery: signaling has_cal=%d\n", has_cal);
+    if (send_cal_state(has_cal) < 0)
+        return 1;
+
+    int fd_dev = wait_open(WCNSS_DEVICE, O_RDWR | O_NONBLOCK, 8);
+    if (fd_dev < 0) {
+        fprintf(stderr, "wcnss-recovery: cannot open %s: %s\n",
+                WCNSS_DEVICE, strerror(errno));
+        return 1;
+    }
+
+    if (has_cal) {
+        int flags = fcntl(fd_dev, F_GETFL, 0);
+        if (flags >= 0)
+            fcntl(fd_dev, F_SETFL, flags & ~O_NONBLOCK);
+        if (write_cal_to_device(fd_dev, CAL_FILE) < 0)
+            fprintf(stderr, "wcnss-recovery: cached calibration write failed\n");
+        if (flags >= 0)
+            fcntl(fd_dev, F_SETFL, flags | O_NONBLOCK);
+    }
+
+    collect_runtime_cal(fd_dev);
+    close(fd_dev);
+    return 0;
+}

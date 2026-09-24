@@ -1,0 +1,388 @@
+#!/sbin/sh
+# Recovery Wi-Fi controller for Motorola channel (Moto G7 Play / SDM632).
+# Self-contained userspace: static wpa_supplicant + BusyBox + WCNSS helper.
+
+PATH=/sbin:/system/bin:/vendor/bin
+export PATH
+
+BB=/sbin/busybox.ds
+WPA=/sbin/wpa_supplicant.ds
+WPACLI=/sbin/wpa_cli.ds
+WPAPASS=/sbin/wpa_passphrase.ds
+WCNSS=/sbin/wcnss-recovery
+STATE=/tmp/ds-wifi
+CTRL="$STATE/ctrl"
+CONF="$STATE/wpa_supplicant.conf"
+LOG="$STATE/wpa_supplicant.log"
+PREPLOG="$STATE/prepare.log"
+UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
+IFACE=${WIFI_IFACE:-wlan0}
+
+mkdir_state() {
+    "$BB" mkdir -p "$STATE" "$CTRL" /vendor /firmware /persist /lib/firmware 2>/dev/null || true
+    "$BB" chmod 700 "$STATE" 2>/dev/null || true
+}
+
+log() {
+    mkdir_state
+    echo "[wifi] $*" | "$BB" tee -a "$PREPLOG"
+}
+
+is_mounted() {
+    "$BB" grep -q " $1 " /proc/mounts 2>/dev/null
+}
+
+slot_suffix() {
+    s="$(getprop ro.boot.slot_suffix 2>/dev/null)"
+    case "$s" in
+        _a|_b) printf '%s' "$s" ;;
+        *)
+            s="$(getprop ro.boot.slot 2>/dev/null)"
+            case "$s" in a|b) printf '_%s' "$s" ;; *) printf '' ;; esac
+            ;;
+    esac
+}
+
+find_block() {
+    base="$1"
+    slot="$(slot_suffix)"
+    for n in "${base}${slot}" "$base"; do
+        [ -n "$n" ] || continue
+        for root in \
+            /dev/block/bootdevice/by-name \
+            /dev/block/platform/soc/7824900.sdhci/by-name \
+            /dev/block/platform/soc/c0c4000.sdhci/by-name
+        do
+            [ -e "$root/$n" ] && { echo "$root/$n"; return 0; }
+        done
+    done
+    return 1
+}
+
+mount_partition() {
+    target="$1"
+    part="$2"
+    [ -d "$target" ] || "$BB" mkdir -p "$target"
+    is_mounted "$target" && return 0
+    dev="$(find_block "$part" 2>/dev/null || true)"
+    [ -n "$dev" ] || return 1
+    # Let mount auto-detect first; recovery partitions differ between firmware revisions.
+    "$BB" mount -o ro "$dev" "$target" 2>/dev/null || \
+    "$BB" mount -t ext4 -o ro "$dev" "$target" 2>/dev/null || \
+    "$BB" mount -t vfat -o ro "$dev" "$target" 2>/dev/null
+}
+
+feed_pending_firmware() {
+    # CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y in the channel kernel. If a
+    # built-in driver requested firmware before /vendor was mounted, satisfy
+    # any still-pending request directly through firmware_class sysfs.
+    for req in /sys/class/firmware/*; do
+        [ -e "$req/loading" ] || continue
+        name="${req##*/}"
+        src=""
+        for p in \
+            "/vendor/firmware/$name" \
+            "/vendor/firmware/wlan/prima/$name" \
+            "/firmware/image/$name" \
+            "/firmware/$name" \
+            "/persist/$name"
+        do
+            [ -f "$p" ] && { src="$p"; break; }
+        done
+        [ -n "$src" ] || continue
+        log "feeding pending firmware $name from $src"
+        if echo 1 > "$req/loading" 2>/dev/null; then
+            "$BB" cat "$src" > "$req/data" 2>/dev/null || true
+            echo 0 > "$req/loading" 2>/dev/null || true
+        fi
+    done
+}
+
+prepare() {
+    mkdir_state
+    : > "$PREPLOG"
+
+    mount_partition /vendor vendor && log "vendor mounted" || log "vendor mount unavailable"
+    mount_partition /firmware modem && log "firmware/modem mounted" || log "firmware mount unavailable"
+    mount_partition /persist persist && log "persist mounted" || log "persist mount unavailable"
+
+    # request_firmware() in this 4.9 tree searches firmware_class.path first.
+    if [ -w /sys/module/firmware_class/parameters/path ]; then
+        if [ -d /vendor/firmware ]; then
+            echo /vendor/firmware > /sys/module/firmware_class/parameters/path 2>/dev/null || true
+            log "firmware_class.path=/vendor/firmware"
+        elif [ -d /firmware/image ]; then
+            echo /firmware/image > /sys/module/firmware_class/parameters/path 2>/dev/null || true
+            log "firmware_class.path=/firmware/image"
+        fi
+    fi
+
+    # Also expose the traditional Linux firmware path used by firmware_class.
+    if [ -d /vendor/firmware ]; then
+        "$BB" mount --bind /vendor/firmware /lib/firmware 2>/dev/null || true
+    fi
+
+    feed_pending_firmware
+
+    # Unblock radio switches if recovery/kernel exposed rfkill.
+    for state in /sys/class/rfkill/rfkill*/state; do
+        [ -e "$state" ] || continue
+        echo 1 > "$state" 2>/dev/null || true
+    done
+
+    # Minimal WCNSS userspace handshake. It intentionally avoids modem/QMI and
+    # stores any runtime calibration only under /tmp.
+    if [ -x "$WCNSS" ] && { [ -e /dev/wcnss_ctrl ] || [ -e /dev/wcnss_wlan ]; }; then
+        "$WCNSS" >> "$PREPLOG" 2>&1 &
+        WCNSS_PID=$!
+        log "wcnss recovery helper started pid=$WCNSS_PID"
+        "$BB" sleep 1
+    fi
+
+    # Critical for this kernel: PRONTO_WLAN is built-in and hdd_module_init()
+    # deliberately delays hdd_driver_init() until fwpath is changed by userspace.
+    if [ -w /sys/module/wlan/parameters/fwpath ]; then
+        echo sta > /sys/module/wlan/parameters/fwpath 2>>"$PREPLOG" || true
+        log "requested PRONTO WLAN STA initialization through fwpath"
+    fi
+
+    # Wait for the netdev created by the delayed driver init.
+    i=0
+    while [ "$i" -lt 20 ]; do
+        [ -d "/sys/class/net/$IFACE" ] && break
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+
+    if [ ! -d "/sys/class/net/$IFACE" ]; then
+        log "$IFACE did not appear"
+        return 1
+    fi
+
+    "$BB" ip link set "$IFACE" up 2>>"$PREPLOG" || true
+    log "$IFACE is present"
+    return 0
+}
+
+stop_supplicant() {
+    if [ -f "$STATE/wpa.pid" ]; then
+        pid="$(cat "$STATE/wpa.pid" 2>/dev/null)"
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+        rm -f "$STATE/wpa.pid"
+    fi
+    "$BB" pkill -f '/sbin/wpa_supplicant.ds' 2>/dev/null || true
+    "$BB" sleep 1
+}
+
+start_supplicant() {
+    [ -f "$CONF" ] || {
+        cat > "$CONF" <<'EOF'
+ctrl_interface=/tmp/ds-wifi/ctrl
+update_config=1
+ap_scan=1
+EOF
+    }
+
+    stop_supplicant
+    rm -rf "$CTRL"
+    "$BB" mkdir -p "$CTRL"
+    : > "$LOG"
+
+    # nl80211 is the native channel configuration; wext is retained as fallback
+    # for Qualcomm's legacy qcwcn/Pronto stack.
+    "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D nl80211,wext \
+        -c "$CONF" -C "$CTRL" -f "$LOG" || {
+        log "nl80211,wext startup failed; retrying wext only"
+        "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D wext \
+            -c "$CONF" -C "$CTRL" -f "$LOG"
+    }
+}
+
+wait_connected() {
+    i=0
+    while [ "$i" -lt 30 ]; do
+        state="$($WPACLI -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^wpa_state=//p')"
+        [ "$state" = "COMPLETED" ] && return 0
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+do_dhcp() {
+    "$BB" udhcpc -i "$IFACE" -s "$UDHCPC_SCRIPT" -p "$STATE/udhcpc.pid" \
+        -t 8 -T 3 -A 1 -q
+}
+
+make_psk_conf() {
+    ssid="$1"
+    pass="$2"
+    {
+        echo 'ctrl_interface=/tmp/ds-wifi/ctrl'
+        echo 'update_config=1'
+        echo 'ap_scan=1'
+        "$WPAPASS" "$ssid" "$pass" | "$BB" sed '/^[[:space:]]*#psk=/d'
+    } > "$CONF"
+    "$BB" chmod 600 "$CONF"
+}
+
+escape_wpa_string() {
+    # Escape backslash and quote for wpa_supplicant configuration strings.
+    printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+make_open_conf() {
+    ssid="$(escape_wpa_string "$1")"
+    cat > "$CONF" <<EOF
+ctrl_interface=/tmp/ds-wifi/ctrl
+update_config=1
+ap_scan=1
+network={
+    ssid="$ssid"
+    key_mgmt=NONE
+}
+EOF
+    "$BB" chmod 600 "$CONF"
+}
+
+make_sae_conf() {
+    ssid="$(escape_wpa_string "$1")"
+    pass="$(escape_wpa_string "$2")"
+    cat > "$CONF" <<EOF
+ctrl_interface=/tmp/ds-wifi/ctrl
+update_config=1
+ap_scan=1
+network={
+    ssid="$ssid"
+    key_mgmt=SAE
+    sae_password="$pass"
+    ieee80211w=2
+}
+EOF
+    "$BB" chmod 600 "$CONF"
+}
+
+cmd_up() {
+    prepare || {
+        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        return 1
+    }
+    start_supplicant
+    echo "Wi-Fi ready on $IFACE"
+}
+
+cmd_scan() {
+    [ -S "$CTRL/$IFACE" ] || cmd_up || return 1
+    "$WPACLI" -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || true
+    "$BB" sleep 3
+    "$WPACLI" -p "$CTRL" -i "$IFACE" scan_results
+}
+
+cmd_connect() {
+    [ "$#" -ge 2 ] || { echo 'usage: wifi connect "SSID" "PASSWORD"'; return 2; }
+    prepare || return 1
+    make_psk_conf "$1" "$2"
+    start_supplicant || return 1
+    if ! wait_connected; then
+        echo "Association timed out. Run: wifi status; wifi logs"
+        return 1
+    fi
+    do_dhcp || return 1
+    cmd_status
+}
+
+cmd_connect_open() {
+    [ "$#" -ge 1 ] || { echo 'usage: wifi connect-open "SSID"'; return 2; }
+    prepare || return 1
+    make_open_conf "$1"
+    start_supplicant || return 1
+    if ! wait_connected; then
+        echo "Association timed out. Run: wifi status; wifi logs"
+        return 1
+    fi
+    do_dhcp || return 1
+    cmd_status
+}
+
+cmd_connect_sae() {
+    [ "$#" -ge 2 ] || { echo 'usage: wifi connect-sae "SSID" "PASSWORD"'; return 2; }
+    prepare || return 1
+    make_sae_conf "$1" "$2"
+    start_supplicant || return 1
+    if ! wait_connected; then
+        echo "SAE association timed out. Run: wifi status; wifi logs"
+        return 1
+    fi
+    do_dhcp || return 1
+    cmd_status
+}
+
+cmd_status() {
+    echo "--- supplicant ---"
+    "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
+    echo "--- address ---"
+    "$BB" ip addr show dev "$IFACE" 2>/dev/null || true
+    echo "--- route ---"
+    "$BB" ip route 2>/dev/null || true
+    echo "--- DNS ---"
+    cat /etc/resolv.conf 2>/dev/null || true
+}
+
+cmd_down() {
+    stop_supplicant
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    "$BB" ip link set "$IFACE" down 2>/dev/null || true
+    echo "Wi-Fi stopped"
+}
+
+cmd_logs() {
+    echo "===== recovery Wi-Fi prepare ====="
+    cat "$PREPLOG" 2>/dev/null || true
+    echo "===== wpa_supplicant ====="
+    "$BB" tail -n 160 "$LOG" 2>/dev/null || true
+    echo "===== kernel WLAN/WCNSS ====="
+    dmesg 2>/dev/null | "$BB" grep -iE 'wlan|wcnss|pronto|firmware|cfg80211|rfkill' | "$BB" tail -n 200 || true
+    echo "===== nodes ====="
+    ls -l /dev/wcnss* /sys/module/wlan/parameters 2>/dev/null || true
+    echo "===== mounts ====="
+    "$BB" grep -E ' /(vendor|firmware|persist|lib/firmware) ' /proc/mounts 2>/dev/null || true
+}
+
+usage() {
+    cat <<'EOF'
+Recovery Wi-Fi (Motorola channel)
+
+  wifi prepare
+  wifi up
+  wifi scan
+  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK
+  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
+  wifi connect-open "SSID"
+  wifi dhcp
+  wifi status
+  wifi ping HOST
+  wifi disconnect
+  wifi down
+  wifi logs
+EOF
+}
+
+mkdir_state
+cmd="${1:-help}"
+shift 2>/dev/null || true
+case "$cmd" in
+    prepare) prepare ;;
+    up) cmd_up ;;
+    scan) cmd_scan ;;
+    connect) cmd_connect "$@" ;;
+    connect-sae) cmd_connect_sae "$@" ;;
+    connect-open) cmd_connect_open "$@" ;;
+    dhcp) do_dhcp ;;
+    status) cmd_status ;;
+    ping) [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; exit 2; }; "$BB" ping -c 4 "$1" ;;
+    disconnect) "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect 2>/dev/null || true ;;
+    down) cmd_down ;;
+    logs) cmd_logs ;;
+    help|-h|--help) usage ;;
+    *) echo "Unknown command: $cmd"; usage; exit 2 ;;
+esac
