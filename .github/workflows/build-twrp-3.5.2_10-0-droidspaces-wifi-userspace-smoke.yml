@@ -1,0 +1,45 @@
+name: Smoke Channel Recovery Wi-Fi Userspace
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - twrp-3.5.2_10-0-droidspaces-wifi
+    paths:
+      - .github/workflows/build-twrp-3.5.2_10-0-droidspaces-wifi-userspace-smoke.yml
+      - recovery-wifi/build-userspace.sh
+      - recovery-wifi/wpa_supplicant.config
+      - recovery-wifi/wcnss-recovery.c
+      - recovery-wifi/wifi
+      - recovery-wifi/wifi-udhcpc.script
+
+permissions:
+  contents: read
+
+jobs:
+  userspace:
+    name: Recovery Wi-Fi userspace smoke build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v4
+
+      - name: Install userspace build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git ca-certificates autoconf automake libtool pkg-config file \
+            make gcc-aarch64-linux-gnu
+
+      - name: Build and verify static recovery Wi-Fi userspace
+        run: |
+          set -euo pipefail
+          chmod +x recovery-wifi/build-userspace.sh
+          recovery-wifi/build-userspace.sh
+
+      - name: Upload smoke artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: channel-recovery-wifi-userspace-smoke
+          path: recovery-wifi/out/
+          if-no-files-found: error
