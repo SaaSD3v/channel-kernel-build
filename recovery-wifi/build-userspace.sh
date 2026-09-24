@@ -68,7 +68,7 @@ pushd "$SRC/busybox" >/dev/null
 make ARCH=arm64 CROSS_COMPILE="$CROSS" defconfig
 sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
 sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
-yes '' | make ARCH=arm64 CROSS_COMPILE="$CROSS" oldconfig >/dev/null
+make ARCH=arm64 CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
 make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
 cp busybox "$OUT/busybox.ds"
 popd >/dev/null
