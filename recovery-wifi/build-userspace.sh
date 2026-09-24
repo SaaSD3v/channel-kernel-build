@@ -9,7 +9,7 @@ CROSS=aarch64-linux-gnu-
 CC=${CROSS}gcc
 STRIP=${CROSS}strip
 
-WPA_COMMIT=8d114c93c83571a574883798865ed68d4caddfba
+WPA_TAG=hostap_2_9
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
 LIBNL_TAG=libnl3_2_25
 
@@ -30,10 +30,13 @@ make -j"$(nproc)"
 make install
 popd >/dev/null
 
-# Android 10 / LineageOS 17.1 wpa_supplicant matching the TWRP 10.0 channel generation.
+# Standalone upstream wpa_supplicant 2.9.  The Android/LineageOS fork from
+# the same generation includes the Android HIDL notification layer even when
+# built through the standalone Makefile; recovery has no HIDL framework.
+# Use the upstream hostap tag instead so the binary is genuinely self-contained.
 git init "$SRC/wpa"
-git -C "$SRC/wpa" remote add origin https://github.com/LineageOS/android_external_wpa_supplicant_8.git
-git -C "$SRC/wpa" fetch --depth=1 origin "$WPA_COMMIT"
+git -C "$SRC/wpa" remote add origin https://git.w1.fi/hostap.git
+git -C "$SRC/wpa" fetch --depth=1 origin "refs/tags/$WPA_TAG"
 git -C "$SRC/wpa" checkout --detach FETCH_HEAD
 cp "$ROOT/recovery-wifi/wpa_supplicant.config" "$SRC/wpa/wpa_supplicant/.config"
 cat >> "$SRC/wpa/wpa_supplicant/.config" <<EOF
