@@ -136,6 +136,15 @@ prepare() {
         echo 1 > "$state" 2>/dev/null || true
     done
 
+    # fwpath is a restart trigger in this built-in PRONTO driver. Once the
+    # netdev exists, do not touch fwpath or reopen the one-shot WCNSS control
+    # node; just make sure the existing interface is up.
+    if [ -d "/sys/class/net/$IFACE" ]; then
+        "$BB" ip link set "$IFACE" up 2>>"$PREPLOG" || true
+        log "$IFACE already initialized; preserving running driver"
+        return 0
+    fi
+
     # Minimal WCNSS userspace handshake. It intentionally avoids modem/QMI and
     # stores any runtime calibration only under /tmp.
     if [ -x "$WCNSS" ] && { [ -e /dev/wcnss_ctrl ] || [ -e /dev/wcnss_wlan ]; }; then
