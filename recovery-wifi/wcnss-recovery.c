@@ -43,9 +43,16 @@ static int send_cal_state(int has_cal)
     msg[1] = WCNSS_USR_HAS_CAL_DATA & 0xff;
     msg[2] = has_cal ? 1 : 0;
 
-    if (write(fd, msg, sizeof(msg)) != (ssize_t)sizeof(msg)) {
-        fprintf(stderr, "wcnss-recovery: write %s failed: %s\n",
-                WCNSS_CTRL, strerror(errno));
+    /*
+     * This exact channel 4.9 WCNSS driver returns copy_from_user()'s
+     * result from wcnss_ctrl_write(): 0 means the 3-byte command was
+     * accepted successfully, while some related trees return count.
+     * Accept both ABI variants.
+     */
+    ssize_t wr = write(fd, msg, sizeof(msg));
+    if (wr != 0 && wr != (ssize_t)sizeof(msg)) {
+        fprintf(stderr, "wcnss-recovery: write %s failed: rc=%zd errno=%s\n",
+                WCNSS_CTRL, wr, strerror(errno));
         close(fd);
         return -1;
     }
