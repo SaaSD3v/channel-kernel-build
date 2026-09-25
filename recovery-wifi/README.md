@@ -48,6 +48,39 @@ Test connectivity:
 wifi ping 1.1.1.1
 ```
 
+Start a local WPA2 recovery hotspot (2.4 GHz, channel 6 by default):
+
+```sh
+wifi hotspot start "Channel-Recovery" "recovery123"
+```
+
+Use a specific 2.4 GHz channel from 1 through 11:
+
+```sh
+wifi hotspot start "Channel-Recovery" "recovery123" 11
+```
+
+The successful hotspot configuration is saved root-only in
+`/data/local/wifi/hotspot.conf`, so later boots can reuse it with:
+
+```sh
+wifi hotspot start
+```
+
+Inspect the AP, connected/seen clients, or stop it and return to client mode:
+
+```sh
+wifi hotspot status
+wifi hotspot clients
+wifi hotspot stop
+```
+
+The recovery hotspot uses `192.168.43.1/24` and serves DHCP leases from
+`192.168.43.20` through `192.168.43.60`. It is currently a local recovery
+LAN, not an Internet/NAT tethering service. STA and AP are intentionally
+exclusive in this first implementation; stopping the hotspot brings the
+existing client Wi-Fi stack back up.
+
 ## Commands
 
 | Command | Purpose |
@@ -58,6 +91,11 @@ wifi ping 1.1.1.1
 | `wifi connect "SSID" "PASSWORD"` | Connect to WPA/WPA2-PSK and obtain an IP address through DHCP. |
 | `wifi connect-sae "SSID" "PASSWORD"` | Connect to WPA3-SAE and obtain an IP address through DHCP. |
 | `wifi connect-open "SSID"` | Connect to an open network and obtain an IP address through DHCP. |
+| `wifi hotspot start "SSID" "PASSWORD" [CHANNEL]` | Start a WPA2-PSK 2.4 GHz AP. Channel defaults to 6; valid values are 1-11. A successful configuration is persisted. |
+| `wifi hotspot start` | Start the hotspot using the saved AP configuration. |
+| `wifi hotspot status` | Show AP state, interface address and DHCP-server status. |
+| `wifi hotspot clients` | Show the AP neighbor/client table. |
+| `wifi hotspot stop` | Stop AP/DHCP and restore the client Wi-Fi stack. |
 | `wifi dhcp` | Request/refresh IPv4 configuration through DHCP. |
 | `wifi status` | Show supplicant state, interface addresses, routes and DNS. |
 | `wifi ping HOST` | Ping a host through the recovery Wi-Fi connection. |
@@ -96,9 +134,9 @@ The controller forces `TMPDIR=/tmp` so it does not depend on encrypted or unavai
 
 ## Driver bring-up
 
-For channel, the recovery path stages the stock Motorola WCNSS/PRONTO firmware and calibration inputs before triggering the WLAN driver. The helper performs the WCNSS recovery handshake and the controller then requests PRONTO STA initialization through the kernel `fwpath` parameter.
+For channel, the recovery path stages the stock Motorola WCNSS/PRONTO firmware and calibration inputs before triggering the WLAN driver. The helper performs the WCNSS recovery handshake and the controller writes the built-in driver's `fwpath` parameter once to trigger PRONTO initialization. In this kernel the value itself is not a STA/AP selector; changing `fwpath` after initialization would restart the WLAN driver.
 
-Once `wlan0` exists, repeated `wifi prepare` calls preserve the already-running driver rather than retriggering the one-shot WCNSS control path.
+Once `wlan0` exists, repeated `wifi prepare` calls preserve the already-running driver rather than retriggering the one-shot WCNSS control path. Hotspot mode therefore uses the driver's advertised cfg80211/nl80211 AP support to switch `wlan0` dynamically instead of restarting PRONTO through `fwpath` or `con_mode`.
 
 ## Verified hardware behavior
 
@@ -185,3 +223,16 @@ network, so multiple known networks survive recovery reboots and can
 auto-associate without re-entering their password. If `/data` is unavailable,
 a successful connection remains usable for the current recovery session but is
 not persisted.
+
+
+## Hotspot validation state
+
+The hotspot implementation is kept separate from the already validated client
+Wi-Fi path. CI validates the shell controller, builds `wpa_supplicant` with
+`CONFIG_AP=y`, includes BusyBox `udhcpd`, stages the same compact internal
+initramfs payload, and rebuilds the TWRP image.
+
+Physical-device validation still needs to confirm beacon visibility, WPA2
+association, DHCP lease delivery, client reachability to `192.168.43.1`, and
+the AP-to-STA restore path. Until that test is completed, the client Wi-Fi
+results listed above remain the hardware-validated baseline.
