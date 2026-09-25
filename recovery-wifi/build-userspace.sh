@@ -75,6 +75,25 @@ cp wpa_cli "$OUT/wpa_cli.ds"
 cp wpa_passphrase "$OUT/wpa_passphrase.ds"
 popd >/dev/null
 
+# Dedicated static hostapd for recovery SoftAP. The channel PRONTO driver has
+# a real cfg80211 SoftAP path (NL80211_IFTYPE_AP + start_ap/stop_ap), so keep
+# AP control separate from the already validated station supplicant.
+cp "$ROOT/recovery-wifi/hostapd.config" "$SRC/wpa/hostapd/.config"
+cat >> "$SRC/wpa/hostapd/.config" <<EOF
+CFLAGS += -Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3
+LIBS += -L$PREFIX/lib
+EOF
+
+pushd "$SRC/wpa/hostapd" >/dev/null
+make clean || true
+make -j"$(nproc)" \
+  CC="$CC" \
+  PKG_CONFIG="pkg-config --static" \
+  LDFLAGS='-static -Wl,--gc-sections' \
+  hostapd
+cp hostapd "$OUT/hostapd.ds"
+popd >/dev/null
+
 # BusyBox supplies DHCP/network tooling without depending on TWRP Bionic.
 git init "$SRC/busybox"
 git -C "$SRC/busybox" remote add origin https://github.com/mirror/busybox.git
@@ -126,11 +145,11 @@ cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
 chmod 0755 \
   "$OUT/wifi" "$OUT/wifi-udhcpc.script" \
   "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/busybox.ds" "$OUT/wcnss-recovery"
+  "$OUT/hostapd.ds" "$OUT/busybox.ds" "$OUT/wcnss-recovery"
 chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
 
 for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/busybox.ds" "$OUT/wcnss-recovery"; do
+         "$OUT/hostapd.ds" "$OUT/busybox.ds" "$OUT/wcnss-recovery"; do
   "$STRIP" --strip-all "$f"
   file "$f"
   file "$f" | grep -q 'statically linked'

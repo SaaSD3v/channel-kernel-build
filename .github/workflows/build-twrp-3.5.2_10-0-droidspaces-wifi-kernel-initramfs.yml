@@ -34,7 +34,9 @@ jobs:
           set -euo pipefail
           /bin/sh -n recovery-wifi/wifi
           bash -n recovery-wifi/build-userspace.sh
-          grep -qx 'CONFIG_AP=y' recovery-wifi/wpa_supplicant.config
+          ! grep -qx 'CONFIG_AP=y' recovery-wifi/wpa_supplicant.config
+          grep -qx 'CONFIG_DRIVER_NL80211=y' recovery-wifi/hostapd.config
+          grep -qx 'CONFIG_LIBNL32=y' recovery-wifi/hostapd.config
           grep -q 'CONFIG_UDHCPD' recovery-wifi/build-userspace.sh
           grep -q '^cmd_hotspot_start()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_stop()' recovery-wifi/wifi
@@ -205,6 +207,7 @@ jobs:
           install -m 0755 recovery-wifi/out/wifi "$ROOT/sbin/wifi"
           install -m 0755 recovery-wifi/out/busybox.ds "$ROOT/sbin/busybox.ds"
           install -m 0755 recovery-wifi/out/wpa_supplicant.ds "$ROOT/sbin/wpa_supplicant.ds"
+          install -m 0755 recovery-wifi/out/hostapd.ds "$ROOT/sbin/hostapd.ds"
           install -m 0755 recovery-wifi/out/wpa_cli.ds "$ROOT/sbin/wpa_cli.ds"
           install -m 0755 recovery-wifi/out/wpa_passphrase.ds "$ROOT/sbin/wpa_passphrase.ds"
           install -m 0755 recovery-wifi/out/wifi-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
@@ -457,7 +460,7 @@ jobs:
             exit 1
           fi
           for path in \
-            sbin/wifi sbin/busybox.ds sbin/wpa_supplicant.ds sbin/wpa_cli.ds \
+            sbin/wifi sbin/busybox.ds sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/wpa_cli.ds \
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery \
             lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
           do
@@ -689,6 +692,7 @@ jobs:
             twrp-droidspaces.sha256
             recovery-wifi/out/SHA256SUMS
             recovery-wifi/wifi
+            recovery-wifi/hostapd.config
             recovery-wifi/wifi-udhcpc.script
             recovery-wifi/WCNSS_qcom_cfg.ini
           if-no-files-found: error

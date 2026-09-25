@@ -1,6 +1,6 @@
 #!/sbin/sh
 # Recovery Wi-Fi controller for Motorola channel (Moto G7 Play / SDM632).
-# Self-contained userspace: static wpa_supplicant + BusyBox + WCNSS helper.
+# Self-contained userspace: static wpa_supplicant + hostapd + BusyBox + WCNSS helper.
 
 PATH=/sbin:/system/bin:/vendor/bin
 export PATH
@@ -16,6 +16,7 @@ BB=/sbin/busybox.ds
 WPA=/sbin/wpa_supplicant.ds
 WPACLI=/sbin/wpa_cli.ds
 WPAPASS=/sbin/wpa_passphrase.ds
+HOSTAPD=/sbin/hostapd.ds
 WCNSS=/sbin/wcnss-recovery
 STATE=/tmp/ds-wifi
 STOCK_VENDOR="$STATE/vendor-stock"
@@ -33,6 +34,8 @@ PERSIST_HOTSPOT=$PERSIST_DIR/hotspot.conf
 HOTSPOT_CONF=$STATE/hotspot.conf
 HOTSPOT_MARKER=$STATE/hotspot.active
 HOTSPOT_LOG=$STATE/hotspot.log
+HOTSPOT_HOSTAPD_PID=$STATE/hostapd.pid
+HOTSPOT_CTRL=$STATE/hostapd-ctrl
 HOTSPOT_DHCP=$STATE/udhcpd.conf
 HOTSPOT_LEASES=$STATE/udhcpd.leases
 HOTSPOT_PID=$STATE/udhcpd.pid
@@ -446,8 +449,32 @@ stop_udhcpd() {
     "$BB" rm -f "$HOTSPOT_PID" 2>/dev/null || true
 }
 
+stop_hostapd() {
+    pid=""
+    [ -f "$HOTSPOT_HOSTAPD_PID" ] && pid="$(cat "$HOTSPOT_HOSTAPD_PID" 2>/dev/null)"
+
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                exe="$("$BB" readlink "/proc/$pid/exe" 2>/dev/null || true)"
+                case "$exe" in
+                    */hostapd.ds)
+                        kill "$pid" 2>/dev/null || true
+                        "$BB" sleep 1
+                        ;;
+                esac
+            fi
+            ;;
+    esac
+
+    "$BB" rm -f "$HOTSPOT_HOSTAPD_PID" 2>/dev/null || true
+    "$BB" rm -rf "$HOTSPOT_CTRL" 2>/dev/null || true
+}
+
 clear_hotspot_state() {
     stop_udhcpd
+    stop_hostapd
     if [ -f "$HOTSPOT_MARKER" ]; then
         "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
         "$BB" rm -f "$HOTSPOT_MARKER" 2>/dev/null || true
@@ -661,17 +688,6 @@ commit_validated_network() {
     return 0
 }
 
-channel_to_frequency() {
-    case "$1" in
-        1|2|3|4|5|6|7|8|9|10|11)
-            printf '%s\n' "$((2407 + ($1 * 5)))"
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
 make_hotspot_conf() {
     ssid="$1"
     pass="$2"
@@ -686,38 +702,36 @@ make_hotspot_conf() {
         echo "Hotspot password must contain 8-63 characters." >&2
         return 1
     }
-
-    freq="$(channel_to_frequency "$channel")" || {
-        echo "Hotspot channel must be between 1 and 11." >&2
+    case "$channel" in
+        1|2|3|4|5|6|7|8|9|10|11) ;;
+        *)
+            echo "Hotspot channel must be between 1 and 11." >&2
+            return 1
+            ;;
+    esac
+    if printf '%s' "$ssid" | "$BB" grep -q '[[:cntrl:]]' ||
+       printf '%s' "$pass" | "$BB" grep -q '[[:cntrl:]]'; then
+        echo "Hotspot SSID/password cannot contain control characters." >&2
         return 1
-    }
+    fi
 
     {
-        printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
-        printf '%s\n' 'update_config=0'
-        # nl80211 expects ap_scan=1. AP mode is still selected by mode=2
-        # inside the network block.
-        printf '%s\n' 'ap_scan=1'
-        "$WPAPASS" "$ssid" "$pass" 2>/dev/null |
-            "$BB" sed '/^[[:space:]]*#psk=/d' |
-            "$BB" awk -v freq="$freq" '
-                /^[[:space:]]*network[[:space:]]*=/ {
-                    print
-                    print "    mode=2"
-                    print "    frequency=" freq
-                    print "    key_mgmt=WPA-PSK"
-                    print "    proto=RSN"
-                    print "    pairwise=CCMP"
-                    print "    group=CCMP"
-                    next
-                }
-                { print }
-            '
+        printf 'interface=%s\n' "$IFACE"
+        printf '%s\n' 'driver=nl80211'
+        printf 'ctrl_interface=%s\n' "$HOTSPOT_CTRL"
+        printf 'ssid=%s\n' "$ssid"
+        printf '%s\n' 'hw_mode=g'
+        printf 'channel=%s\n' "$channel"
+        printf '%s\n' 'auth_algs=1'
+        printf '%s\n' 'wpa=2'
+        printf '%s\n' 'wpa_key_mgmt=WPA-PSK'
+        printf '%s\n' 'rsn_pairwise=CCMP'
+        printf 'wpa_passphrase=%s\n' "$pass"
     } > "$target" || return 1
 
     "$BB" chmod 600 "$target" 2>/dev/null || true
-    "$BB" grep -q '^[[:space:]]*mode=2[[:space:]]*$' "$target" 2>/dev/null || return 1
-    "$BB" grep -q '^[[:space:]]*psk=' "$target" 2>/dev/null || return 1
+    "$BB" grep -qx 'driver=nl80211' "$target" 2>/dev/null || return 1
+    "$BB" grep -qx 'wpa=2' "$target" 2>/dev/null || return 1
 }
 
 persist_hotspot_conf() {
@@ -740,38 +754,44 @@ load_hotspot_conf() {
     ensure_persistent_store || return 1
     [ -f "$PERSIST_HOTSPOT" ] || return 1
     "$BB" grep -qx '# dswifi-hotspot=1' "$PERSIST_HOTSPOT" 2>/dev/null || return 1
-    "$BB" grep -q '^[[:space:]]*mode=2[[:space:]]*$' "$PERSIST_HOTSPOT" 2>/dev/null || return 1
+    "$BB" grep -qx 'driver=nl80211' "$PERSIST_HOTSPOT" 2>/dev/null || return 1
+    "$BB" grep -qx 'wpa=2' "$PERSIST_HOTSPOT" 2>/dev/null || return 1
     "$BB" cp "$PERSIST_HOTSPOT" "$HOTSPOT_CONF" || return 1
     "$BB" chmod 600 "$HOTSPOT_CONF" 2>/dev/null || true
 }
 
-start_hotspot_supplicant() {
+start_hostapd() {
     clear_hotspot_state
     stop_supplicant
     deconfigure_network
 
-    "$BB" rm -rf "$CTRL"
-    "$BB" mkdir -p "$CTRL"
+    "$BB" rm -rf "$HOTSPOT_CTRL"
+    "$BB" mkdir -p "$HOTSPOT_CTRL"
     : > "$HOTSPOT_LOG"
 
-    "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D nl80211 \
-        -c "$HOTSPOT_CONF" -C "$CTRL" -f "$HOTSPOT_LOG"
+    "$HOSTAPD" -B -P "$HOTSPOT_HOSTAPD_PID" -f "$HOTSPOT_LOG" "$HOTSPOT_CONF"
 }
 
 wait_hotspot_ready() {
     i=0
     while [ "$i" -lt 20 ]; do
-        hs="$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true)"
-        if printf '%s\n' "$hs" | "$BB" grep -qx 'mode=AP' &&
-           printf '%s\n' "$hs" | "$BB" grep -qx 'wpa_state=COMPLETED'; then
-            return 0
-        fi
+        pid=""
+        [ -f "$HOTSPOT_HOSTAPD_PID" ] && pid="$(cat "$HOTSPOT_HOSTAPD_PID" 2>/dev/null)"
+        case "$pid" in
+            ''|*[!0-9]*) ;;
+            *)
+                kill -0 "$pid" 2>/dev/null || return 1
+                if "$BB" grep -q 'AP-ENABLED' "$HOTSPOT_LOG" 2>/dev/null &&
+                   [ -d "/sys/class/net/$IFACE" ]; then
+                    return 0
+                fi
+                ;;
+        esac
         "$BB" sleep 1
         i=$((i + 1))
     done
     return 1
 }
-
 start_udhcpd() {
     : > "$HOTSPOT_LEASES"
     : > "$HOTSPOT_DHCP_LOG"
@@ -836,8 +856,8 @@ cmd_hotspot_start() {
         return 1
     }
 
-    if ! start_hotspot_supplicant; then
-        echo "Could not start wpa_supplicant in AP mode."
+    if ! start_hostapd; then
+        echo "Could not start hostapd in AP mode."
         restore_client_after_hotspot_failure
         return 1
     fi
@@ -884,7 +904,19 @@ cmd_hotspot_status() {
     fi
 
     echo "--- hotspot ---"
-    "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
+    pid=""
+    [ -f "$HOTSPOT_HOSTAPD_PID" ] && pid="$(cat "$HOTSPOT_HOSTAPD_PID" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) echo "hostapd: stopped" ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "hostapd: running pid=$pid"
+            else
+                echo "hostapd: stopped (stale pid=$pid)"
+            fi
+            ;;
+    esac
+    [ -f "$HOTSPOT_LOG" ] && "$BB" tail -n 12 "$HOTSPOT_LOG" 2>/dev/null || true
     echo "--- address ---"
     "$BB" ip addr show dev "$IFACE" 2>/dev/null || true
     echo "--- DHCP ---"

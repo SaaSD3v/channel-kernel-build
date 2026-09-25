@@ -116,6 +116,7 @@ It drives the self-contained recovery binaries:
 ```text
 /sbin/busybox.ds
 /sbin/wpa_supplicant.ds
+/sbin/hostapd.ds
 /sbin/wpa_cli.ds
 /sbin/wpa_passphrase.ds
 /sbin/wifi-udhcpc.script
@@ -136,7 +137,7 @@ The controller forces `TMPDIR=/tmp` so it does not depend on encrypted or unavai
 
 For channel, the recovery path stages the stock Motorola WCNSS/PRONTO firmware and calibration inputs before triggering the WLAN driver. The helper performs the WCNSS recovery handshake and the controller writes the built-in driver's `fwpath` parameter once to trigger PRONTO initialization. In this kernel the value itself is not a STA/AP selector; changing `fwpath` after initialization would restart the WLAN driver.
 
-Once `wlan0` exists, repeated `wifi prepare` calls preserve the already-running driver rather than retriggering the one-shot WCNSS control path. Hotspot mode therefore uses the driver's advertised cfg80211/nl80211 AP support to switch `wlan0` dynamically instead of restarting PRONTO through `fwpath` or `con_mode`.
+Once `wlan0` exists, repeated `wifi prepare` calls preserve the already-running driver rather than retriggering the one-shot WCNSS control path. Hotspot mode therefore uses a dedicated `hostapd` process on the driver's advertised cfg80211/nl80211 AP path to switch `wlan0` dynamically instead of restarting PRONTO through `fwpath` or `con_mode`.
 
 ## Verified hardware behavior
 
@@ -228,9 +229,10 @@ not persisted.
 ## Hotspot validation state
 
 The hotspot implementation is kept separate from the already validated client
-Wi-Fi path. CI validates the shell controller, builds `wpa_supplicant` with
-`CONFIG_AP=y`, includes BusyBox `udhcpd`, stages the same compact internal
-initramfs payload, and rebuilds the TWRP image.
+Wi-Fi path. CI validates the shell controller, builds a dedicated static `hostapd` over
+`nl80211`, includes BusyBox `udhcpd`, stages the same compact internal
+initramfs payload, and rebuilds the TWRP image. The already validated client
+path continues to use its separate `wpa_supplicant` process.
 
 Physical-device validation still needs to confirm beacon visibility, WPA2
 association, DHCP lease delivery, client reachability to `192.168.43.1`, and
