@@ -82,107 +82,15 @@ git -C "$SRC/busybox" fetch --depth=1 origin "$BUSYBOX_COMMIT"
 git -C "$SRC/busybox" checkout --detach FETCH_HEAD
 pushd "$SRC/busybox" >/dev/null
 make ARCH=arm64 CROSS_COMPILE="$CROSS" defconfig
-# Recovery hotspot DHCP server. Force the BusyBox applet explicitly instead
-# of relying on defconfig so the payload is deterministic across BusyBox updates.
-if grep -q '^# CONFIG_UDHCPD is not setsed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
-sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
-make ARCH=arm64 CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
-make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
 
-# Cross-built ARM64 binaries cannot be executed on the x86 GitHub runner.
-# Validate every applet used by /sbin/wifi from the resolved BusyBox config.
-for symbol in \
-  CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
-  CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
-  CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK CONFIG_CP CONFIG_MV CONFIG_RM CONFIG_CHOWN \
-  CONFIG_SHA256SUM CONFIG_SYNC
-do
-  grep -qx "$symbol=y" .config || {
-    echo "Missing required BusyBox setting: $symbol=y" >&2
-    exit 1
-  }
-done
-cp .config "$OUT/busybox.config"
-cp busybox "$OUT/busybox.ds"
-popd >/dev/null
-
-# Minimal recovery-only WCNSS handshake; no Android framework/QMI/vendor libs.
-"$CC" -static -Os -ffunction-sections -fdata-sections \
-  -Wl,--gc-sections \
-  "$ROOT/recovery-wifi/wcnss-recovery.c" \
-  -o "$OUT/wcnss-recovery"
-
-cp "$ROOT/recovery-wifi/wifi" "$OUT/wifi"
-cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
-cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
-
-chmod 0755 \
-  "$OUT/wifi" "$OUT/wifi-udhcpc.script" \
-  "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/busybox.ds" "$OUT/wcnss-recovery"
-chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
-
-for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/busybox.ds" "$OUT/wcnss-recovery"; do
-  "$STRIP" --strip-all "$f"
-  file "$f"
-  file "$f" | grep -q 'statically linked'
-done
-
-sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
-du -h "$OUT"/*
- .config; then
+# The recovery hotspot uses BusyBox as its tiny DHCP server. Keep this
+# explicit so a BusyBox defconfig change cannot silently remove the applet.
+if grep -q '^# CONFIG_UDHCPD is not set$' .config; then
   sed -i 's/^# CONFIG_UDHCPD is not set$/CONFIG_UDHCPD=y/' .config
-elif ! grep -q '^CONFIG_UDHCPD=ysed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
-sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
-make ARCH=arm64 CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
-make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
-
-# Cross-built ARM64 binaries cannot be executed on the x86 GitHub runner.
-# Validate every applet used by /sbin/wifi from the resolved BusyBox config.
-for symbol in \
-  CONFIG_UDHCPC CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
-  CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
-  CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK CONFIG_CP CONFIG_MV CONFIG_RM CONFIG_CHOWN \
-  CONFIG_SHA256SUM CONFIG_SYNC
-do
-  grep -qx "$symbol=y" .config || {
-    echo "Missing required BusyBox setting: $symbol=y" >&2
-    exit 1
-  }
-done
-cp .config "$OUT/busybox.config"
-cp busybox "$OUT/busybox.ds"
-popd >/dev/null
-
-# Minimal recovery-only WCNSS handshake; no Android framework/QMI/vendor libs.
-"$CC" -static -Os -ffunction-sections -fdata-sections \
-  -Wl,--gc-sections \
-  "$ROOT/recovery-wifi/wcnss-recovery.c" \
-  -o "$OUT/wcnss-recovery"
-
-cp "$ROOT/recovery-wifi/wifi" "$OUT/wifi"
-cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
-cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
-
-chmod 0755 \
-  "$OUT/wifi" "$OUT/wifi-udhcpc.script" \
-  "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/busybox.ds" "$OUT/wcnss-recovery"
-chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
-
-for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/busybox.ds" "$OUT/wcnss-recovery"; do
-  "$STRIP" --strip-all "$f"
-  file "$f"
-  file "$f" | grep -q 'statically linked'
-done
-
-sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
-du -h "$OUT"/*
- .config; then
+elif ! grep -q '^CONFIG_UDHCPD=y$' .config; then
   echo 'CONFIG_UDHCPD=y' >> .config
 fi
+
 sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
 sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
 make ARCH=arm64 CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
@@ -191,7 +99,7 @@ make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
 # Cross-built ARM64 binaries cannot be executed on the x86 GitHub runner.
 # Validate every applet used by /sbin/wifi from the resolved BusyBox config.
 for symbol in \
-  CONFIG_UDHCPC CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
+  CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
   CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
   CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK CONFIG_CP CONFIG_MV CONFIG_RM CONFIG_CHOWN \
   CONFIG_SHA256SUM CONFIG_SYNC
