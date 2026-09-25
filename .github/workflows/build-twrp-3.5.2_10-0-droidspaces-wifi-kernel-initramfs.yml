@@ -237,21 +237,25 @@ jobs:
           PY
           grep -n -A5 -B2 'Recovery Wi-Fi: compact' kernel/usr/Makefile
 
-          # Match TeamWin's proven early-boot LZMA memory profile. XZ Utils'
-          # plain "lzma -9" defaults to a 64 MiB dictionary; force 8 MiB while
-          # retaining the kernel's own 4-byte size_append trailer.
+          # usr/Makefile creates initramfs_data.cpio.lzma through
+          # scripts/gen_initramfs_list.sh, not scripts/Makefile.lib. Patch the
+          # compressor that is actually used for the built-in initramfs.
+          # TeamWin's external recovery ramdisk uses an 8 MiB LZMA dictionary;
+          # keep the internal Wi-Fi archive in the same early-boot memory class.
           python3 <<'PY'
           from pathlib import Path
 
-          p = Path("kernel/scripts/Makefile.lib")
+          p = Path("kernel/scripts/gen_initramfs_list.sh")
           s = p.read_text()
-          old = "lzma -9 && $(call size_append, $(filter-out FORCE,$^)))"
-          new = "lzma -9 --lzma1=dict=8MiB && $(call size_append, $(filter-out FORCE,$^)))"
+          old = 'compr="lzma -9 -f"'
+          new = 'compr="lzma -9 -f --lzma1=dict=8MiB"'
           if s.count(old) != 1:
-              raise SystemExit(f"expected one Kbuild lzma command, found {s.count(old)}")
+              raise SystemExit(
+                  f"expected one initramfs LZMA compressor, found {s.count(old)}"
+              )
           p.write_text(s.replace(old, new, 1))
           PY
-          grep -n -A3 -B2 'cmd_lzma' kernel/scripts/Makefile.lib
+          grep -n -A3 -B2 'compr="lzma' kernel/scripts/gen_initramfs_list.sh
 
       - name: Download AOSP Clang r353983c1
         run: |
@@ -395,14 +399,13 @@ jobs:
           echo "Kernel internal initramfs: $INITRAMFS"
           python3 <<'PY'
           from pathlib import Path
-          import struct
           import glob
 
           paths = glob.glob("build/usr/initramfs_data.cpio*.lzma")
           if len(paths) != 1:
               raise SystemExit(f"expected one LZMA initramfs, found {paths}")
           b = Path(paths[0]).read_bytes()
-          if len(b) < 17:
+          if len(b) < 13:
               raise SystemExit("internal initramfs LZMA is too small")
           props = b[:5]
           expected = bytes.fromhex("5d00008000")
@@ -410,20 +413,16 @@ jobs:
               raise SystemExit(
                   f"unexpected LZMA props: {props.hex()} != {expected.hex()}"
               )
-          trailer_size = struct.unpack("<I", b[-4:])[0]
           print("Internal initramfs LZMA props:", props.hex())
-          print("Internal initramfs Kbuild size trailer:", trailer_size)
           PY
           case "$INITRAMFS" in
             *.gz) gzip -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
             *.xz) xz -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
             *.lzma)
-              # Kbuild's cmd_lzma appends a 4-byte little-endian uncompressed
-              # size trailer. The kernel decoder expects that trailer, while
-              # userspace xz treats it as trailing garbage. Strip it only from
-              # this inspection stream; the built kernel keeps the original.
-              test "$(stat -c%s "$INITRAMFS")" -gt 4
-              head -c -4 "$INITRAMFS" | xz --format=lzma -dc - > /tmp/kernel-initramfs.cpio
+              # gen_initramfs_list.sh emits a normal LZMA-Alone stream. Unlike
+              # scripts/Makefile.lib cmd_lzma, this path does not append a
+              # Kbuild 4-byte size trailer.
+              xz --format=lzma -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio
               ;;
             *.cpio) cp "$INITRAMFS" /tmp/kernel-initramfs.cpio ;;
             *) echo "Unsupported internal initramfs format: $INITRAMFS"; exit 1 ;;
