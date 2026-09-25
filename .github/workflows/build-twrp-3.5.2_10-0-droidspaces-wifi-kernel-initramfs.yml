@@ -217,16 +217,23 @@ jobs:
           from pathlib import Path
 
           p = Path("kernel/usr/Makefile")
-          s = p.read_text()
-          needle = "# Gzip\nsuffix_$(CONFIG_RD_GZIP)  = .gz\n"
-          replacement = (
-              needle
-              + "\n# Recovery Wi-Fi: compact built-in initramfs without changing RD_* support.\n"
-              + "suffix_y := .lzma\n"
-          )
-          if needle not in s:
-              raise SystemExit("usr/Makefile gzip suffix anchor not found")
-          p.write_text(s.replace(needle, replacement, 1))
+          lines = p.read_text().splitlines(keepends=True)
+          anchor = [
+              i for i, line in enumerate(lines)
+              if line.lstrip().startswith("suffix_$(CONFIG_RD_GZIP)")
+              and ".gz" in line
+          ]
+          if len(anchor) != 1:
+              raise SystemExit(
+                  f"expected one CONFIG_RD_GZIP suffix line, found {len(anchor)}"
+              )
+          i = anchor[0] + 1
+          lines[i:i] = [
+              "\n",
+              "# Recovery Wi-Fi: compact built-in initramfs without changing RD_* support.\n",
+              "suffix_y := .lzma\n",
+          ]
+          p.write_text("".join(lines))
           PY
           grep -n -A5 -B2 'Recovery Wi-Fi: compact' kernel/usr/Makefile
 
