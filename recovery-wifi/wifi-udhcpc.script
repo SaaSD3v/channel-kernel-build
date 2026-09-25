@@ -1,10 +1,17 @@
 #!/sbin/sh
+TMPDIR=/tmp
+TMP=/tmp
+TEMP=/tmp
+export TMPDIR TMP TEMP
+
 BB=/sbin/busybox.ds
 STATE=/tmp/ds-wifi
 mkdir -p "$STATE" 2>/dev/null || true
 case "$1" in
   deconfig)
     "$BB" ip addr flush dev "$interface" 2>/dev/null || true
+    : > /etc/resolv.conf 2>/dev/null || true
+    "$BB" rm -f "$STATE/lease.env" "$STATE/udhcpc.pid" 2>/dev/null || true
     if command -v setprop >/dev/null 2>&1; then
       setprop "dhcp.$interface.ipaddress" ""
       setprop "dhcp.$interface.gateway" ""
