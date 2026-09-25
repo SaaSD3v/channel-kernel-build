@@ -148,3 +148,40 @@ ls -l /sys/class/net/wlan0
 ```
 
 The `wifi scan` command only scans. It does not connect to an access point. Use one of the `wifi connect*` commands to create a network profile and establish connectivity.
+
+
+## Persistent known networks
+
+Validated networks are stored root-only under:
+
+```text
+/data/local/wifi/
+├── .version
+└── networks/
+    └── <sha256-of-SSID>.conf
+```
+
+The persistent directory and network database use mode `0700`; individual
+profiles use mode `0600` and root ownership. Runtime sockets, logs, PID files,
+the active aggregate and connection candidates remain under `/tmp/ds-wifi`.
+
+A network is persisted only after wpa_supplicant reaches
+`wpa_state=COMPLETED` and DHCP succeeds. A wrong password, SAE failure,
+association timeout or DHCP failure therefore cannot replace a previously
+working saved profile.
+
+```sh
+wifi connect "SSID" "PASSWORD"
+wifi connect-sae "SSID" "PASSWORD"
+wifi connect-open "SSID"
+wifi networks
+wifi forget "SSID"
+wifi forget-all
+wifi up
+```
+
+`wifi up` rebuilds the runtime wpa_supplicant configuration from every saved
+network, so multiple known networks survive recovery reboots and can
+auto-associate without re-entering their password. If `/data` is unavailable,
+a successful connection remains usable for the current recovery session but is
+not persisted.

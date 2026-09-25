@@ -24,6 +24,11 @@ CONF="$STATE/wpa_supplicant.conf"
 LOG="$STATE/wpa_supplicant.log"
 PREPLOG="$STATE/prepare.log"
 UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
+PERSIST_DIR=/data/local/wifi
+PERSIST_NETWORKS=$PERSIST_DIR/networks
+PERSIST_VERSION=$PERSIST_DIR/.version
+CANDIDATE=$STATE/candidate.conf
+PERSIST_COUNT=0
 IFACE=${WIFI_IFACE:-wlan0}
 
 mkdir_state() {
@@ -39,6 +44,49 @@ log() {
 
 is_mounted() {
     "$BB" grep -q " $1 " /proc/mounts 2>/dev/null
+}
+
+
+# /data/local/wifi is the root-only persistent database. /tmp/ds-wifi remains
+# the runtime area for sockets, PID files, candidates and the active aggregate.
+data_partition_mounted() {
+    "$BB" awk '$2 == "/data" && $1 ~ /^\/dev\/block\// { ok=1 } END { exit ok ? 0 : 1 }' /proc/mounts 2>/dev/null
+}
+
+ensure_persistent_store() {
+    if ! data_partition_mounted; then
+        if command -v twrp >/dev/null 2>&1; then
+            twrp mount data >/dev/null 2>&1 || true
+        fi
+    fi
+
+    data_partition_mounted || return 1
+
+    "$BB" mkdir -p "$PERSIST_NETWORKS" 2>/dev/null || return 1
+    "$BB" chmod 700 "$PERSIST_DIR" "$PERSIST_NETWORKS" 2>/dev/null || return 1
+    "$BB" chown 0:0 "$PERSIST_DIR" "$PERSIST_NETWORKS" 2>/dev/null || return 1
+
+    if [ -f "$PERSIST_VERSION" ]; then
+        ver=$(cat "$PERSIST_VERSION" 2>/dev/null)
+        [ "$ver" = "1" ] || {
+            echo "Unsupported Wi-Fi database version: $ver" >&2
+            return 1
+        }
+    else
+        vtmp="$PERSIST_DIR/.version.$$"
+        printf '%s\n' '1' > "$vtmp" || return 1
+        "$BB" chmod 600 "$vtmp" 2>/dev/null || { "$BB" rm -f "$vtmp"; return 1; }
+        "$BB" chown 0:0 "$vtmp" 2>/dev/null || { "$BB" rm -f "$vtmp"; return 1; }
+        "$BB" mv -f "$vtmp" "$PERSIST_VERSION" || { "$BB" rm -f "$vtmp"; return 1; }
+    fi
+
+    return 0
+}
+
+network_id() {
+    nid=$(printf '%s' "$1" | "$BB" sha256sum 2>/dev/null | "$BB" awk '{print $1}')
+    [ -n "$nid" ] || return 1
+    printf '%s\n' "$nid"
 }
 
 slot_suffix() {
@@ -336,35 +384,44 @@ stop_supplicant() {
     "$BB" sleep 1
 }
 
+write_base_conf() {
+    target="$1"
+    {
+        printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
+        printf '%s\n' 'update_config=1'
+        printf '%s\n' 'ap_scan=1'
+    } > "$target" || return 1
+    "$BB" chmod 600 "$target" 2>/dev/null || true
+}
+
 start_supplicant() {
-    [ -f "$CONF" ] || {
-        {
-            printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
-            printf '%s\n' 'update_config=1'
-            printf '%s\n' 'ap_scan=1'
-        } > "$CONF"
-    }
+    conf="$CONF"
+    [ "$#" -ge 1 ] && conf="$1"
+
+    if [ ! -f "$conf" ]; then
+        [ "$conf" = "$CONF" ] || return 1
+        write_base_conf "$CONF" || return 1
+    fi
 
     stop_supplicant
-    rm -rf "$CTRL"
+    "$BB" rm -rf "$CTRL"
     "$BB" mkdir -p "$CTRL"
     : > "$LOG"
 
-    # nl80211 is the native channel configuration; wext is retained as fallback
-    # for Qualcomm's legacy qcwcn/Pronto stack.
     "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D nl80211,wext \
-        -c "$CONF" -C "$CTRL" -f "$LOG" || {
+        -c "$conf" -C "$CTRL" -f "$LOG" || {
         log "nl80211,wext startup failed; retrying wext only"
         "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D wext \
-            -c "$CONF" -C "$CTRL" -f "$LOG"
+            -c "$conf" -C "$CTRL" -f "$LOG"
     }
 }
 
 wait_connected() {
-    limit="${1:-30}"
+    limit="$1"
+    [ -n "$limit" ] || limit=30
     i=0
     while [ "$i" -lt "$limit" ]; do
-        state="$($WPACLI -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^wpa_state=//p')"
+        state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^wpa_state=//p')
         [ "$state" = "COMPLETED" ] && return 0
         "$BB" sleep 1
         i=$((i + 1))
@@ -380,22 +437,27 @@ do_dhcp() {
 make_psk_conf() {
     ssid="$1"
     pass="$2"
+    target="$3"
     {
-        echo 'ctrl_interface=/tmp/ds-wifi/ctrl'
-        echo 'update_config=1'
-        echo 'ap_scan=1'
+        printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
+        printf '%s\n' 'update_config=1'
+        printf '%s\n' 'ap_scan=1'
         "$WPAPASS" "$ssid" "$pass" | "$BB" sed '/^[[:space:]]*#psk=/d'
-    } > "$CONF"
-    "$BB" chmod 600 "$CONF"
+    } > "$target"
+    "$BB" chmod 600 "$target" 2>/dev/null || true
+    "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$target" 2>/dev/null || {
+        "$BB" rm -f "$target"
+        return 1
+    }
 }
 
 escape_wpa_string() {
-    # Escape backslash and quote for wpa_supplicant configuration strings.
     printf '%s' "$1" | "$BB" sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 make_open_conf() {
-    ssid="$(escape_wpa_string "$1")"
+    ssid=$(escape_wpa_string "$1")
+    target="$2"
     {
         printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
         printf '%s\n' 'update_config=1'
@@ -404,13 +466,14 @@ make_open_conf() {
         printf '    ssid="%s"\n' "$ssid"
         printf '%s\n' '    key_mgmt=NONE'
         printf '%s\n' '}'
-    } > "$CONF"
-    "$BB" chmod 600 "$CONF"
+    } > "$target"
+    "$BB" chmod 600 "$target" 2>/dev/null || true
 }
 
 make_sae_conf() {
-    ssid="$(escape_wpa_string "$1")"
-    pass="$(escape_wpa_string "$2")"
+    ssid=$(escape_wpa_string "$1")
+    pass=$(escape_wpa_string "$2")
+    target="$3"
     {
         printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
         printf '%s\n' 'update_config=1'
@@ -421,8 +484,106 @@ make_sae_conf() {
         printf '    sae_password="%s"\n' "$pass"
         printf '%s\n' '    ieee80211w=2'
         printf '%s\n' '}'
-    } > "$CONF"
-    "$BB" chmod 600 "$CONF"
+    } > "$target"
+    "$BB" chmod 600 "$target" 2>/dev/null || true
+}
+
+append_network_block() {
+    source="$1"
+    target="$2"
+    "$BB" sed -n '/^[[:space:]]*network[[:space:]]*={/,/^[[:space:]]*}[[:space:]]*$/p' "$source" >> "$target"
+}
+
+persist_network() {
+    security="$1"
+    ssid="$2"
+    source="$3"
+
+    ensure_persistent_store || return 1
+    nid=$(network_id "$ssid") || return 1
+    target="$PERSIST_NETWORKS/$nid.conf"
+    tmp="$PERSIST_NETWORKS/.$nid.$$"
+
+    {
+        printf '%s\n' '# dswifi-db=1'
+        printf '# security=%s\n' "$security"
+    } > "$tmp" || return 1
+
+    append_network_block "$source" "$tmp"
+    "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$tmp" 2>/dev/null || {
+        "$BB" rm -f "$tmp"
+        return 1
+    }
+
+    "$BB" chmod 600 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" chown 0:0 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" mv -f "$tmp" "$target" || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" sync
+    return 0
+}
+
+build_runtime_from_persistent() {
+    PERSIST_COUNT=0
+    ensure_persistent_store || return 1
+
+    tmp="$STATE/.known-networks.$$"
+    write_base_conf "$tmp" || return 1
+
+    for saved in "$PERSIST_NETWORKS"/*.conf; do
+        [ -f "$saved" ] || continue
+        "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$saved" 2>/dev/null || continue
+        append_network_block "$saved" "$tmp"
+        PERSIST_COUNT=$((PERSIST_COUNT + 1))
+    done
+
+    if [ "$PERSIST_COUNT" -eq 0 ]; then
+        "$BB" rm -f "$tmp"
+        return 1
+    fi
+
+    "$BB" chmod 600 "$tmp" 2>/dev/null || true
+    "$BB" mv -f "$tmp" "$CONF" || { "$BB" rm -f "$tmp"; return 1; }
+    return 0
+}
+
+copy_candidate_to_runtime() {
+    source="$1"
+    tmp="$STATE/.runtime.$$"
+    "$BB" cp "$source" "$tmp" || return 1
+    "$BB" chmod 600 "$tmp" 2>/dev/null || true
+    "$BB" mv -f "$tmp" "$CONF" || { "$BB" rm -f "$tmp"; return 1; }
+}
+
+restore_known_after_failure() {
+    "$BB" rm -f "$CANDIDATE" 2>/dev/null || true
+
+    if ! "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$CONF" 2>/dev/null; then
+        build_runtime_from_persistent >/dev/null 2>&1 || return 0
+    fi
+
+    if "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$CONF" 2>/dev/null; then
+        start_supplicant "$CONF" >/dev/null 2>&1 || return 0
+        if wait_connected 12; then
+            do_dhcp >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
+commit_validated_network() {
+    security="$1"
+    ssid="$2"
+    source="$3"
+
+    copy_candidate_to_runtime "$source" || return 1
+
+    if persist_network "$security" "$ssid" "$source"; then
+        echo "Saved validated network: $ssid"
+    else
+        echo "Connected, but persistent storage is unavailable; profile remains temporary."
+    fi
+
+    "$BB" rm -f "$CANDIDATE" 2>/dev/null || true
+    return 0
 }
 
 cmd_up() {
@@ -430,14 +591,16 @@ cmd_up() {
         echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
         return 1
     }
-    start_supplicant || return 1
+
+    if build_runtime_from_persistent; then
+        echo "Loaded $PERSIST_COUNT saved network(s) from $PERSIST_DIR"
+    fi
+
+    start_supplicant "$CONF" || return 1
     echo "Wi-Fi ready on $IFACE"
 
-    # If a previous connect command left a network profile in /tmp, restoring
-    # Wi-Fi after 'wifi down' should also restore IPv4/route instead of stopping
-    # at association-only state.
     if "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$CONF" 2>/dev/null; then
-        if wait_connected 15; then
+        if wait_connected 25; then
             if do_dhcp; then
                 echo "Wi-Fi connection and DHCP restored on $IFACE"
             else
@@ -445,7 +608,7 @@ cmd_up() {
                 return 1
             fi
         else
-            echo "Wi-Fi ready; saved network has not associated yet"
+            echo "Wi-Fi ready; no saved network associated within the timeout"
         fi
     fi
 }
@@ -459,41 +622,141 @@ cmd_scan() {
 
 cmd_connect() {
     [ "$#" -ge 2 ] || { echo 'usage: wifi connect "SSID" "PASSWORD"'; return 2; }
+    ssid="$1"
     prepare || return 1
-    make_psk_conf "$1" "$2"
-    start_supplicant || return 1
-    if ! wait_connected; then
-        echo "Association timed out. Run: wifi status; wifi logs"
+    make_psk_conf "$ssid" "$2" "$CANDIDATE" || {
+        echo "Could not build WPA/WPA2 candidate profile. Network was not saved."
+        return 1
+    }
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "Association/authentication failed. Network was not saved."
+        restore_known_after_failure
         return 1
     fi
-    do_dhcp || return 1
+    if ! do_dhcp; then
+        echo "Association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "WPA-PSK" "$ssid" "$CANDIDATE" || return 1
     cmd_status
 }
 
 cmd_connect_open() {
     [ "$#" -ge 1 ] || { echo 'usage: wifi connect-open "SSID"'; return 2; }
+    ssid="$1"
     prepare || return 1
-    make_open_conf "$1"
-    start_supplicant || return 1
-    if ! wait_connected; then
-        echo "Association timed out. Run: wifi status; wifi logs"
+    make_open_conf "$ssid" "$CANDIDATE" || return 1
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "Open-network association failed. Network was not saved."
+        restore_known_after_failure
         return 1
     fi
-    do_dhcp || return 1
+    if ! do_dhcp; then
+        echo "Association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "OPEN" "$ssid" "$CANDIDATE" || return 1
     cmd_status
 }
 
 cmd_connect_sae() {
     [ "$#" -ge 2 ] || { echo 'usage: wifi connect-sae "SSID" "PASSWORD"'; return 2; }
+    ssid="$1"
     prepare || return 1
-    make_sae_conf "$1" "$2"
-    start_supplicant || return 1
-    if ! wait_connected; then
-        echo "SAE association timed out. Run: wifi status; wifi logs"
+    make_sae_conf "$ssid" "$2" "$CANDIDATE" || return 1
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "SAE authentication failed. Network was not saved."
+        restore_known_after_failure
         return 1
     fi
-    do_dhcp || return 1
+    if ! do_dhcp; then
+        echo "SAE association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "SAE" "$ssid" "$CANDIDATE" || return 1
     cmd_status
+}
+
+cmd_networks() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    count=0
+    echo "Saved networks:"
+    for saved in "$PERSIST_NETWORKS"/*.conf; do
+        [ -f "$saved" ] || continue
+        security=$("$BB" sed -n 's/^# security=//p' "$saved" | "$BB" awk 'NR == 1 { print; exit }')
+        ssid=$("$BB" awk '
+            /^[[:space:]]*ssid="/ {
+                line=$0
+                sub(/^[[:space:]]*ssid="/, "", line)
+                sub(/"[[:space:]]*$/, "", line)
+                print line
+                exit
+            }
+        ' "$saved")
+        [ -n "$security" ] || security="UNKNOWN"
+        [ -n "$ssid" ] || ssid="<unknown>"
+        count=$((count + 1))
+        printf '%s - [%s] %s\n' "$count" "$security" "$ssid"
+    done
+
+    [ "$count" -gt 0 ] || echo "(none)"
+}
+
+cmd_forget() {
+    [ "$#" -ge 1 ] || { echo 'usage: wifi forget "SSID"'; return 2; }
+    ssid="$1"
+
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    nid=$(network_id "$ssid") || return 1
+    saved="$PERSIST_NETWORKS/$nid.conf"
+    [ -f "$saved" ] || {
+        echo "No saved network named: $ssid"
+        return 1
+    }
+
+    current=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^ssid=//p')
+    "$BB" rm -f "$saved" || return 1
+    "$BB" sync
+
+    if [ "$current" = "$ssid" ]; then
+        cmd_disconnect
+    fi
+
+    if ! build_runtime_from_persistent; then
+        write_base_conf "$CONF"
+    fi
+
+    echo "Forgot network: $ssid"
+}
+
+cmd_forget_all() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    "$BB" rm -f "$PERSIST_NETWORKS"/*.conf 2>/dev/null || true
+    "$BB" sync
+    cmd_disconnect
+    write_base_conf "$CONF"
+    echo "Forgot all saved Wi-Fi networks."
 }
 
 cmd_status() {
@@ -555,6 +818,9 @@ usage() {
         '  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK' \
         '  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE' \
         '  wifi connect-open "SSID"' \
+        '  wifi networks' \
+        '  wifi forget "SSID"' \
+        '  wifi forget-all' \
         '  wifi dhcp' \
         '  wifi status' \
         '  wifi ping HOST' \
@@ -573,6 +839,9 @@ case "$cmd" in
     connect) cmd_connect "$@" ;;
     connect-sae) cmd_connect_sae "$@" ;;
     connect-open) cmd_connect_open "$@" ;;
+    networks) cmd_networks ;;
+    forget) cmd_forget "$@" ;;
+    forget-all) cmd_forget_all ;;
     dhcp) do_dhcp ;;
     status) cmd_status ;;
     ping) [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; exit 2; }; "$BB" ping -c 4 "$1" ;;
