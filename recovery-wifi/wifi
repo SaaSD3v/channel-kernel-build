@@ -137,15 +137,21 @@ stage_firmware() {
     # Stage the modem partition's WCNSS image into the same firmware root so
     # both PIL (wcnss.mdt/bXX) and request_firmware(wlan/prima/...) resolve
     # with one firmware_class.path.
+    modem_root=""
     for root in /vendor/firmware_mnt/image /firmware/image; do
-        [ -d "$root" ] || continue
-        for src in "$root"/wcnss.* "$root"/WCNSS.*; do
+        if [ -d "$root" ]; then
+            modem_root="$root"
+            break
+        fi
+    done
+    if [ -n "$modem_root" ]; then
+        for src in "$modem_root"/wcnss.* "$modem_root"/WCNSS.*; do
             [ -s "$src" ] || continue
             name="${src##*/}"
             "$BB" cat "$src" > "/lib/firmware/$name" 2>/dev/null || true
             [ -s "/lib/firmware/$name" ] && log "staged modem firmware $name"
         done
-    done
+    fi
 }
 
 feed_pending_firmware() {
@@ -501,9 +507,17 @@ cmd_status() {
     cat /etc/resolv.conf 2>/dev/null || true
 }
 
+cmd_disconnect() {
+    "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect >/dev/null 2>&1 || true
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
+    echo "Wi-Fi disconnected"
+}
+
 cmd_down() {
     stop_supplicant
     "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
     "$BB" ip link set "$IFACE" down 2>/dev/null || true
     echo "Wi-Fi stopped"
 }
@@ -556,7 +570,7 @@ case "$cmd" in
     dhcp) do_dhcp ;;
     status) cmd_status ;;
     ping) [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; exit 2; }; "$BB" ping -c 4 "$1" ;;
-    disconnect) "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect 2>/dev/null || true ;;
+    disconnect) cmd_disconnect ;;
     down) cmd_down ;;
     logs) cmd_logs ;;
     help|-h|--help) usage ;;
