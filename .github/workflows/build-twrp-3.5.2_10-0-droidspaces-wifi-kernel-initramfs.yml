@@ -1,0 +1,571 @@
+name: Build Channel TWRP 3.5.2 DroidSpaces + Wi-Fi in kernel initramfs
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs
+    paths:
+      - .github/workflows/build-twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs.yml
+      - recovery-wifi/**
+
+permissions:
+  contents: read
+
+env:
+  TWRP_KERNEL_REPO: https://github.com/TeamWin/android_kernel_motorola_sdm632.git
+  TWRP_KERNEL_REF: 0fba78718c25ef55a211dd7608cb255a226dd8bf
+  TWRP_BASE_URL: https://dl.twrp.me/channel/twrp-3.5.2_10-0-channel.img
+  TWRP_BASE_SHA256: 486c3e11250c1233112372129c796b55e0cd5d0f4ac605906d90b0f9b574056c
+  OUTPUT_IMG: channel-twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs.img
+
+jobs:
+  build:
+    name: TWRP 3.5.2 + DroidSpaces + built-in recovery Wi-Fi
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git curl wget ca-certificates \
+            bc bison flex libssl-dev libelf-dev make libncurses-dev \
+            python3 xz-utils cpio zip file autoconf automake libtool pkg-config \
+            gcc-aarch64-linux-gnu
+
+      - name: Clone exact TWRP channel kernel base
+        run: |
+          git init kernel
+          git -C kernel remote add origin "$TWRP_KERNEL_REPO"
+          git -C kernel fetch --depth=1 origin "$TWRP_KERNEL_REF"
+          git -C kernel checkout --detach FETCH_HEAD
+
+          echo "TWRP kernel base:" >> "$GITHUB_STEP_SUMMARY"
+          git -C kernel log -1 --format='- %H %s' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download exact TWRP 3.5.2_10-0 base image
+        run: |
+          set -euo pipefail
+
+          NAME="twrp-3.5.2_10-0-channel.img"
+          PAGE="https://dl.twrp.me/channel/$NAME.html"
+
+          PAGE_HTML=$(curl -fLsS --retry 3 --retry-delay 2 \
+            -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-DroidSpaces' "$PAGE")
+
+          FILE_HREF=$(printf '%s' "$PAGE_HTML" \
+            | grep -oE 'href="[^"]*twrp-3\\.5\\.2_10-0-channel\\.img"' \
+            | head -n1 | cut -d'"' -f2 || true)
+
+          case "$FILE_HREF" in
+            http://*|https://*) FILE_URL="$FILE_HREF" ;;
+            /*) FILE_URL="https://dl.twrp.me$FILE_HREF" ;;
+            "") FILE_URL="" ;;
+            *) FILE_URL="https://dl.twrp.me/channel/$FILE_HREF" ;;
+          esac
+
+          ok=0
+          for URL in \
+            "https://eu.dl.twrp.me/channel/$NAME" \
+            "$FILE_URL" \
+            "https://dl.twrp.me/channel/$NAME?download=1"
+          do
+            [ -n "$URL" ] || continue
+            rm -f twrp-base.img.part
+            if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 \
+              -A 'Mozilla/5.0 GitHub-Actions Channel-TWRP-DroidSpaces' \
+              -e "$PAGE" -o twrp-base.img.part "$URL"; then
+              if [ "$(stat -c%s twrp-base.img.part)" -gt 20000000 ] && \
+                 [ "$(head -c 8 twrp-base.img.part)" = "ANDROID!" ]; then
+                mv twrp-base.img.part twrp-base.img
+                ok=1
+                break
+              fi
+            fi
+          done
+
+          [ "$ok" -eq 1 ]
+          echo "$TWRP_BASE_SHA256  twrp-base.img" | sha256sum -c -
+
+      - name: Extract exact official TWRP kernel config
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+
+          base = Path("twrp-base.img").read_bytes()
+          if base[:8] != b"ANDROID!":
+              raise SystemExit("Not an Android boot image")
+
+          kernel_size = struct.unpack_from("<I", base, 8)[0]
+          page_size = struct.unpack_from("<I", base, 36)[0]
+          kernel = base[page_size:page_size + kernel_size]
+
+          if len(kernel) != kernel_size:
+              raise SystemExit("Failed to extract complete official TWRP kernel")
+
+          Path("official-twrp-Image.gz-dtb").write_bytes(kernel)
+          print("Official kernel size:", kernel_size)
+          PY
+
+          chmod +x kernel/scripts/extract-ikconfig
+          kernel/scripts/extract-ikconfig official-twrp-Image.gz-dtb > official-twrp.config
+
+          test -s official-twrp.config
+          echo "bb1430e6ceccb76c1f0a5d8633e10f8aa71933953cb1ee9cee29b1613c46b335  official-twrp.config" | sha256sum -c -
+
+          grep -qx 'CONFIG_LOCALVERSION="-perf"' official-twrp.config
+          grep -qx 'CONFIG_IKCONFIG=y' official-twrp.config
+          grep -qx 'CONFIG_SCHED_CORE_CTL=y' official-twrp.config
+          grep -qx 'CONFIG_RD_XZ=y' official-twrp.config
+          grep -qx 'CONFIG_RD_LZO=y' official-twrp.config
+          grep -qx 'CONFIG_CMA_AREAS=7' official-twrp.config
+          grep -qx 'CONFIG_USB_ANDROID_USBNET=y' official-twrp.config
+
+      - name: Apply DroidSpaces cgroup noprefix fix
+        run: |
+          # SaaSD3v/android_kernel_motorola_sdm632:
+          # c6f0507da463205a4d6d9ca4fb1130218530feb3 - fix: cgroups noprefix
+          curl -fL --retry 5 \
+            "https://github.com/SaaSD3v/android_kernel_motorola_sdm632/commit/c6f0507da463205a4d6d9ca4fb1130218530feb3.patch" \
+            -o /tmp/droidspaces-cgroup-noprefix.patch
+
+          git -C kernel apply --check /tmp/droidspaces-cgroup-noprefix.patch
+          git -C kernel apply /tmp/droidspaces-cgroup-noprefix.patch
+
+      - name: Create DroidSpaces Kconfig fragment
+        run: |
+          # This fragment carries the configuration changes from:
+          # ee9637adaa0c38f9105feb4902531d608298df81 - Kernel configurations for full DroidSpaces support
+          # e310252413ffb052e86092d32f7f8b4fabd5eae2 - Firewall Support (UFW/Fail2ban) - Optional
+          # f09c342d80aaa93eb852320568b9313d2768386b - disable CONFIG_ANDROID_PARANOID_NETWORK
+          #
+          # The source-code fix c6f0507da463205a4d6d9ca4fb1130218530feb3 is applied separately above.
+          cat > droidspaces.fragment <<'EOF'
+          CONFIG_SYSVIPC=y
+          CONFIG_POSIX_MQUEUE=y
+          CONFIG_CGROUP_PIDS=y
+          CONFIG_CGROUP_DEVICE=y
+          CONFIG_MEMCG=y
+          CONFIG_UTS_NS=y
+          CONFIG_USER_NS=y
+          CONFIG_PID_NS=y
+          CONFIG_IPC_NS=y
+          CONFIG_BRIDGE_NETFILTER=y
+          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_CGROUP_NET_PRIO=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_VETH=y
+          CONFIG_OVERLAY_FS=y
+          CONFIG_IP_SET=y
+          CONFIG_IP_SET_HASH_IP=y
+          CONFIG_IP_SET_HASH_NET=y
+          CONFIG_NETFILTER_XT_SET=y
+          CONFIG_NETFILTER_XT_MATCH_RECENT=y
+          # CONFIG_ANDROID_PARANOID_NETWORK is not set
+          EOF
+
+          cat droidspaces.fragment
+
+      - name: Validate and build static recovery Wi-Fi userspace
+        run: |
+          set -euo pipefail
+          bash -n recovery-wifi/build-userspace.sh
+          sh -n recovery-wifi/wifi
+          sh -n recovery-wifi/wifi-udhcpc.script
+          chmod +x recovery-wifi/build-userspace.sh
+          recovery-wifi/build-userspace.sh
+
+      - name: Stage Wi-Fi in kernel internal initramfs
+        run: |
+          set -euo pipefail
+
+          ROOT="$GITHUB_WORKSPACE/kernel/recovery-initramfs"
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/sbin" "$ROOT/lib/firmware/wlan/prima"
+
+          install -m 0755 recovery-wifi/out/wifi "$ROOT/sbin/wifi"
+          install -m 0755 recovery-wifi/out/busybox.ds "$ROOT/sbin/busybox.ds"
+          install -m 0755 recovery-wifi/out/wpa_supplicant.ds "$ROOT/sbin/wpa_supplicant.ds"
+          install -m 0755 recovery-wifi/out/wpa_cli.ds "$ROOT/sbin/wpa_cli.ds"
+          install -m 0755 recovery-wifi/out/wpa_passphrase.ds "$ROOT/sbin/wpa_passphrase.ds"
+          install -m 0755 recovery-wifi/out/wifi-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
+          install -m 0755 recovery-wifi/out/wcnss-recovery "$ROOT/sbin/wcnss-recovery"
+          install -m 0644 recovery-wifi/out/WCNSS_qcom_cfg.ini \
+            "$ROOT/lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini"
+
+          cat > wifi-initramfs.fragment <<EOF
+          CONFIG_INITRAMFS_SOURCE="$ROOT"
+          CONFIG_INITRAMFS_ROOT_UID=0
+          CONFIG_INITRAMFS_ROOT_GID=0
+          EOF
+
+          find "$ROOT" -type f -printf '%P %s bytes\n' | sort
+          cat wifi-initramfs.fragment
+
+      - name: Download AOSP Clang r353983c1
+        run: |
+          curl -fL --retry 5 \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-qpr3-release/clang-r353983c1.tar.gz" \
+            -o clang-r353983c1.tar.gz
+
+          mkdir -p toolchains/clang-r353983c1
+          tar -xzf clang-r353983c1.tar.gz -C toolchains/clang-r353983c1
+          echo "CLANG_BIN=$GITHUB_WORKSPACE/toolchains/clang-r353983c1/bin" >> "$GITHUB_ENV"
+
+      - name: Download GCC 4.9 AArch64
+        run: |
+          git clone --depth=1 -b android11-release \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 \
+            toolchains/gcc-aarch64-4.9
+          echo "GCC64_BIN=$GITHUB_WORKSPACE/toolchains/gcc-aarch64-4.9/bin" >> "$GITHUB_ENV"
+
+      - name: Download GCC 4.9 ARM32
+        run: |
+          git clone --depth=1 -b android11-release \
+            https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 \
+            toolchains/gcc-arm-4.9
+          echo "GCC32_BIN=$GITHUB_WORKSPACE/toolchains/gcc-arm-4.9/bin" >> "$GITHUB_ENV"
+
+      - name: Configure from exact official TWRP config
+        run: |
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+
+          mkdir -p "$GITHUB_WORKSPACE/build"
+          cp official-twrp.config "$GITHUB_WORKSPACE/build/.config"
+
+          make -C kernel \
+            O="$GITHUB_WORKSPACE/build" \
+            ARCH=arm64 \
+            CC=clang \
+            HOSTCC=clang \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            olddefconfig
+
+          cp "$GITHUB_WORKSPACE/build/.config" official-twrp-after-olddefconfig.config
+          diff -u official-twrp.config official-twrp-after-olddefconfig.config | tee official-config-source-diff.txt || true
+
+      - name: Merge DroidSpaces fragment
+        run: |
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+
+          chmod +x kernel/scripts/kconfig/merge_config.sh
+          cd kernel
+
+          scripts/kconfig/merge_config.sh -m \
+            -O "$GITHUB_WORKSPACE/build" \
+            "$GITHUB_WORKSPACE/build/.config" \
+            "$GITHUB_WORKSPACE/droidspaces.fragment" \
+            "$GITHUB_WORKSPACE/wifi-initramfs.fragment"
+
+          make \
+            O="$GITHUB_WORKSPACE/build" \
+            ARCH=arm64 \
+            CC=clang \
+            HOSTCC=clang \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            olddefconfig
+
+      - name: Verify DroidSpaces configuration
+        run: |
+          set -e
+          CONFIG="$GITHUB_WORKSPACE/build/.config"
+
+          for symbol in \
+            CONFIG_SYSVIPC \
+            CONFIG_POSIX_MQUEUE \
+            CONFIG_CGROUP_PIDS \
+            CONFIG_CGROUP_DEVICE \
+            CONFIG_MEMCG \
+            CONFIG_UTS_NS \
+            CONFIG_USER_NS \
+            CONFIG_PID_NS \
+            CONFIG_IPC_NS \
+            CONFIG_BRIDGE_NETFILTER \
+            CONFIG_NETFILTER_XT_MATCH_ADDRTYPE \
+            CONFIG_CGROUP_NET_PRIO \
+            CONFIG_DEVTMPFS \
+            CONFIG_VETH \
+            CONFIG_OVERLAY_FS \
+            CONFIG_IP_SET \
+            CONFIG_IP_SET_HASH_IP \
+            CONFIG_IP_SET_HASH_NET \
+            CONFIG_NETFILTER_XT_SET \
+            CONFIG_NETFILTER_XT_MATCH_RECENT
+          do
+            grep -qx "${symbol}=y" "$CONFIG" || {
+              echo "Missing required setting: ${symbol}=y"
+              exit 1
+            }
+          done
+
+          grep -qx '# CONFIG_ANDROID_PARANOID_NETWORK is not set' "$CONFIG"
+          grep -Fxq "CONFIG_INITRAMFS_SOURCE=\"$GITHUB_WORKSPACE/kernel/recovery-initramfs\"" "$CONFIG"
+
+          grep -E \
+            '^(CONFIG_(SYSVIPC|POSIX_MQUEUE|CGROUP_PIDS|CGROUP_DEVICE|MEMCG|UTS_NS|USER_NS|PID_NS|IPC_NS|BRIDGE_NETFILTER|NETFILTER_XT_MATCH_ADDRTYPE|CGROUP_NET_PRIO|DEVTMPFS|VETH|OVERLAY_FS|IP_SET|IP_SET_HASH_IP|IP_SET_HASH_NET|NETFILTER_XT_SET|NETFILTER_XT_MATCH_RECENT)=y|# CONFIG_ANDROID_PARANOID_NETWORK is not set)$' \
+            "$CONFIG" | tee droidspaces-final-config.txt
+
+      - name: Build Image.gz-dtb
+        env:
+          KBUILD_BUILD_USER: nobody
+          KBUILD_BUILD_HOST: android-build
+          KBUILD_BUILD_TIMESTAMP: Thu Dec 17 04:30:48 PST 2020
+          KBUILD_BUILD_VERSION: "1"
+        run: |
+          export PATH="$CLANG_BIN:$GCC64_BIN:$GCC32_BIN:$PATH"
+
+          make -C kernel \
+            O="$GITHUB_WORKSPACE/build" \
+            ARCH=arm64 \
+            CC=clang \
+            HOSTCC=clang \
+            CROSS_COMPILE=aarch64-linux-android- \
+            CROSS_COMPILE_ARM32=arm-linux-androideabi- \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            LLVM=1 LLVM_IAS=1 \
+            -j"$(nproc)" \
+            Image.gz-dtb
+
+          test -s build/arch/arm64/boot/Image.gz-dtb
+          sha256sum build/arch/arm64/boot/Image.gz-dtb | tee kernel.sha256
+
+          INITRAMFS=$(find build/usr -maxdepth 1 -type f -name 'initramfs_data.cpio*' | head -n1)
+          test -n "$INITRAMFS"
+          echo "Kernel internal initramfs: $INITRAMFS"
+          case "$INITRAMFS" in
+            *.gz) gzip -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
+            *.xz) xz -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
+            *.lzma) xz --format=lzma -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
+            *.cpio) cp "$INITRAMFS" /tmp/kernel-initramfs.cpio ;;
+            *) echo "Unsupported internal initramfs format: $INITRAMFS"; exit 1 ;;
+          esac
+
+          cpio -it < /tmp/kernel-initramfs.cpio | tee kernel-initramfs-files.txt
+          for path in \
+            sbin/wifi sbin/busybox.ds sbin/wpa_supplicant.ds sbin/wpa_cli.ds \
+            sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery \
+            lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
+          do
+            grep -Fxq "$path" kernel-initramfs-files.txt || {
+              echo "Missing from kernel internal initramfs: $path"
+              exit 1
+            }
+          done
+
+      - name: Replace only kernel in TWRP base image
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+
+          BASE = Path("twrp-base.img")
+          NEW_KERNEL = Path("build/arch/arm64/boot/Image.gz-dtb")
+          OUTPUT = Path("${{ env.OUTPUT_IMG }}")
+
+          base = BASE.read_bytes()
+          new_kernel = NEW_KERNEL.read_bytes()
+
+          if base[:8] != b"ANDROID!":
+              raise SystemExit("Base TWRP image is not an Android boot image")
+
+          kernel_size = struct.unpack_from("<I", base, 8)[0]
+          ramdisk_size = struct.unpack_from("<I", base, 16)[0]
+          second_size = struct.unpack_from("<I", base, 24)[0]
+          page_size = struct.unpack_from("<I", base, 36)[0]
+          header_version = struct.unpack_from("<I", base, 40)[0]
+
+          if header_version != 1:
+              raise SystemExit(f"Expected boot header v1, got v{header_version}")
+
+          recovery_dtbo_size = struct.unpack_from("<I", base, 1632)[0]
+          recovery_dtbo_offset = struct.unpack_from("<Q", base, 1636)[0]
+          header_size = struct.unpack_from("<I", base, 1644)[0]
+
+          if header_size != 1648:
+              raise SystemExit(f"Unexpected boot header size: {header_size}")
+
+          def align(value, alignment):
+              return (value + alignment - 1) // alignment * alignment
+
+          old_kernel_offset = page_size
+          old_ramdisk_offset = align(old_kernel_offset + kernel_size, page_size)
+          old_second_offset = align(old_ramdisk_offset + ramdisk_size, page_size)
+          expected_recovery_offset = align(old_second_offset + second_size, page_size)
+
+          if recovery_dtbo_size and recovery_dtbo_offset != expected_recovery_offset:
+              raise SystemExit(
+                  f"Unexpected recovery_dtbo offset: header={recovery_dtbo_offset}, "
+                  f"calculated={expected_recovery_offset}"
+              )
+
+          old_kernel = base[old_kernel_offset:old_kernel_offset + kernel_size]
+          ramdisk = base[old_ramdisk_offset:old_ramdisk_offset + ramdisk_size]
+          second = base[old_second_offset:old_second_offset + second_size]
+          recovery_dtbo = base[
+              recovery_dtbo_offset:recovery_dtbo_offset + recovery_dtbo_size
+          ]
+          tail = base[recovery_dtbo_offset + recovery_dtbo_size:]
+
+          for name, padding in (
+              ("kernel", base[old_kernel_offset + kernel_size:old_ramdisk_offset]),
+              ("ramdisk", base[old_ramdisk_offset + ramdisk_size:old_second_offset]),
+              ("second", base[old_second_offset + second_size:expected_recovery_offset]),
+          ):
+              if any(padding):
+                  raise SystemExit(f"Non-zero {name} padding in base image")
+
+          def build(kernel):
+              header = bytearray(base[:page_size])
+              struct.pack_into("<I", header, 8, len(kernel))
+
+              new_ramdisk_offset = align(page_size + len(kernel), page_size)
+              new_second_offset = align(new_ramdisk_offset + ramdisk_size, page_size)
+              new_recovery_offset = align(new_second_offset + second_size, page_size)
+
+              if recovery_dtbo_size:
+                  struct.pack_into("<Q", header, 1636, new_recovery_offset)
+
+              out = bytearray(header)
+              out += kernel
+              out += bytes(new_ramdisk_offset - len(out))
+              out += ramdisk
+              out += bytes(new_second_offset - len(out))
+              out += second
+              out += bytes(new_recovery_offset - len(out))
+              out += recovery_dtbo
+              out += tail
+              return bytes(out)
+
+          clone = build(old_kernel)
+          if clone != base:
+              raise SystemExit("Base-image reconstruction check failed")
+
+          output = build(new_kernel)
+
+          if len(output) > 33554432:
+              raise SystemExit(
+                  f"Output is {len(output)} bytes, larger than the 32 MiB boot partition"
+              )
+
+          OUTPUT.write_bytes(output)
+
+          print(f"Base kernel size : {kernel_size}")
+          print(f"New kernel size  : {len(new_kernel)}")
+          print(f"Ramdisk size     : {ramdisk_size}")
+          print(f"Recovery DTBO    : {recovery_dtbo_size}")
+          print(f"Output size      : {len(output)}")
+          print(f"Output           : {OUTPUT}")
+          PY
+
+      - name: Verify final TWRP image
+        run: |
+          test "$(head -c 8 "$OUTPUT_IMG")" = "ANDROID!"
+          test "$(stat -c%s "$OUTPUT_IMG")" -le 33554432
+
+          python3 <<'PY'
+          from pathlib import Path
+          import struct
+
+          def align(v, n):
+              return (v + n - 1) // n * n
+
+          def split(path):
+              d = Path(path).read_bytes()
+              k = struct.unpack_from("<I", d, 8)[0]
+              r = struct.unpack_from("<I", d, 16)[0]
+              s = struct.unpack_from("<I", d, 24)[0]
+              p = struct.unpack_from("<I", d, 36)[0]
+              dz = struct.unpack_from("<I", d, 1632)[0]
+              do = struct.unpack_from("<Q", d, 1636)[0]
+              ko = p
+              ro = align(ko + k, p)
+              so = align(ro + r, p)
+              return {
+                  "data": d,
+                  "kernel": d[ko:ko+k],
+                  "ramdisk": d[ro:ro+r],
+                  "second": d[so:so+s],
+                  "dtbo": d[do:do+dz],
+                  "tail": d[do+dz:],
+                  "header": d[:p],
+              }
+
+          base = split("twrp-base.img")
+          final = split("${{ env.OUTPUT_IMG }}")
+
+          if final["ramdisk"] != base["ramdisk"]:
+              raise SystemExit("external TeamWin ramdisk changed")
+          if final["second"] != base["second"]:
+              raise SystemExit("boot second stage changed")
+          if final["dtbo"] != base["dtbo"]:
+              raise SystemExit("recovery DTBO changed")
+          if final["tail"] != base["tail"]:
+              raise SystemExit("post-DTBO tail changed")
+
+          bh = bytearray(base["header"])
+          fh = bytearray(final["header"])
+          for off, size in ((8, 4), (1636, 8)):
+              bh[off:off+size] = bytes(size)
+              fh[off:off+size] = bytes(size)
+          if bh != fh:
+              raise SystemExit("unexpected static boot header change")
+
+          print("External boot structures verified:")
+          print("- TeamWin ramdisk byte-for-byte identical")
+          print("- second stage byte-for-byte identical")
+          print("- recovery DTBO byte-for-byte identical")
+          print("- post-DTBO tail byte-for-byte identical")
+          print("- only kernel size/recovery offset fields changed as required")
+          PY
+
+          sha256sum "$OUTPUT_IMG" | tee twrp-droidspaces.sha256
+
+          {
+            echo "### Channel TWRP DroidSpaces + kernel-initramfs Wi-Fi build"
+            echo
+            echo "- TWRP base: 3.5.2_10-0 official channel image"
+            echo "- TWRP kernel source: TeamWin/android_kernel_motorola_sdm632 @ $TWRP_KERNEL_REF (twrp-10.0)"
+            echo "- Kernel config: extracted byte-for-byte from official TWRP 3.5.2_10-0 kernel"
+            echo "- DroidSpaces config commits: ee9637adaa0c38f9105feb4902531d608298df81, e310252413ffb052e86092d32f7f8b4fabd5eae2, f09c342d80aaa93eb852320568b9313d2768386b"
+            echo "- DroidSpaces source fix: c6f0507da463205a4d6d9ca4fb1130218530feb3"
+            echo "- KernelSU/ReSukiSU: not added"
+            echo "- Recovery Wi-Fi payload: embedded in the kernel internal initramfs"
+            echo "- External TeamWin ramdisk: preserved byte-for-byte"
+            echo
+            echo "SHA-256:"
+            cat twrp-droidspaces.sha256
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: channel-twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs
+          path: |
+            ${{ env.OUTPUT_IMG }}
+            build/arch/arm64/boot/Image.gz-dtb
+            droidspaces.fragment
+            droidspaces-final-config.txt
+            official-twrp.config
+            official-twrp-after-olddefconfig.config
+            official-config-source-diff.txt
+            kernel.sha256
+            kernel-initramfs-files.txt
+            twrp-droidspaces.sha256
+            recovery-wifi/out/SHA256SUMS
+            recovery-wifi/wifi
+            recovery-wifi/wifi-udhcpc.script
+            recovery-wifi/WCNSS_qcom_cfg.ini
+          if-no-files-found: error

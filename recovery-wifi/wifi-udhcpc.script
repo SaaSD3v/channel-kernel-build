@@ -1,0 +1,52 @@
+#!/sbin/sh
+BB=/sbin/busybox.ds
+STATE=/tmp/ds-wifi
+mkdir -p "$STATE" 2>/dev/null || true
+case "$1" in
+  deconfig)
+    "$BB" ip addr flush dev "$interface" 2>/dev/null || true
+    if command -v setprop >/dev/null 2>&1; then
+      setprop "dhcp.$interface.ipaddress" ""
+      setprop "dhcp.$interface.gateway" ""
+      setprop "dhcp.$interface.dns1" ""
+      setprop "dhcp.$interface.dns2" ""
+      setprop net.dns1 ""
+      setprop net.dns2 ""
+    fi
+    ;;
+  bound|renew)
+    if [ -n "${subnet:-}" ]; then
+      "$BB" ifconfig "$interface" "$ip" netmask "$subnet" up
+    else
+      "$BB" ifconfig "$interface" "$ip" up
+    fi
+    "$BB" ip route del default dev "$interface" 2>/dev/null || true
+    set -- ${router:-}
+    [ -n "${1:-}" ] && "$BB" ip route add default via "$1" dev "$interface" 2>/dev/null || true
+    : > /etc/resolv.conf 2>/dev/null || true
+    for server in ${dns:-}; do
+      echo "nameserver $server" >> /etc/resolv.conf 2>/dev/null || true
+    done
+    if command -v setprop >/dev/null 2>&1; then
+      setprop "dhcp.$interface.ipaddress" "$ip"
+      set -- ${router:-}
+      setprop "dhcp.$interface.gateway" "${1:-}"
+      dns_index=1
+      for server in ${dns:-}; do
+        setprop "dhcp.$interface.dns$dns_index" "$server"
+        setprop "net.dns$dns_index" "$server"
+        dns_index=$((dns_index + 1))
+        [ "$dns_index" -gt 2 ] && break
+      done
+    fi
+    {
+      echo "interface=$interface"
+      echo "ip=$ip"
+      echo "subnet=${subnet:-}"
+      echo "router=${router:-}"
+      echo "dns=${dns:-}"
+      echo "lease=${lease:-}"
+    } > "$STATE/lease.env"
+    ;;
+esac
+exit 0
