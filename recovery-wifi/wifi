@@ -29,6 +29,16 @@ PERSIST_NETWORKS=$PERSIST_DIR/networks
 PERSIST_VERSION=$PERSIST_DIR/.version
 CANDIDATE=$STATE/candidate.conf
 PERSIST_COUNT=0
+PERSIST_HOTSPOT=$PERSIST_DIR/hotspot.conf
+HOTSPOT_CONF=$STATE/hotspot.conf
+HOTSPOT_MARKER=$STATE/hotspot.active
+HOTSPOT_LOG=$STATE/hotspot.log
+HOTSPOT_DHCP=$STATE/udhcpd.conf
+HOTSPOT_LEASES=$STATE/udhcpd.leases
+HOTSPOT_PID=$STATE/udhcpd.pid
+HOTSPOT_DHCP_LOG=$STATE/udhcpd.log
+HOTSPOT_ADDR=192.168.43.1
+HOTSPOT_CIDR=192.168.43.1/24
 IFACE=${WIFI_IFACE:-wlan0}
 
 mkdir_state() {
@@ -414,6 +424,35 @@ stop_supplicant() {
     "$BB" sleep 1
 }
 
+stop_udhcpd() {
+    pid=""
+    [ -f "$HOTSPOT_PID" ] && pid="$(cat "$HOTSPOT_PID" 2>/dev/null)"
+
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                exe="$("$BB" readlink "/proc/$pid/exe" 2>/dev/null || true)"
+                case "$exe" in
+                    */busybox.ds)
+                        kill "$pid" 2>/dev/null || true
+                        ;;
+                esac
+            fi
+            ;;
+    esac
+
+    "$BB" rm -f "$HOTSPOT_PID" 2>/dev/null || true
+}
+
+clear_hotspot_state() {
+    stop_udhcpd
+    if [ -f "$HOTSPOT_MARKER" ]; then
+        "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+        "$BB" rm -f "$HOTSPOT_MARKER" 2>/dev/null || true
+    fi
+}
+
 write_base_conf() {
     target="$1"
     {
@@ -433,6 +472,7 @@ start_supplicant() {
         write_base_conf "$CONF" || return 1
     fi
 
+    clear_hotspot_state
     stop_supplicant
     "$BB" rm -rf "$CTRL"
     "$BB" mkdir -p "$CTRL"
@@ -614,6 +654,847 @@ commit_validated_network() {
 
     "$BB" rm -f "$CANDIDATE" 2>/dev/null || true
     return 0
+}
+
+channel_to_frequency() {
+    case "$1" in
+        1|2|3|4|5|6|7|8|9|10|11)
+            printf '%s\n' "$((2407 + ($1 * 5)))"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+make_hotspot_conf() {
+    ssid="$1"
+    pass="$2"
+    channel="$3"
+    target="$4"
+
+    [ -n "$ssid" ] && [ "${#ssid}" -le 32 ] || {
+        echo "Hotspot SSID must contain 1-32 characters." >&2
+        return 1
+    }
+    [ "${#pass}" -ge 8 ] && [ "${#pass}" -le 63 ] || {
+        echo "Hotspot password must contain 8-63 characters." >&2
+        return 1
+    }
+
+    freq="$(channel_to_frequency "$channel")" || {
+        echo "Hotspot channel must be between 1 and 11." >&2
+        return 1
+    }
+
+    {
+        printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
+        printf '%s\n' 'update_config=0'
+        printf '%s\n' 'ap_scan=2'
+        "$WPAPASS" "$ssid" "$pass" 2>/dev/null |
+            "$BB" sed '/^[[:space:]]*#psk=/d' |
+            "$BB" awk -v freq="$freq" '
+                /^[[:space:]]*network[[:space:]]*=/ {
+                    print
+                    print "    mode=2"
+                    print "    frequency=" freq
+                    print "    key_mgmt=WPA-PSK"
+                    print "    proto=RSN"
+                    print "    pairwise=CCMP"
+                    print "    group=CCMP"
+                    next
+                }
+                { print }
+            '
+    } > "$target" || return 1
+
+    "$BB" chmod 600 "$target" 2>/dev/null || true
+    "$BB" grep -q '^[[:space:]]*mode=2[[:space:]]*    prepare || {
+        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        return 1
+    }
+
+    if build_runtime_from_persistent; then
+        echo "Loaded $PERSIST_COUNT saved network(s) from $PERSIST_DIR"
+    fi
+
+    start_supplicant "$CONF" || return 1
+    echo "Wi-Fi ready on $IFACE"
+
+    if "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$CONF" 2>/dev/null; then
+        if wait_connected 25; then
+            if do_dhcp; then
+                echo "Wi-Fi connection and DHCP restored on $IFACE"
+            else
+                echo "Wi-Fi reassociated, but DHCP failed. Run: wifi dhcp; wifi logs"
+                return 1
+            fi
+        else
+            echo "Wi-Fi ready; no saved network associated within the timeout"
+        fi
+    fi
+}
+
+cmd_scan() {
+    [ -S "$CTRL/$IFACE" ] || cmd_up || return 1
+    "$WPACLI" -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || true
+    "$BB" sleep 3
+    "$WPACLI" -p "$CTRL" -i "$IFACE" scan_results
+}
+
+cmd_connect() {
+    [ "$#" -ge 2 ] || { echo 'usage: wifi connect "SSID" "PASSWORD"'; return 2; }
+    ssid="$1"
+    prepare || return 1
+    make_psk_conf "$ssid" "$2" "$CANDIDATE" || {
+        echo "Could not build WPA/WPA2 candidate profile. Network was not saved."
+        return 1
+    }
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "Association/authentication failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "Association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "WPA-PSK" "$ssid" "$CANDIDATE" || return 1
+    cmd_status
+}
+
+cmd_connect_open() {
+    [ "$#" -ge 1 ] || { echo 'usage: wifi connect-open "SSID"'; return 2; }
+    ssid="$1"
+    prepare || return 1
+    make_open_conf "$ssid" "$CANDIDATE" || return 1
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "Open-network association failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "Association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "OPEN" "$ssid" "$CANDIDATE" || return 1
+    cmd_status
+}
+
+cmd_connect_sae() {
+    [ "$#" -ge 2 ] || { echo 'usage: wifi connect-sae "SSID" "PASSWORD"'; return 2; }
+    ssid="$1"
+    prepare || return 1
+    make_sae_conf "$ssid" "$2" "$CANDIDATE" || return 1
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "SAE authentication failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "SAE association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "SAE" "$ssid" "$CANDIDATE" || return 1
+    cmd_status
+}
+
+cmd_networks() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    count=0
+    echo "Saved networks:"
+    for saved in "$PERSIST_NETWORKS"/*.conf; do
+        [ -f "$saved" ] || continue
+        security=$("$BB" sed -n 's/^# security=//p' "$saved" | "$BB" awk 'NR == 1 { print; exit }')
+        ssid=$("$BB" awk '
+            /^[[:space:]]*ssid="/ {
+                line=$0
+                sub(/^[[:space:]]*ssid="/, "", line)
+                sub(/"[[:space:]]*$/, "", line)
+                print line
+                exit
+            }
+        ' "$saved")
+        [ -n "$security" ] || security="UNKNOWN"
+        [ -n "$ssid" ] || ssid="<unknown>"
+        count=$((count + 1))
+        printf '%s - [%s] %s\n' "$count" "$security" "$ssid"
+    done
+
+    [ "$count" -gt 0 ] || echo "(none)"
+}
+
+cmd_forget() {
+    [ "$#" -ge 1 ] || { echo 'usage: wifi forget "SSID"'; return 2; }
+    ssid="$1"
+
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    nid=$(network_id "$ssid") || return 1
+    saved="$PERSIST_NETWORKS/$nid.conf"
+    [ -f "$saved" ] || {
+        echo "No saved network named: $ssid"
+        return 1
+    }
+
+    current=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^ssid=//p')
+    "$BB" rm -f "$saved" || return 1
+    "$BB" sync
+
+    if [ "$current" = "$ssid" ]; then
+        cmd_disconnect
+    fi
+
+    if ! build_runtime_from_persistent; then
+        write_base_conf "$CONF"
+    fi
+
+    echo "Forgot network: $ssid"
+}
+
+cmd_forget_all() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    "$BB" rm -f "$PERSIST_NETWORKS"/*.conf 2>/dev/null || true
+    "$BB" sync
+    cmd_disconnect
+    write_base_conf "$CONF"
+    echo "Forgot all saved Wi-Fi networks."
+}
+
+cmd_status() {
+    echo "--- supplicant ---"
+    "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
+    echo "--- address ---"
+    "$BB" ip addr show dev "$IFACE" 2>/dev/null || true
+    echo "--- route ---"
+    "$BB" ip route 2>/dev/null || true
+    echo "--- DNS ---"
+    cat /etc/resolv.conf 2>/dev/null || true
+}
+
+deconfigure_network() {
+    interface="$IFACE" "$UDHCPC_SCRIPT" deconfig >/dev/null 2>&1 || {
+        "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+        : > /etc/resolv.conf 2>/dev/null || true
+        "$BB" rm -f "$STATE/lease.env" "$STATE/udhcpc.pid" 2>/dev/null || true
+    }
+}
+
+cmd_disconnect() {
+    if [ -f "$HOTSPOT_MARKER" ]; then
+        echo "Hotspot is active. Use: wifi hotspot stop"
+        return 1
+    fi
+    "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect >/dev/null 2>&1 || true
+    deconfigure_network
+    echo "Wi-Fi disconnected"
+}
+
+cmd_down() {
+    clear_hotspot_state
+    stop_supplicant
+    deconfigure_network
+    "$BB" ip link set "$IFACE" down 2>/dev/null || true
+    echo "Wi-Fi stopped"
+}
+
+cmd_logs() {
+    echo "===== recovery Wi-Fi prepare ====="
+    cat "$PREPLOG" 2>/dev/null || true
+    echo "===== wpa_supplicant ====="
+    "$BB" tail -n 160 "$LOG" 2>/dev/null || true
+    echo "===== hotspot wpa_supplicant ====="
+    "$BB" tail -n 160 "$HOTSPOT_LOG" 2>/dev/null || true
+    echo "===== hotspot udhcpd ====="
+    "$BB" tail -n 80 "$HOTSPOT_DHCP_LOG" 2>/dev/null || true
+    echo "===== kernel WLAN/WCNSS ====="
+    dmesg 2>/dev/null | "$BB" grep -iE 'wlan|wcnss|pronto|firmware|cfg80211|rfkill' | "$BB" tail -n 200 || true
+    echo "===== nodes ====="
+    ls -l /dev/wcnss* /sys/module/wlan/parameters 2>/dev/null || true
+    echo "===== staged firmware ====="
+    ls -l /lib/firmware /lib/firmware/wlan/prima 2>/dev/null || true
+    echo "===== WCNSS trigger marker ====="
+    ls -l "$STATE/wcnss.opened" 2>/dev/null || true
+    echo "===== mounts ====="
+    "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|mnt/vendor/persist|lib/firmware|tmp/ds-wifi/vendor-stock) ' /proc/mounts 2>/dev/null || true
+}
+
+usage() {
+    printf '%s\n' \
+        'Recovery Wi-Fi (Motorola channel)' \
+        '' \
+        '  wifi prepare' \
+        '  wifi up' \
+        '  wifi scan' \
+        '  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK' \
+        '  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE' \
+        '  wifi connect-open "SSID"' \
+        '  wifi networks' \
+        '  wifi forget "SSID"' \
+        '  wifi forget-all' \
+        '  wifi hotspot start "SSID" "PASSWORD" [CHANNEL]  # default channel 6' \
+        '  wifi hotspot start                               # reuse saved config' \
+        '  wifi hotspot status' \
+        '  wifi hotspot clients' \
+        '  wifi hotspot stop' \
+        '  wifi dhcp' \
+        '  wifi status' \
+        '  wifi ping HOST' \
+        '  wifi disconnect' \
+        '  wifi down' \
+        '  wifi logs'
+}
+
+mkdir_state
+cmd="${1:-help}"
+shift 2>/dev/null || true
+case "$cmd" in
+    prepare) prepare ;;
+    up) cmd_up ;;
+    scan) cmd_scan ;;
+    connect) cmd_connect "$@" ;;
+    connect-sae) cmd_connect_sae "$@" ;;
+    connect-open) cmd_connect_open "$@" ;;
+    networks) cmd_networks ;;
+    forget) cmd_forget "$@" ;;
+    forget-all) cmd_forget_all ;;
+    hotspot)
+        sub="${1:-status}"
+        [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            start) cmd_hotspot_start "$@" ;;
+            status) cmd_hotspot_status ;;
+            clients) cmd_hotspot_clients ;;
+            stop) cmd_hotspot_stop ;;
+            *) echo "Unknown hotspot command: $sub"; usage; exit 2 ;;
+        esac
+        ;;
+    dhcp) do_dhcp ;;
+    status) cmd_status ;;
+    ping) [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; exit 2; }; "$BB" ping -c 4 "$1" ;;
+    disconnect) cmd_disconnect ;;
+    down) cmd_down ;;
+    logs) cmd_logs ;;
+    help|-h|--help) usage ;;
+    *) echo "Unknown command: $cmd"; usage; exit 2 ;;
+esac
+ "$target" 2>/dev/null || return 1
+    "$BB" grep -q '^[[:space:]]*psk=' "$target" 2>/dev/null || return 1
+}
+
+persist_hotspot_conf() {
+    source="$1"
+    ensure_persistent_store || return 1
+
+    tmp="$PERSIST_DIR/.hotspot.$"
+    {
+        printf '%s\n' '# dswifi-hotspot=1'
+        "$BB" cat "$source"
+    } > "$tmp" || return 1
+
+    "$BB" chmod 600 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" chown 0:0 "$tmp" 2>/dev/null || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" mv -f "$tmp" "$PERSIST_HOTSPOT" || { "$BB" rm -f "$tmp"; return 1; }
+    "$BB" sync
+}
+
+load_hotspot_conf() {
+    ensure_persistent_store || return 1
+    [ -f "$PERSIST_HOTSPOT" ] || return 1
+    "$BB" grep -qx '# dswifi-hotspot=1' "$PERSIST_HOTSPOT" 2>/dev/null || return 1
+    "$BB" grep -q '^[[:space:]]*mode=2[[:space:]]*    prepare || {
+        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        return 1
+    }
+
+    if build_runtime_from_persistent; then
+        echo "Loaded $PERSIST_COUNT saved network(s) from $PERSIST_DIR"
+    fi
+
+    start_supplicant "$CONF" || return 1
+    echo "Wi-Fi ready on $IFACE"
+
+    if "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$CONF" 2>/dev/null; then
+        if wait_connected 25; then
+            if do_dhcp; then
+                echo "Wi-Fi connection and DHCP restored on $IFACE"
+            else
+                echo "Wi-Fi reassociated, but DHCP failed. Run: wifi dhcp; wifi logs"
+                return 1
+            fi
+        else
+            echo "Wi-Fi ready; no saved network associated within the timeout"
+        fi
+    fi
+}
+
+cmd_scan() {
+    [ -S "$CTRL/$IFACE" ] || cmd_up || return 1
+    "$WPACLI" -p "$CTRL" -i "$IFACE" scan >/dev/null 2>&1 || true
+    "$BB" sleep 3
+    "$WPACLI" -p "$CTRL" -i "$IFACE" scan_results
+}
+
+cmd_connect() {
+    [ "$#" -ge 2 ] || { echo 'usage: wifi connect "SSID" "PASSWORD"'; return 2; }
+    ssid="$1"
+    prepare || return 1
+    make_psk_conf "$ssid" "$2" "$CANDIDATE" || {
+        echo "Could not build WPA/WPA2 candidate profile. Network was not saved."
+        return 1
+    }
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "Association/authentication failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "Association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "WPA-PSK" "$ssid" "$CANDIDATE" || return 1
+    cmd_status
+}
+
+cmd_connect_open() {
+    [ "$#" -ge 1 ] || { echo 'usage: wifi connect-open "SSID"'; return 2; }
+    ssid="$1"
+    prepare || return 1
+    make_open_conf "$ssid" "$CANDIDATE" || return 1
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "Open-network association failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "Association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "OPEN" "$ssid" "$CANDIDATE" || return 1
+    cmd_status
+}
+
+cmd_connect_sae() {
+    [ "$#" -ge 2 ] || { echo 'usage: wifi connect-sae "SSID" "PASSWORD"'; return 2; }
+    ssid="$1"
+    prepare || return 1
+    make_sae_conf "$ssid" "$2" "$CANDIDATE" || return 1
+    deconfigure_network
+    start_supplicant "$CANDIDATE" || { "$BB" rm -f "$CANDIDATE"; return 1; }
+    if ! wait_connected 30; then
+        echo "SAE authentication failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    if ! do_dhcp; then
+        echo "SAE association succeeded but DHCP failed. Network was not saved."
+        restore_known_after_failure
+        return 1
+    fi
+    commit_validated_network "SAE" "$ssid" "$CANDIDATE" || return 1
+    cmd_status
+}
+
+cmd_networks() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    count=0
+    echo "Saved networks:"
+    for saved in "$PERSIST_NETWORKS"/*.conf; do
+        [ -f "$saved" ] || continue
+        security=$("$BB" sed -n 's/^# security=//p' "$saved" | "$BB" awk 'NR == 1 { print; exit }')
+        ssid=$("$BB" awk '
+            /^[[:space:]]*ssid="/ {
+                line=$0
+                sub(/^[[:space:]]*ssid="/, "", line)
+                sub(/"[[:space:]]*$/, "", line)
+                print line
+                exit
+            }
+        ' "$saved")
+        [ -n "$security" ] || security="UNKNOWN"
+        [ -n "$ssid" ] || ssid="<unknown>"
+        count=$((count + 1))
+        printf '%s - [%s] %s\n' "$count" "$security" "$ssid"
+    done
+
+    [ "$count" -gt 0 ] || echo "(none)"
+}
+
+cmd_forget() {
+    [ "$#" -ge 1 ] || { echo 'usage: wifi forget "SSID"'; return 2; }
+    ssid="$1"
+
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    nid=$(network_id "$ssid") || return 1
+    saved="$PERSIST_NETWORKS/$nid.conf"
+    [ -f "$saved" ] || {
+        echo "No saved network named: $ssid"
+        return 1
+    }
+
+    current=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^ssid=//p')
+    "$BB" rm -f "$saved" || return 1
+    "$BB" sync
+
+    if [ "$current" = "$ssid" ]; then
+        cmd_disconnect
+    fi
+
+    if ! build_runtime_from_persistent; then
+        write_base_conf "$CONF"
+    fi
+
+    echo "Forgot network: $ssid"
+}
+
+cmd_forget_all() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    "$BB" rm -f "$PERSIST_NETWORKS"/*.conf 2>/dev/null || true
+    "$BB" sync
+    cmd_disconnect
+    write_base_conf "$CONF"
+    echo "Forgot all saved Wi-Fi networks."
+}
+
+cmd_status() {
+    echo "--- supplicant ---"
+    "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
+    echo "--- address ---"
+    "$BB" ip addr show dev "$IFACE" 2>/dev/null || true
+    echo "--- route ---"
+    "$BB" ip route 2>/dev/null || true
+    echo "--- DNS ---"
+    cat /etc/resolv.conf 2>/dev/null || true
+}
+
+deconfigure_network() {
+    interface="$IFACE" "$UDHCPC_SCRIPT" deconfig >/dev/null 2>&1 || {
+        "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+        : > /etc/resolv.conf 2>/dev/null || true
+        "$BB" rm -f "$STATE/lease.env" "$STATE/udhcpc.pid" 2>/dev/null || true
+    }
+}
+
+cmd_disconnect() {
+    if [ -f "$HOTSPOT_MARKER" ]; then
+        echo "Hotspot is active. Use: wifi hotspot stop"
+        return 1
+    fi
+    "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect >/dev/null 2>&1 || true
+    deconfigure_network
+    echo "Wi-Fi disconnected"
+}
+
+cmd_down() {
+    clear_hotspot_state
+    stop_supplicant
+    deconfigure_network
+    "$BB" ip link set "$IFACE" down 2>/dev/null || true
+    echo "Wi-Fi stopped"
+}
+
+cmd_logs() {
+    echo "===== recovery Wi-Fi prepare ====="
+    cat "$PREPLOG" 2>/dev/null || true
+    echo "===== wpa_supplicant ====="
+    "$BB" tail -n 160 "$LOG" 2>/dev/null || true
+    echo "===== hotspot wpa_supplicant ====="
+    "$BB" tail -n 160 "$HOTSPOT_LOG" 2>/dev/null || true
+    echo "===== hotspot udhcpd ====="
+    "$BB" tail -n 80 "$HOTSPOT_DHCP_LOG" 2>/dev/null || true
+    echo "===== kernel WLAN/WCNSS ====="
+    dmesg 2>/dev/null | "$BB" grep -iE 'wlan|wcnss|pronto|firmware|cfg80211|rfkill' | "$BB" tail -n 200 || true
+    echo "===== nodes ====="
+    ls -l /dev/wcnss* /sys/module/wlan/parameters 2>/dev/null || true
+    echo "===== staged firmware ====="
+    ls -l /lib/firmware /lib/firmware/wlan/prima 2>/dev/null || true
+    echo "===== WCNSS trigger marker ====="
+    ls -l "$STATE/wcnss.opened" 2>/dev/null || true
+    echo "===== mounts ====="
+    "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|mnt/vendor/persist|lib/firmware|tmp/ds-wifi/vendor-stock) ' /proc/mounts 2>/dev/null || true
+}
+
+usage() {
+    printf '%s\n' \
+        'Recovery Wi-Fi (Motorola channel)' \
+        '' \
+        '  wifi prepare' \
+        '  wifi up' \
+        '  wifi scan' \
+        '  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK' \
+        '  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE' \
+        '  wifi connect-open "SSID"' \
+        '  wifi networks' \
+        '  wifi forget "SSID"' \
+        '  wifi forget-all' \
+        '  wifi hotspot start "SSID" "PASSWORD" [CHANNEL]  # default channel 6' \
+        '  wifi hotspot start                               # reuse saved config' \
+        '  wifi hotspot status' \
+        '  wifi hotspot clients' \
+        '  wifi hotspot stop' \
+        '  wifi dhcp' \
+        '  wifi status' \
+        '  wifi ping HOST' \
+        '  wifi disconnect' \
+        '  wifi down' \
+        '  wifi logs'
+}
+
+mkdir_state
+cmd="${1:-help}"
+shift 2>/dev/null || true
+case "$cmd" in
+    prepare) prepare ;;
+    up) cmd_up ;;
+    scan) cmd_scan ;;
+    connect) cmd_connect "$@" ;;
+    connect-sae) cmd_connect_sae "$@" ;;
+    connect-open) cmd_connect_open "$@" ;;
+    networks) cmd_networks ;;
+    forget) cmd_forget "$@" ;;
+    forget-all) cmd_forget_all ;;
+    hotspot)
+        sub="${1:-status}"
+        [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            start) cmd_hotspot_start "$@" ;;
+            status) cmd_hotspot_status ;;
+            clients) cmd_hotspot_clients ;;
+            stop) cmd_hotspot_stop ;;
+            *) echo "Unknown hotspot command: $sub"; usage; exit 2 ;;
+        esac
+        ;;
+    dhcp) do_dhcp ;;
+    status) cmd_status ;;
+    ping) [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; exit 2; }; "$BB" ping -c 4 "$1" ;;
+    disconnect) cmd_disconnect ;;
+    down) cmd_down ;;
+    logs) cmd_logs ;;
+    help|-h|--help) usage ;;
+    *) echo "Unknown command: $cmd"; usage; exit 2 ;;
+esac
+ "$PERSIST_HOTSPOT" 2>/dev/null || return 1
+    "$BB" cp "$PERSIST_HOTSPOT" "$HOTSPOT_CONF" || return 1
+    "$BB" chmod 600 "$HOTSPOT_CONF" 2>/dev/null || true
+}
+
+start_hotspot_supplicant() {
+    clear_hotspot_state
+    stop_supplicant
+    deconfigure_network
+
+    "$BB" rm -rf "$CTRL"
+    "$BB" mkdir -p "$CTRL"
+    : > "$HOTSPOT_LOG"
+
+    "$WPA" -B -P "$STATE/wpa.pid" -i "$IFACE" -D nl80211 \
+        -c "$HOTSPOT_CONF" -C "$CTRL" -f "$HOTSPOT_LOG"
+}
+
+wait_hotspot_ready() {
+    i=0
+    while [ "$i" -lt 15 ]; do
+        hs="$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true)"
+        printf '%s\n' "$hs" | "$BB" grep -qx 'mode=AP' && return 0
+        printf '%s\n' "$hs" | "$BB" grep -qx 'wpa_state=COMPLETED' && return 0
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+start_udhcpd() {
+    : > "$HOTSPOT_LEASES"
+    : > "$HOTSPOT_DHCP_LOG"
+
+    {
+        printf '%s\n' 'start 192.168.43.20'
+        printf '%s\n' 'end 192.168.43.60'
+        printf 'interface %s\n' "$IFACE"
+        printf '%s\n' 'max_leases 41'
+        printf '%s\n' 'opt subnet 255.255.255.0'
+        printf '%s\n' 'opt router 192.168.43.1'
+        printf '%s\n' 'opt lease 86400'
+        printf 'lease_file %s\n' "$HOTSPOT_LEASES"
+        printf 'pidfile %s\n' "$HOTSPOT_PID"
+    } > "$HOTSPOT_DHCP" || return 1
+
+    "$BB" udhcpd -f "$HOTSPOT_DHCP" > "$HOTSPOT_DHCP_LOG" 2>&1 &
+    hp=$!
+    printf '%s\n' "$hp" > "$HOTSPOT_PID"
+    "$BB" sleep 1
+
+    kill -0 "$hp" 2>/dev/null || {
+        "$BB" rm -f "$HOTSPOT_PID"
+        return 1
+    }
+}
+
+restore_client_after_hotspot_failure() {
+    clear_hotspot_state
+    stop_supplicant
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    echo "Hotspot startup failed; attempting to restore client Wi-Fi."
+    cmd_up || {
+        echo "Client Wi-Fi could not be restored automatically. Run: wifi logs"
+        return 1
+    }
+}
+
+cmd_hotspot_start() {
+    new_config=0
+
+    case "$#" in
+        0)
+            if ! load_hotspot_conf; then
+                echo 'No saved hotspot. Usage: wifi hotspot start "SSID" "PASSWORD" [CHANNEL]'
+                return 2
+            fi
+            ;;
+        2|3)
+            channel="${3:-6}"
+            make_hotspot_conf "$1" "$2" "$channel" "$HOTSPOT_CONF" || return 1
+            new_config=1
+            ;;
+        *)
+            echo 'usage: wifi hotspot start "SSID" "PASSWORD" [CHANNEL]'
+            return 2
+            ;;
+    esac
+
+    prepare || {
+        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        return 1
+    }
+
+    if ! start_hotspot_supplicant; then
+        echo "Could not start wpa_supplicant in AP mode."
+        restore_client_after_hotspot_failure
+        return 1
+    fi
+
+    if ! wait_hotspot_ready; then
+        echo "AP mode did not become ready."
+        restore_client_after_hotspot_failure
+        return 1
+    fi
+
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+    "$BB" ip addr add "$HOTSPOT_CIDR" dev "$IFACE" 2>/dev/null || {
+        echo "Could not assign hotspot address $HOTSPOT_CIDR."
+        restore_client_after_hotspot_failure
+        return 1
+    }
+    "$BB" ip link set "$IFACE" up 2>/dev/null || true
+
+    if ! start_udhcpd; then
+        echo "Hotspot AP is up, but DHCP server failed."
+        restore_client_after_hotspot_failure
+        return 1
+    fi
+
+    printf '%s\n' "active" > "$HOTSPOT_MARKER"
+    "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
+
+    if [ "$new_config" -eq 1 ]; then
+        if persist_hotspot_conf "$HOTSPOT_CONF"; then
+            echo "Saved hotspot configuration at $PERSIST_HOTSPOT"
+        else
+            echo "Hotspot is running, but persistent storage is unavailable; configuration is temporary."
+        fi
+    fi
+
+    echo "Hotspot ready on $IFACE: $HOTSPOT_ADDR/24"
+    cmd_hotspot_status
+}
+
+cmd_hotspot_status() {
+    if [ ! -f "$HOTSPOT_MARKER" ]; then
+        echo "Hotspot is not active."
+        return 1
+    fi
+
+    echo "--- hotspot ---"
+    "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
+    echo "--- address ---"
+    "$BB" ip addr show dev "$IFACE" 2>/dev/null || true
+    echo "--- DHCP ---"
+    pid=""
+    [ -f "$HOTSPOT_PID" ] && pid="$(cat "$HOTSPOT_PID" 2>/dev/null)"
+    case "$pid" in
+        ''|*[!0-9]*) echo "udhcpd: stopped" ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                echo "udhcpd: running pid=$pid"
+            else
+                echo "udhcpd: stopped (stale pid=$pid)"
+            fi
+            ;;
+    esac
+}
+
+cmd_hotspot_clients() {
+    [ -f "$HOTSPOT_MARKER" ] || {
+        echo "Hotspot is not active."
+        return 1
+    }
+    echo "Hotspot clients / neighbor table:"
+    "$BB" ip neigh show dev "$IFACE" 2>/dev/null || true
+}
+
+cmd_hotspot_stop() {
+    was_active=0
+    [ -f "$HOTSPOT_MARKER" ] && was_active=1
+
+    clear_hotspot_state
+    stop_supplicant
+    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+
+    if [ "$was_active" -eq 1 ]; then
+        echo "Hotspot stopped. Restoring client Wi-Fi."
+    else
+        echo "Hotspot was not active. Ensuring client Wi-Fi is ready."
+    fi
+
+    cmd_up
 }
 
 cmd_up() {
@@ -809,12 +1690,17 @@ deconfigure_network() {
 }
 
 cmd_disconnect() {
+    if [ -f "$HOTSPOT_MARKER" ]; then
+        echo "Hotspot is active. Use: wifi hotspot stop"
+        return 1
+    fi
     "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect >/dev/null 2>&1 || true
     deconfigure_network
     echo "Wi-Fi disconnected"
 }
 
 cmd_down() {
+    clear_hotspot_state
     stop_supplicant
     deconfigure_network
     "$BB" ip link set "$IFACE" down 2>/dev/null || true
@@ -826,6 +1712,10 @@ cmd_logs() {
     cat "$PREPLOG" 2>/dev/null || true
     echo "===== wpa_supplicant ====="
     "$BB" tail -n 160 "$LOG" 2>/dev/null || true
+    echo "===== hotspot wpa_supplicant ====="
+    "$BB" tail -n 160 "$HOTSPOT_LOG" 2>/dev/null || true
+    echo "===== hotspot udhcpd ====="
+    "$BB" tail -n 80 "$HOTSPOT_DHCP_LOG" 2>/dev/null || true
     echo "===== kernel WLAN/WCNSS ====="
     dmesg 2>/dev/null | "$BB" grep -iE 'wlan|wcnss|pronto|firmware|cfg80211|rfkill' | "$BB" tail -n 200 || true
     echo "===== nodes ====="
@@ -851,6 +1741,11 @@ usage() {
         '  wifi networks' \
         '  wifi forget "SSID"' \
         '  wifi forget-all' \
+        '  wifi hotspot start "SSID" "PASSWORD" [CHANNEL]  # default channel 6' \
+        '  wifi hotspot start                               # reuse saved config' \
+        '  wifi hotspot status' \
+        '  wifi hotspot clients' \
+        '  wifi hotspot stop' \
         '  wifi dhcp' \
         '  wifi status' \
         '  wifi ping HOST' \
@@ -872,6 +1767,17 @@ case "$cmd" in
     networks) cmd_networks ;;
     forget) cmd_forget "$@" ;;
     forget-all) cmd_forget_all ;;
+    hotspot)
+        sub="${1:-status}"
+        [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            start) cmd_hotspot_start "$@" ;;
+            status) cmd_hotspot_status ;;
+            clients) cmd_hotspot_clients ;;
+            stop) cmd_hotspot_stop ;;
+            *) echo "Unknown hotspot command: $sub"; usage; exit 2 ;;
+        esac
+        ;;
     dhcp) do_dhcp ;;
     status) cmd_status ;;
     ping) [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; exit 2; }; "$BB" ping -c 4 "$1" ;;
