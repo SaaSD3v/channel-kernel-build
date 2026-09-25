@@ -380,7 +380,14 @@ jobs:
           case "$INITRAMFS" in
             *.gz) gzip -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
             *.xz) xz -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
-            *.lzma) xz --format=lzma -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
+            *.lzma)
+              # Kbuild's cmd_lzma appends a 4-byte little-endian uncompressed
+              # size trailer. The kernel decoder expects that trailer, while
+              # userspace xz treats it as trailing garbage. Strip it only from
+              # this inspection stream; the built kernel keeps the original.
+              test "$(stat -c%s "$INITRAMFS")" -gt 4
+              head -c -4 "$INITRAMFS" | xz --format=lzma -dc - > /tmp/kernel-initramfs.cpio
+              ;;
             *.cpio) cp "$INITRAMFS" /tmp/kernel-initramfs.cpio ;;
             *) echo "Unsupported internal initramfs format: $INITRAMFS"; exit 1 ;;
           esac
