@@ -200,6 +200,16 @@ jobs:
           install -m 0644 recovery-wifi/out/WCNSS_qcom_cfg.ini \
             "$ROOT/lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini"
 
+          # GitHub-hosted runners create the staged files as the runner user.
+          # The directory-source initramfs generator preserves those numeric
+          # IDs unless explicitly remapped, so normalize the payload itself.
+          sudo chown -R 0:0 "$ROOT"
+          find "$ROOT" -printf '%u:%g %m %P\n' | sort | tee wifi-initramfs-ownership.txt
+          if find "$ROOT" \! -user 0 -o \! -group 0 | grep -q .; then
+            echo "Non-root ownership remains in internal initramfs staging"
+            exit 1
+          fi
+
           cat > wifi-initramfs.fragment <<EOF
           CONFIG_INITRAMFS_SOURCE="$ROOT"
           CONFIG_INITRAMFS_ROOT_UID=0
@@ -429,6 +439,11 @@ jobs:
           esac
 
           cpio -it < /tmp/kernel-initramfs.cpio | tee kernel-initramfs-files.txt
+          cpio -itv --numeric-uid-gid < /tmp/kernel-initramfs.cpio | tee kernel-initramfs-files-detailed.txt
+          if grep -Ev '^[^ ]+[[:space:]]+[0-9]+[[:space:]]+0[[:space:]]+0[[:space:]]' kernel-initramfs-files-detailed.txt | grep -q .; then
+            echo "Internal initramfs contains non-root ownership"
+            exit 1
+          fi
           for path in \
             sbin/wifi sbin/busybox.ds sbin/wpa_supplicant.ds sbin/wpa_cli.ds \
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery \
@@ -657,6 +672,8 @@ jobs:
             official-config-source-diff.txt
             kernel.sha256
             kernel-initramfs-files.txt
+            kernel-initramfs-files-detailed.txt
+            wifi-initramfs-ownership.txt
             twrp-droidspaces.sha256
             recovery-wifi/out/SHA256SUMS
             recovery-wifi/wifi
