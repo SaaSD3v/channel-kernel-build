@@ -507,17 +507,23 @@ cmd_status() {
     cat /etc/resolv.conf 2>/dev/null || true
 }
 
+deconfigure_network() {
+    interface="$IFACE" "$UDHCPC_SCRIPT" deconfig >/dev/null 2>&1 || {
+        "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
+        : > /etc/resolv.conf 2>/dev/null || true
+        "$BB" rm -f "$STATE/lease.env" "$STATE/udhcpc.pid" 2>/dev/null || true
+    }
+}
+
 cmd_disconnect() {
     "$WPACLI" -p "$CTRL" -i "$IFACE" disconnect >/dev/null 2>&1 || true
-    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
-    "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
+    deconfigure_network
     echo "Wi-Fi disconnected"
 }
 
 cmd_down() {
     stop_supplicant
-    "$BB" ip addr flush dev "$IFACE" 2>/dev/null || true
-    "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
+    deconfigure_network
     "$BB" ip link set "$IFACE" down 2>/dev/null || true
     echo "Wi-Fi stopped"
 }
