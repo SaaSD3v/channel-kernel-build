@@ -209,6 +209,17 @@ jobs:
           find "$ROOT" -type f -printf '%P %s bytes\n' | sort
           cat wifi-initramfs.fragment
 
+          # Keep every original RD_* decompressor enabled, but force only the
+          # kernel's built-in initramfs archive to LZMA. With the stock Makefile
+          # ordering, CONFIG_RD_GZIP=y would otherwise select .gz and make the
+          # compressed kernel large enough to approach/overlap ramdisk_addr.
+          cat >> kernel/usr/Makefile <<'EOF'
+
+          # Recovery Wi-Fi: compact built-in initramfs without changing RD_* support.
+          suffix_y := .lzma
+          EOF
+          tail -n 6 kernel/usr/Makefile
+
       - name: Download AOSP Clang r353983c1
         run: |
           curl -fL --retry 5 \
@@ -344,6 +355,10 @@ jobs:
 
           INITRAMFS=$(find build/usr -maxdepth 1 -type f -name 'initramfs_data.cpio*' | head -n1)
           test -n "$INITRAMFS"
+          case "$INITRAMFS" in
+            *.lzma) ;;
+            *) echo "Expected LZMA internal initramfs, got: $INITRAMFS"; exit 1 ;;
+          esac
           echo "Kernel internal initramfs: $INITRAMFS"
           case "$INITRAMFS" in
             *.gz) gzip -dc "$INITRAMFS" > /tmp/kernel-initramfs.cpio ;;
@@ -382,7 +397,9 @@ jobs:
               raise SystemExit("Base TWRP image is not an Android boot image")
 
           kernel_size = struct.unpack_from("<I", base, 8)[0]
+          kernel_addr = struct.unpack_from("<I", base, 12)[0]
           ramdisk_size = struct.unpack_from("<I", base, 16)[0]
+          ramdisk_addr = struct.unpack_from("<I", base, 20)[0]
           second_size = struct.unpack_from("<I", base, 24)[0]
           page_size = struct.unpack_from("<I", base, 36)[0]
           header_version = struct.unpack_from("<I", base, 40)[0]
@@ -452,6 +469,23 @@ jobs:
           clone = build(old_kernel)
           if clone != base:
               raise SystemExit("Base-image reconstruction check failed")
+
+          kernel_window = ramdisk_addr - kernel_addr
+          if kernel_window <= 0:
+              raise SystemExit(
+                  f"Invalid kernel/ramdisk load addresses: "
+                  f"kernel=0x{kernel_addr:x} ramdisk=0x{ramdisk_addr:x}"
+              )
+          if len(new_kernel) >= kernel_window:
+              raise SystemExit(
+                  f"Kernel image overlaps ramdisk load address: "
+                  f"kernel={len(new_kernel)} window={kernel_window}"
+              )
+          print(
+              f"Kernel load window : {kernel_window} bytes; "
+              f"new kernel {len(new_kernel)} bytes; "
+              f"headroom {kernel_window - len(new_kernel)} bytes"
+          )
 
           output = build(new_kernel)
 
