@@ -40,3 +40,24 @@ Each successful workflow publishes the kernel ZIP as a GitHub Actions artifact a
 ## Usage
 
 Open the **Actions** tab, select the workflow matching your Android branch and desired variant, then choose **Run workflow**.
+
+
+## TWRP recovery Wi-Fi (channel)
+
+The branch `twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs` includes a custom recovery Wi-Fi controller at `/sbin/wifi`.
+
+Common commands:
+
+```sh
+wifi scan
+wifi connect "SSID" "PASSWORD"
+wifi connect-sae "SSID" "PASSWORD"
+wifi connect-open "SSID"
+wifi status
+wifi ping 1.1.1.1
+wifi down
+wifi up
+wifi logs
+```
+
+These are project-specific recovery commands, not native TWRP commands. Full usage, architecture and physical-device validation are documented in [recovery-wifi/README.md](recovery-wifi/README.md).
