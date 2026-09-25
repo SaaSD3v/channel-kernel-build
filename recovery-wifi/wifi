@@ -5,6 +5,13 @@
 PATH=/sbin:/system/bin:/vendor/bin
 export PATH
 
+# Recovery /data may be encrypted or unavailable. Keep every temporary file in
+# the recovery-owned tmpfs instead of inheriting Android's /data/local default.
+TMPDIR=/tmp
+TMP=/tmp
+TEMP=/tmp
+export TMPDIR TMP TEMP
+
 BB=/sbin/busybox.ds
 WPA=/sbin/wpa_supplicant.ds
 WPACLI=/sbin/wpa_cli.ds
@@ -294,22 +301,42 @@ prepare() {
 }
 
 stop_supplicant() {
-    if [ -f "$STATE/wpa.pid" ]; then
-        pid="$(cat "$STATE/wpa.pid" 2>/dev/null)"
-        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
-        rm -f "$STATE/wpa.pid"
+    pid=""
+    [ -f "$STATE/wpa.pid" ] && pid="$(cat "$STATE/wpa.pid" 2>/dev/null)"
+
+    # Ask only our own control socket to terminate. Do not use pkill -f here:
+    # an adb shell command containing the wpa_supplicant path can otherwise
+    # match and kill its parent shell.
+    if [ -S "$CTRL/$IFACE" ]; then
+        "$WPACLI" -p "$CTRL" -i "$IFACE" terminate >/dev/null 2>&1 || true
+        "$BB" sleep 1
     fi
-    "$BB" pkill -f '/sbin/wpa_supplicant.ds' 2>/dev/null || true
+
+    case "$pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            if kill -0 "$pid" 2>/dev/null; then
+                exe="$("$BB" readlink "/proc/$pid/exe" 2>/dev/null || true)"
+                case "$exe" in
+                    */wpa_supplicant.ds)
+                        kill "$pid" 2>/dev/null || true
+                        ;;
+                esac
+            fi
+            ;;
+    esac
+
+    rm -f "$STATE/wpa.pid"
     "$BB" sleep 1
 }
 
 start_supplicant() {
     [ -f "$CONF" ] || {
-        cat > "$CONF" <<'EOF'
-ctrl_interface=/tmp/ds-wifi/ctrl
-update_config=1
-ap_scan=1
-EOF
+        {
+            printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
+            printf '%s\n' 'update_config=1'
+            printf '%s\n' 'ap_scan=1'
+        } > "$CONF"
     }
 
     stop_supplicant
@@ -328,8 +355,9 @@ EOF
 }
 
 wait_connected() {
+    limit="${1:-30}"
     i=0
-    while [ "$i" -lt 30 ]; do
+    while [ "$i" -lt "$limit" ]; do
         state="$($WPACLI -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^wpa_state=//p')"
         [ "$state" = "COMPLETED" ] && return 0
         "$BB" sleep 1
@@ -362,32 +390,32 @@ escape_wpa_string() {
 
 make_open_conf() {
     ssid="$(escape_wpa_string "$1")"
-    cat > "$CONF" <<EOF
-ctrl_interface=/tmp/ds-wifi/ctrl
-update_config=1
-ap_scan=1
-network={
-    ssid="$ssid"
-    key_mgmt=NONE
-}
-EOF
+    {
+        printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
+        printf '%s\n' 'update_config=1'
+        printf '%s\n' 'ap_scan=1'
+        printf '%s\n' 'network={'
+        printf '    ssid="%s"\n' "$ssid"
+        printf '%s\n' '    key_mgmt=NONE'
+        printf '%s\n' '}'
+    } > "$CONF"
     "$BB" chmod 600 "$CONF"
 }
 
 make_sae_conf() {
     ssid="$(escape_wpa_string "$1")"
     pass="$(escape_wpa_string "$2")"
-    cat > "$CONF" <<EOF
-ctrl_interface=/tmp/ds-wifi/ctrl
-update_config=1
-ap_scan=1
-network={
-    ssid="$ssid"
-    key_mgmt=SAE
-    sae_password="$pass"
-    ieee80211w=2
-}
-EOF
+    {
+        printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
+        printf '%s\n' 'update_config=1'
+        printf '%s\n' 'ap_scan=1'
+        printf '%s\n' 'network={'
+        printf '    ssid="%s"\n' "$ssid"
+        printf '%s\n' '    key_mgmt=SAE'
+        printf '    sae_password="%s"\n' "$pass"
+        printf '%s\n' '    ieee80211w=2'
+        printf '%s\n' '}'
+    } > "$CONF"
     "$BB" chmod 600 "$CONF"
 }
 
@@ -396,8 +424,24 @@ cmd_up() {
         echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
         return 1
     }
-    start_supplicant
+    start_supplicant || return 1
     echo "Wi-Fi ready on $IFACE"
+
+    # If a previous connect command left a network profile in /tmp, restoring
+    # Wi-Fi after 'wifi down' should also restore IPv4/route instead of stopping
+    # at association-only state.
+    if "$BB" grep -q '^[[:space:]]*network[[:space:]]*={' "$CONF" 2>/dev/null; then
+        if wait_connected 15; then
+            if do_dhcp; then
+                echo "Wi-Fi connection and DHCP restored on $IFACE"
+            else
+                echo "Wi-Fi reassociated, but DHCP failed. Run: wifi dhcp; wifi logs"
+                return 1
+            fi
+        else
+            echo "Wi-Fi ready; saved network has not associated yet"
+        fi
+    fi
 }
 
 cmd_scan() {
@@ -482,22 +526,21 @@ cmd_logs() {
 }
 
 usage() {
-    cat <<'EOF'
-Recovery Wi-Fi (Motorola channel)
-
-  wifi prepare
-  wifi up
-  wifi scan
-  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK
-  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
-  wifi connect-open "SSID"
-  wifi dhcp
-  wifi status
-  wifi ping HOST
-  wifi disconnect
-  wifi down
-  wifi logs
-EOF
+    printf '%s\n' \
+        'Recovery Wi-Fi (Motorola channel)' \
+        '' \
+        '  wifi prepare' \
+        '  wifi up' \
+        '  wifi scan' \
+        '  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK' \
+        '  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE' \
+        '  wifi connect-open "SSID"' \
+        '  wifi dhcp' \
+        '  wifi status' \
+        '  wifi ping HOST' \
+        '  wifi disconnect' \
+        '  wifi down' \
+        '  wifi logs'
 }
 
 mkdir_state
