@@ -345,6 +345,85 @@ jobs:
           test "$(head -c 8 "$OUTPUT_IMG")" = "ANDROID!"
           test "$(stat -c%s "$OUTPUT_IMG")" -le 33554432
 
+          python3 <<'PY'
+          from pathlib import Path
+          import hashlib
+          import struct
+
+          def align(value, alignment):
+              return (value + alignment - 1) // alignment * alignment
+
+          def split_boot(path):
+              data = Path(path).read_bytes()
+              if data[:8] != b"ANDROID!":
+                  raise SystemExit(f"{path}: bad Android boot magic")
+              kernel_size = struct.unpack_from("<I", data, 8)[0]
+              ramdisk_size = struct.unpack_from("<I", data, 16)[0]
+              second_size = struct.unpack_from("<I", data, 24)[0]
+              page_size = struct.unpack_from("<I", data, 36)[0]
+              recovery_dtbo_size = struct.unpack_from("<I", data, 1632)[0]
+              recovery_dtbo_offset = struct.unpack_from("<Q", data, 1636)[0]
+
+              kernel_off = page_size
+              ramdisk_off = align(kernel_off + kernel_size, page_size)
+              second_off = align(ramdisk_off + ramdisk_size, page_size)
+              recovery_off = align(second_off + second_size, page_size)
+              if recovery_dtbo_size and recovery_dtbo_offset != recovery_off:
+                  raise SystemExit(
+                      f"{path}: recovery_dtbo offset mismatch "
+                      f"{recovery_dtbo_offset} != {recovery_off}"
+                  )
+
+              return {
+                  "data": data,
+                  "page_size": page_size,
+                  "kernel_size": kernel_size,
+                  "ramdisk_size": ramdisk_size,
+                  "second_size": second_size,
+                  "kernel": data[kernel_off:kernel_off + kernel_size],
+                  "ramdisk": data[ramdisk_off:ramdisk_off + ramdisk_size],
+                  "second": data[second_off:second_off + second_size],
+                  "dtbo": data[recovery_dtbo_offset:
+                               recovery_dtbo_offset + recovery_dtbo_size],
+                  "tail": data[recovery_dtbo_offset + recovery_dtbo_size:],
+                  "header": data[:page_size],
+              }
+
+          base = split_boot("twrp-base.img")
+          final = split_boot("${{ env.OUTPUT_IMG }}")
+          built_kernel = Path("build/arch/arm64/boot/Image.gz-dtb").read_bytes()
+
+          if final["kernel"] != built_kernel:
+              raise SystemExit("final image kernel differs from built DroidSpaces kernel")
+          if final["dtbo"] != base["dtbo"]:
+              raise SystemExit("final image changed TeamWin recovery DTBO")
+          if final["tail"] != base["tail"]:
+              raise SystemExit("final image changed bytes after TeamWin recovery DTBO")
+          if not final["ramdisk"].startswith(base["ramdisk"]):
+              raise SystemExit("TeamWin ramdisk is not an exact byte-for-byte prefix")
+
+          base_header = bytearray(base["header"])
+          final_header = bytearray(final["header"])
+          for off, size in ((8, 4), (16, 4), (1636, 8)):
+              base_header[off:off + size] = bytes(size)
+              final_header[off:off + size] = bytes(size)
+          if base_header != final_header:
+              raise SystemExit("unexpected static Android boot header change")
+
+          overlay = final["ramdisk"][len(base["ramdisk"]):]
+          if not overlay:
+              raise SystemExit("Wi-Fi ramdisk overlay is empty")
+
+          print("Structural boot-image verification:")
+          print("- built kernel embedded exactly")
+          print("- TeamWin ramdisk preserved byte-for-byte as prefix")
+          print("- TeamWin recovery DTBO preserved byte-for-byte")
+          print("- TeamWin post-DTBO tail preserved byte-for-byte")
+          print("- static Android boot v1 header preserved")
+          print(f"- Wi-Fi overlay bytes: {len(overlay)}")
+          print("- final SHA256:", hashlib.sha256(final["data"]).hexdigest())
+          PY
+
           sha256sum "$OUTPUT_IMG" | tee twrp-droidspaces.sha256
 
           {
