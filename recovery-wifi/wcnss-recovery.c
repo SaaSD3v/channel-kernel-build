@@ -69,7 +69,8 @@ static int write_cal_to_device(int fd_dev, const char *path)
     char buf[CAL_CHUNK];
     ssize_t n;
 
-    if (stat(path, &st) < 0 || st.st_size <= 0 || st.st_size > 16 * 1024 * 1024)
+    /* Kernel wcnss_wlan.c caps user calibration at 64 KiB. */
+    if (stat(path, &st) < 0 || st.st_size <= 0 || st.st_size > 64 * 1024)
         return -1;
     fd = open(path, O_RDONLY);
     if (fd < 0)

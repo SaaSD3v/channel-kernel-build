@@ -105,6 +105,27 @@ stage_firmware() {
         done
     fi
 
+    # Stock calibration/NV data live on persist on many Motorola builds.
+    # Stage them before PRONTO is kickstarted because request_firmware() runs
+    # synchronously inside the fwpath parameter write; feeding a later fallback
+    # request from this same shell would be too late.
+    for root in /mnt/vendor/persist /persist; do
+        [ -d "$root" ] || continue
+        for src in "$root"/WCNSS_*; do
+            [ -s "$src" ] || continue
+            name="${src##*/}"
+            "$BB" cat "$src" > "/lib/firmware/wlan/prima/$name" 2>/dev/null || true
+            [ -s "/lib/firmware/wlan/prima/$name" ] && log "staged persist WLAN data $name"
+        done
+
+        if [ ! -s "$STATE/WCNSS_qcom_wlan_cal.bin" ] &&
+           [ -s "$root/WCNSS_qcom_wlan_cal.bin" ]; then
+            "$BB" cat "$root/WCNSS_qcom_wlan_cal.bin" >                 "$STATE/WCNSS_qcom_wlan_cal.bin" 2>/dev/null || true
+            [ -s "$STATE/WCNSS_qcom_wlan_cal.bin" ] &&
+                log "seeded stock WCNSS calibration from $root"
+        fi
+    done
+
     # PIL loads the WCNSS subsystem before the PRONTO network driver starts.
     # Stage the modem partition's WCNSS image into the same firmware root so
     # both PIL (wcnss.mdt/bXX) and request_firmware(wlan/prima/...) resolve
