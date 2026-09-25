@@ -695,7 +695,9 @@ make_hotspot_conf() {
     {
         printf '%s\n' 'ctrl_interface=/tmp/ds-wifi/ctrl'
         printf '%s\n' 'update_config=0'
-        printf '%s\n' 'ap_scan=2'
+        # nl80211 expects ap_scan=1. AP mode is still selected by mode=2
+        # inside the network block.
+        printf '%s\n' 'ap_scan=1'
         "$WPAPASS" "$ssid" "$pass" 2>/dev/null |
             "$BB" sed '/^[[:space:]]*#psk=/d' |
             "$BB" awk -v freq="$freq" '
@@ -758,10 +760,12 @@ start_hotspot_supplicant() {
 
 wait_hotspot_ready() {
     i=0
-    while [ "$i" -lt 15 ]; do
+    while [ "$i" -lt 20 ]; do
         hs="$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true)"
-        printf '%s\n' "$hs" | "$BB" grep -qx 'mode=AP' && return 0
-        printf '%s\n' "$hs" | "$BB" grep -qx 'wpa_state=COMPLETED' && return 0
+        if printf '%s\n' "$hs" | "$BB" grep -qx 'mode=AP' &&
+           printf '%s\n' "$hs" | "$BB" grep -qx 'wpa_state=COMPLETED'; then
+            return 0
+        fi
         "$BB" sleep 1
         i=$((i + 1))
     done
