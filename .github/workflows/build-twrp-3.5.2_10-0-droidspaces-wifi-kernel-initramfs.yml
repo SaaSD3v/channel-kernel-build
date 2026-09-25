@@ -210,15 +210,25 @@ jobs:
           cat wifi-initramfs.fragment
 
           # Keep every original RD_* decompressor enabled, but force only the
-          # kernel's built-in initramfs archive to LZMA. With the stock Makefile
-          # ordering, CONFIG_RD_GZIP=y would otherwise select .gz and make the
-          # compressed kernel large enough to approach/overlap ramdisk_addr.
-          cat >> kernel/usr/Makefile <<'EOF'
+          # kernel's built-in initramfs archive to LZMA. This must be inserted
+          # before AFLAGS/prerequisite expansion in usr/Makefile; appending it
+          # at EOF would be too late for target names already parsed by make.
+          python3 <<'PY'
+          from pathlib import Path
 
-          # Recovery Wi-Fi: compact built-in initramfs without changing RD_* support.
-          suffix_y := .lzma
-          EOF
-          tail -n 6 kernel/usr/Makefile
+          p = Path("kernel/usr/Makefile")
+          s = p.read_text()
+          needle = "# Gzip\nsuffix_$(CONFIG_RD_GZIP)  = .gz\n"
+          replacement = (
+              needle
+              + "\n# Recovery Wi-Fi: compact built-in initramfs without changing RD_* support.\n"
+              + "suffix_y := .lzma\n"
+          )
+          if needle not in s:
+              raise SystemExit("usr/Makefile gzip suffix anchor not found")
+          p.write_text(s.replace(needle, replacement, 1))
+          PY
+          grep -n -A5 -B2 'Recovery Wi-Fi: compact' kernel/usr/Makefile
 
       - name: Download AOSP Clang r353983c1
         run: |
