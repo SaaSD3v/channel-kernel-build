@@ -19,6 +19,7 @@ WPAPASS=/sbin/wpa_passphrase.ds
 HOSTAPD=/sbin/hostapd.ds
 IW=/sbin/iw.ds
 WCNSS=/sbin/wcnss-recovery
+TIME_SYNC=/sbin/recovery-time-sync
 STATE=/tmp/ds-wifi
 STOCK_VENDOR="$STATE/vendor-stock"
 CTRL="$STATE/ctrl"
@@ -301,6 +302,10 @@ prepare() {
     mount_partition /mnt/vendor/persist persist && log "persist mounted at /mnt/vendor/persist" || log "persist mount unavailable at /mnt/vendor/persist"
     mount_partition /persist persist >/dev/null 2>&1 || true
 
+    # QCOM_RTC_FIX may reconstruct a stale wall clock from ats_2. Our own
+    # last-good floor is monotonic and does not modify Qualcomm's ATS files.
+    [ -x "$TIME_SYNC" ] && "$TIME_SYNC" restore >/dev/null 2>&1 || true
+
     stage_firmware
 
     # Use one coherent firmware root for the entire bring-up: WCNSS PIL files
@@ -551,8 +556,16 @@ do_dhcp() {
         echo "Hotspot is active; client DHCP is disabled. Use: wifi hotspot status"
         return 1
     fi
-    "$BB" udhcpc -i "$IFACE" -s "$UDHCPC_SCRIPT" -p "$STATE/udhcpc.pid" \
-        -t 8 -T 3 -A 1 -q
+    if "$BB" udhcpc -i "$IFACE" -s "$UDHCPC_SCRIPT" -p "$STATE/udhcpc.pid" \
+        -t 8 -T 3 -A 1 -q; then
+        # One-shot only: no resident time daemon. Clock failure is non-fatal
+        # to Wi-Fi, but successful sync immediately fixes apt/TLS in containers.
+        if [ -x "$TIME_SYNC" ]; then
+            "$TIME_SYNC" online || echo "Warning: network is up, but UTC sync failed." >&2
+        fi
+        return 0
+    fi
+    return 1
 }
 
 make_psk_conf() {
