@@ -21,7 +21,7 @@ wifi connect "SSID" "PASSWORD"
 Example:
 
 ```sh
-wifi connect "Josiane" "your_password"
+wifi connect "MyWiFi" "your_password"
 ```
 
 Connect to WPA3/SAE:
