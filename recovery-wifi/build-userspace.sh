@@ -201,8 +201,11 @@ PKG_CONFIG_LIBDIR=/nonexistent ./configure \
   --with-xt-lock-name=/tmp/xtables.lock \
   CC="$CC" \
   CFLAGS='-Os -ffunction-sections -fdata-sections' \
-  LDFLAGS='-static -Wl,--gc-sections'
-make -j"$(nproc)"
+  LDFLAGS='-Wl,--gc-sections'
+# libtool consumes "-static" as a library-selection hint and may still emit a
+# dynamic PIE executable.  "-all-static" is the libtool program-link option
+# that guarantees no dynamic loader/libc dependency in recovery.
+make -j"$(nproc)" LDFLAGS='-all-static -Wl,--gc-sections'
 cp iptables/xtables-multi "$OUT/iptables.ds"
 popd >/dev/null
 
