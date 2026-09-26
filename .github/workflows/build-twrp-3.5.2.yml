@@ -229,8 +229,18 @@ jobs:
 
           "$QEMU" "$SMOKE/iptables" --version | tee iptables-version.txt
           grep -Eq '^iptables v1\.6\.2' iptables-version.txt
-          "$QEMU" "$SMOKE/iptables-save" --version
-          "$QEMU" "$SMOKE/iptables-restore" --version
+
+          # iptables-save 1.6.2 has no --version/--help option. Validate that
+          # argv[0] dispatch reached iptables_save_main() without touching the
+          # host firewall by giving it a deliberately invalid long option.
+          set +e
+          save_probe=$("$QEMU" "$SMOKE/iptables-save" --ds-invalid-probe 2>&1)
+          save_rc=$?
+          set -e
+          [ "$save_rc" -ne 0 ]
+          printf '%s\n' "$save_probe" | grep -Fq 'iptables-save.8'
+
+          "$QEMU" "$SMOKE/iptables-restore" --version | grep -Eq '^iptables-restore v1\.6\.2'
           "$QEMU" "$SMOKE/iptables" -m addrtype -h >/dev/null
           "$QEMU" "$SMOKE/iptables" -t nat -j DNAT -h >/dev/null
           "$QEMU" "$SMOKE/iptables" -t nat -j MASQUERADE -h >/dev/null
