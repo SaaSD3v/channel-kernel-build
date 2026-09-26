@@ -37,6 +37,8 @@ jobs:
           grep -qx 'CONFIG_DRIVER_NL80211=y' recovery-wifi/hostapd.config
           grep -qx 'CONFIG_LIBNL32=y' recovery-wifi/hostapd.config
           grep -q 'CONFIG_UDHCPD' recovery-wifi/build-userspace.sh
+          grep -q 'IPTABLES_COMMIT=' recovery-wifi/build-userspace.sh
+          grep -q 'xtables-legacy-multi' recovery-wifi/build-userspace.sh
           grep -q '^cmd_hotspot_create()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_config()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_start()' recovery-wifi/wifi
@@ -51,7 +53,7 @@ jobs:
             git curl wget ca-certificates \
             bc bison flex libssl-dev libelf-dev make libncurses-dev \
             python3 xz-utils cpio zip file autoconf automake libtool pkg-config \
-            gcc-aarch64-linux-gnu
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
       - name: Clone exact TWRP channel kernel base
         run: |
@@ -198,6 +200,11 @@ jobs:
           chmod +x recovery-wifi/build-userspace.sh
           DEVICE="$DEVICE" recovery-wifi/build-userspace.sh
 
+          test -x recovery-wifi/out/iptables.ds
+          file recovery-wifi/out/iptables.ds | tee iptables-file.txt
+          grep -q 'ARM aarch64' iptables-file.txt
+          grep -q 'statically linked' iptables-file.txt
+
       - name: Stage Wi-Fi in kernel internal initramfs
         run: |
           set -euo pipefail
@@ -208,6 +215,10 @@ jobs:
 
           install -m 0755 recovery-wifi/out/wifi "$ROOT/sbin/wifi"
           install -m 0755 recovery-wifi/out/busybox.ds "$ROOT/sbin/busybox.ds"
+          install -m 0755 recovery-wifi/out/iptables.ds "$ROOT/sbin/iptables.ds"
+          ln -s iptables.ds "$ROOT/sbin/iptables"
+          ln -s iptables.ds "$ROOT/sbin/iptables-save"
+          ln -s iptables.ds "$ROOT/sbin/iptables-restore"
           install -m 0755 recovery-wifi/out/wpa_supplicant.ds "$ROOT/sbin/wpa_supplicant.ds"
           install -m 0755 recovery-wifi/out/hostapd.ds "$ROOT/sbin/hostapd.ds"
           install -m 0755 recovery-wifi/out/iw.ds "$ROOT/sbin/iw.ds"
@@ -371,6 +382,17 @@ jobs:
             CONFIG_IPC_NS \
             CONFIG_BRIDGE_NETFILTER \
             CONFIG_NETFILTER_XT_MATCH_ADDRTYPE \
+            CONFIG_NETFILTER_XTABLES \
+            CONFIG_NF_CONNTRACK \
+            CONFIG_NF_CONNTRACK_IPV4 \
+            CONFIG_NF_NAT \
+            CONFIG_NF_NAT_IPV4 \
+            CONFIG_NF_NAT_MASQUERADE_IPV4 \
+            CONFIG_IP_NF_IPTABLES \
+            CONFIG_IP_NF_FILTER \
+            CONFIG_IP_NF_NAT \
+            CONFIG_IP_NF_TARGET_MASQUERADE \
+            CONFIG_NETFILTER_XT_NAT \
             CONFIG_CGROUP_NET_PRIO \
             CONFIG_DEVTMPFS \
             CONFIG_VETH \
@@ -391,7 +413,7 @@ jobs:
           grep -Fxq "CONFIG_INITRAMFS_SOURCE=\"$GITHUB_WORKSPACE/kernel/recovery-initramfs\"" "$CONFIG"
 
           grep -E \
-            '^(CONFIG_(SYSVIPC|POSIX_MQUEUE|CGROUP_PIDS|CGROUP_DEVICE|MEMCG|UTS_NS|USER_NS|PID_NS|IPC_NS|BRIDGE_NETFILTER|NETFILTER_XT_MATCH_ADDRTYPE|CGROUP_NET_PRIO|DEVTMPFS|VETH|OVERLAY_FS|IP_SET|IP_SET_HASH_IP|IP_SET_HASH_NET|NETFILTER_XT_SET|NETFILTER_XT_MATCH_RECENT)=y|# CONFIG_ANDROID_PARANOID_NETWORK is not set)$' \
+            '^(CONFIG_(SYSVIPC|POSIX_MQUEUE|CGROUP_PIDS|CGROUP_DEVICE|MEMCG|UTS_NS|USER_NS|PID_NS|IPC_NS|BRIDGE_NETFILTER|NETFILTER_XT_MATCH_ADDRTYPE|NETFILTER_XTABLES|NF_CONNTRACK|NF_CONNTRACK_IPV4|NF_NAT|NF_NAT_IPV4|NF_NAT_MASQUERADE_IPV4|IP_NF_IPTABLES|IP_NF_FILTER|IP_NF_NAT|IP_NF_TARGET_MASQUERADE|NETFILTER_XT_NAT|CGROUP_NET_PRIO|DEVTMPFS|VETH|OVERLAY_FS|IP_SET|IP_SET_HASH_IP|IP_SET_HASH_NET|NETFILTER_XT_SET|NETFILTER_XT_MATCH_RECENT)=y|# CONFIG_ANDROID_PARANOID_NETWORK is not set)$' \
             "$CONFIG" | tee droidspaces-final-config.txt
 
       - name: Build Image.gz-dtb
@@ -463,7 +485,8 @@ jobs:
             exit 1
           fi
           for path in \
-            sbin/wifi sbin/busybox.ds sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
+            sbin/wifi sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
+            sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery \
             lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
           do
