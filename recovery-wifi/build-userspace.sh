@@ -146,7 +146,23 @@ make ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS" defconfig
 
 # The recovery hotspot uses BusyBox as its tiny DHCP server. Keep this
 # explicit so a BusyBox defconfig change cannot silently remove the applet.
-if grep -q '^# CONFIG_UDHCPD is not set
+if grep -q '^# CONFIG_UDHCPD is not set$' .config; then
+  sed -i 's/^# CONFIG_UDHCPD is not set$/CONFIG_UDHCPD=y/' .config
+elif ! grep -q '^CONFIG_UDHCPD=y$' .config; then
+  echo 'CONFIG_UDHCPD=y' >> .config
+fi
+
+# Recovery time repair uses a one-shot BusyBox NTP client after DHCP. Keep the
+# date/timeout applets explicit so a future BusyBox defconfig cannot remove it.
+for symbol in CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT; do
+  if grep -q "^# $symbol is not set$" .config; then
+    sed -i "s/^# $symbol is not set$/$symbol=y/" .config
+  elif ! grep -q "^$symbol=y$" .config; then
+    echo "$symbol=y" >> .config
+  fi
+done
+
+sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
 sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
 make ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
 make -j"$(nproc)" ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS"
@@ -216,186 +232,6 @@ cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
 
 chmod 0755 \
   "$OUT/wifi" "$OUT/wifi-udhcpc.script" "$OUT/recovery-time-sync" \
-  "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"
-chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
-
-for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"; do
-  "$STRIP" --strip-all "$f"
-  file "$f"
-  file "$f" | grep -q 'statically linked'
-done
-
-sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
-du -h "$OUT"/*
- .config; then
-  sed -i 's/^# CONFIG_UDHCPD is not set$/CONFIG_UDHCPD=y/' .config
-elif ! grep -q '^CONFIG_UDHCPD=y
-sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
-make ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
-make -j"$(nproc)" ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS"
-
-# Cross-built ARM64 binaries cannot be executed on the x86 GitHub runner.
-# Validate every applet used by /sbin/wifi from the resolved BusyBox config.
-for symbol in \
-  CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
-  CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
-  CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK CONFIG_CP CONFIG_MV CONFIG_RM CONFIG_CHOWN \
-  CONFIG_SHA256SUM CONFIG_SYNC CONFIG_READLINK
-do
-  grep -qx "$symbol=y" .config || {
-    echo "Missing required BusyBox setting: $symbol=y" >&2
-    exit 1
-  }
-done
-cp .config "$OUT/busybox.config"
-cp busybox "$OUT/busybox.ds"
-popd >/dev/null
-
-# Static legacy iptables 1.6.2 for DroidSpaces port-forwarding in recovery.
-#
-# DroidSpaces v6 can program its base NAT rules through the kernel's raw
-# IP_TABLES API, but explicit port-forwards still execute iptables(8),
-# iptables-save and iptables-restore.  TWRP's external ramdisk is not relied
-# on for those tools: build a self-contained ARM64 legacy binary here.
-git init "$SRC/iptables"
-git -C "$SRC/iptables" remote add origin https://github.com/PKRoma/iptables.git
-git -C "$SRC/iptables" fetch --depth=1 origin "$IPTABLES_COMMIT"
-git -C "$SRC/iptables" checkout --detach FETCH_HEAD
-pushd "$SRC/iptables" >/dev/null
-./autogen.sh
-PKG_CONFIG_LIBDIR=/nonexistent ./configure \
-  --host="$HOST_TRIPLE" \
-  --prefix="$PREFIX/iptables" \
-  --disable-shared \
-  --enable-static \
-  --disable-nftables \
-  --disable-ipv6 \
-  --disable-devel \
-  --disable-libipq \
-  --disable-bpf-compiler \
-  --disable-nfsynproxy \
-  --disable-connlabel \
-  --with-xt-lock-name=/tmp/xtables.lock \
-  CC="$CC" \
-  CFLAGS='-Os -ffunction-sections -fdata-sections' \
-  LDFLAGS='-Wl,--gc-sections'
-# libtool consumes "-static" as a library-selection hint and may still emit a
-# dynamic PIE executable.  "-all-static" is the libtool program-link option
-# that guarantees no dynamic loader/libc dependency in recovery.
-make -j"$(nproc)" LDFLAGS='-all-static -Wl,--gc-sections'
-cp iptables/xtables-multi "$OUT/iptables.ds"
-popd >/dev/null
-
-# Minimal recovery-only WCNSS handshake; no Android framework/QMI/vendor libs.
-"$CC" -static -Os -ffunction-sections -fdata-sections \
-  -Wl,--gc-sections \
-  "$ROOT/recovery-wifi/wcnss-recovery.c" \
-  -o "$OUT/wcnss-recovery"
-
-cp "$ROOT/recovery-wifi/wifi" "$OUT/wifi"
-cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
-cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
-
-chmod 0755 \
-  "$OUT/wifi" "$OUT/wifi-udhcpc.script" \
-  "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"
-chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
-
-for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"; do
-  "$STRIP" --strip-all "$f"
-  file "$f"
-  file "$f" | grep -q 'statically linked'
-done
-
-sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
-du -h "$OUT"/*
- .config; then
-  echo 'CONFIG_UDHCPD=y' >> .config
-fi
-
-# Recovery time repair uses a one-shot BusyBox NTP client after DHCP. Keep the
-# date/timeout applets explicit so a future BusyBox defconfig cannot remove it.
-for symbol in CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT; do
-  if grep -q "^# $symbol is not set$" .config; then
-    sed -i "s/^# $symbol is not set$/$symbol=y/" .config
-  elif ! grep -q "^$symbol=y$" .config; then
-    echo "$symbol=y" >> .config
-  fi
-done
-
-sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
-sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
-make ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
-make -j"$(nproc)" ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS"
-
-# Cross-built ARM64 binaries cannot be executed on the x86 GitHub runner.
-# Validate every applet used by /sbin/wifi from the resolved BusyBox config.
-for symbol in \
-  CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
-  CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
-  CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK CONFIG_CP CONFIG_MV CONFIG_RM CONFIG_CHOWN \
-  CONFIG_SHA256SUM CONFIG_SYNC CONFIG_READLINK
-do
-  grep -qx "$symbol=y" .config || {
-    echo "Missing required BusyBox setting: $symbol=y" >&2
-    exit 1
-  }
-done
-cp .config "$OUT/busybox.config"
-cp busybox "$OUT/busybox.ds"
-popd >/dev/null
-
-# Static legacy iptables 1.6.2 for DroidSpaces port-forwarding in recovery.
-#
-# DroidSpaces v6 can program its base NAT rules through the kernel's raw
-# IP_TABLES API, but explicit port-forwards still execute iptables(8),
-# iptables-save and iptables-restore.  TWRP's external ramdisk is not relied
-# on for those tools: build a self-contained ARM64 legacy binary here.
-git init "$SRC/iptables"
-git -C "$SRC/iptables" remote add origin https://github.com/PKRoma/iptables.git
-git -C "$SRC/iptables" fetch --depth=1 origin "$IPTABLES_COMMIT"
-git -C "$SRC/iptables" checkout --detach FETCH_HEAD
-pushd "$SRC/iptables" >/dev/null
-./autogen.sh
-PKG_CONFIG_LIBDIR=/nonexistent ./configure \
-  --host="$HOST_TRIPLE" \
-  --prefix="$PREFIX/iptables" \
-  --disable-shared \
-  --enable-static \
-  --disable-nftables \
-  --disable-ipv6 \
-  --disable-devel \
-  --disable-libipq \
-  --disable-bpf-compiler \
-  --disable-nfsynproxy \
-  --disable-connlabel \
-  --with-xt-lock-name=/tmp/xtables.lock \
-  CC="$CC" \
-  CFLAGS='-Os -ffunction-sections -fdata-sections' \
-  LDFLAGS='-Wl,--gc-sections'
-# libtool consumes "-static" as a library-selection hint and may still emit a
-# dynamic PIE executable.  "-all-static" is the libtool program-link option
-# that guarantees no dynamic loader/libc dependency in recovery.
-make -j"$(nproc)" LDFLAGS='-all-static -Wl,--gc-sections'
-cp iptables/xtables-multi "$OUT/iptables.ds"
-popd >/dev/null
-
-# Minimal recovery-only WCNSS handshake; no Android framework/QMI/vendor libs.
-"$CC" -static -Os -ffunction-sections -fdata-sections \
-  -Wl,--gc-sections \
-  "$ROOT/recovery-wifi/wcnss-recovery.c" \
-  -o "$OUT/wcnss-recovery"
-
-cp "$ROOT/recovery-wifi/wifi" "$OUT/wifi"
-cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
-cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
-
-chmod 0755 \
-  "$OUT/wifi" "$OUT/wifi-udhcpc.script" \
   "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
   "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"
 chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
