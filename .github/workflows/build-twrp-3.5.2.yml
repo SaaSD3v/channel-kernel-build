@@ -24,6 +24,7 @@ jobs:
   build:
     name: TWRP 3.5.2 + DroidSpaces + built-in recovery Wi-Fi/hotspot
     runs-on: ubuntu-22.04
+    environment: "keys"
 
     steps:
       - name: Checkout build repository
@@ -830,3 +831,94 @@ jobs:
             recovery-wifi/devices/channel/device.conf
             recovery-wifi/devices/README.md
           if-no-files-found: error
+
+
+      - name: Upload build files individually to GoFile
+        env:
+          GOFILE_TOKEN: ${{ secrets.GOFILE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GOFILE_TOKEN:-}" ]; then
+            echo "::warning::GOFILE is not configured in the keys environment; skipping GoFile upload."
+            exit 0
+          fi
+
+          rm -rf gofile-files
+          mkdir -p gofile-files
+          files=(
+            "$OUTPUT_IMG"
+            "build/arch/arm64/boot/Image.gz-dtb"
+            "droidspaces.fragment"
+            "droidspaces-final-config.txt"
+            "official-twrp.config"
+            "official-twrp-after-olddefconfig.config"
+            "official-config-source-diff.txt"
+            "kernel.sha256"
+            "kernel-initramfs-files.txt"
+            "kernel-initramfs-files-detailed.txt"
+            "wifi-initramfs-ownership.txt"
+            "twrp-droidspaces.sha256"
+            "recovery-wifi/out/SHA256SUMS"
+            "recovery-wifi/wifi"
+            "recovery-wifi/hostapd.config"
+            "recovery-wifi/wifi-udhcpc.script"
+            "recovery-wifi/WCNSS_qcom_cfg.ini"
+            "recovery-wifi/devices/channel/device.conf"
+            "recovery-wifi/devices/README.md"
+          )
+          for file in "${files[@]}"; do
+            test -f "$file" || { echo "::error::Missing GoFile artifact: $file"; exit 1; }
+            base="$(basename "$file")"
+            if [ -e "gofile-files/$base" ]; then
+              echo "::error::Duplicate artifact basename: $base"
+              exit 1
+            fi
+            cp "$file" "gofile-files/$base"
+          done
+
+          server_json="$(curl --silent --show-error --fail-with-body --retry 5 --retry-delay 3 --retry-all-errors https://api.gofile.io/servers)"
+          upload_server="$(printf '%s' "$server_json" | python3 -c 'import json,sys; j=json.load(sys.stdin); s=(j.get("data") or {}).get("servers") or []; print((s[0] or {}).get("name","") if s else "")')"
+          test -n "$upload_server" || { echo "::error::GoFile returned no upload server"; exit 1; }
+          upload_url="https://$upload_server.gofile.io/contents/uploadfile"
+
+          folder_id=""
+          folder_page=""
+          uploaded=0
+          summary="$RUNNER_TEMP/gofile-build-files.md"
+          : > "$summary"
+
+          while IFS= read -r -d '' file; do
+            args=(--silent --show-error --fail-with-body --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 --max-time 1200
+              -H "Authorization: Bearer $GOFILE_TOKEN"
+              -F "file=@$file")
+            if [ -n "$folder_id" ]; then
+              args+=(-F "folderId=$folder_id")
+            fi
+            response="$(curl "${args[@]}" "$upload_url")"
+            mapfile -t meta < <(printf '%s' "$response" | python3 -c 'import json,sys; j=json.load(sys.stdin); d=j.get("data") or {}; print(j.get("status","")); print(d.get("parentFolder") or d.get("folderId") or ""); print(d.get("downloadPage","")); print(d.get("parentFolderCode") or d.get("folderCode") or "")')
+            status="${meta[0]:-}"
+            parent="${meta[1]:-}"
+            page="${meta[2]:-}"
+            parent_code="${meta[3]:-}"
+            if [ "$status" != "ok" ]; then
+              echo "::error::GoFile rejected $(basename "$file")"
+              printf '%s\n' "$response" >&2
+              exit 1
+            fi
+            if [ -z "$folder_id" ]; then folder_id="$parent"; fi
+            if [ -z "$folder_page" ] && [ -n "$parent_code" ]; then folder_page="https://gofile.io/d/$parent_code"; fi
+            name="$(basename "$file")"
+            if [ -n "$page" ]; then
+              printf -- '- [%s](%s)\n' "$name" "$page" >> "$summary"
+            else
+              printf -- '- %s\n' "$name" >> "$summary"
+            fi
+            uploaded=$((uploaded + 1))
+          done < <(find gofile-files -type f -print0 | sort -z)
+
+          {
+            echo "### GoFile — $uploaded individual build files"
+            [ -z "$folder_page" ] || echo "Folder: $folder_page"
+            echo
+            cat "$summary"
+          } >> "$GITHUB_STEP_SUMMARY"
