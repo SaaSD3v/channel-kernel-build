@@ -19,10 +19,7 @@ env:
 jobs:
   build:
     name: TWRP 3.5.2 + DroidSpaces + built-in recovery Wi-Fi/hotspot
-    runs-on: ubuntu-22.04
-    environment: "keys"
-
-    steps:
+    runs-on: ubuntu-22.04steps:
       - name: Checkout build repository
         uses: actions/checkout@v4
         with:
@@ -831,11 +828,11 @@ jobs:
 
       - name: Upload build files individually to GoFile
         env:
-          GOFILE_TOKEN: ${{ secrets.GOFILE }}
+          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${GOFILE_TOKEN:-}" ]; then
-            echo "::warning::GOFILE is not configured in the keys environment; skipping GoFile upload."
+            echo "::warning::GOFILE_TOKEN repository secret is not configured; skipping GoFile upload."
             exit 0
           fi
 
