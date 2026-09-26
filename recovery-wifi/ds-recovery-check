@@ -30,6 +30,13 @@ check_cmd() {
 printf 'DroidSpaces recovery requirements\n'
 printf '%s\n' '--------------------------------'
 
+if [ -x /sbin/recovery-time-sync ]; then
+    ok 'recovery one-shot time repair'
+    /sbin/recovery-time-sync status 2>/dev/null || warn 'time status unavailable'
+else
+    warn '/sbin/recovery-time-sync ausente; apt/TLS pode falhar se QCOM ATS estiver velho'
+fi
+
 check_file /proc/self/ns/mnt
 check_file /proc/self/ns/pid
 check_file /proc/self/ns/uts
