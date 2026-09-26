@@ -39,6 +39,10 @@ jobs:
           grep -q 'CONFIG_UDHCPD' recovery-wifi/build-userspace.sh
           grep -q 'IPTABLES_COMMIT=' recovery-wifi/build-userspace.sh
           grep -q 'xtables-multi' recovery-wifi/build-userspace.sh
+          grep -q 'CONFIG_NTPD' recovery-wifi/build-userspace.sh
+          grep -q 'CONFIG_TIMEOUT' recovery-wifi/build-userspace.sh
+          grep -q 'recovery-time-sync' recovery-wifi/wifi
+          grep -q 'one-shot NTP sync' recovery-wifi/recovery-time-sync
           grep -q '^cmd_hotspot_create()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_config()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_start()' recovery-wifi/wifi
@@ -197,6 +201,7 @@ jobs:
           bash -n recovery-wifi/build-userspace.sh
           sh -n recovery-wifi/wifi
           sh -n recovery-wifi/wifi-udhcpc.script
+          sh -n recovery-wifi/recovery-time-sync
           sh -n recovery-wifi/ds-recovery-check
           chmod +x recovery-wifi/build-userspace.sh
           DEVICE="$DEVICE" recovery-wifi/build-userspace.sh
@@ -248,7 +253,8 @@ jobs:
 
           "$QEMU" recovery-wifi/out/busybox.ds --list > busybox-applets.txt
           for applet in awk cat chmod chown cp grep ifconfig ip mkdir mount mv ping \
-                        readlink rm sed sha256sum sleep sync tail tee udhcpc udhcpd; do
+                        readlink rm sed sha256sum sleep sync tail tee udhcpc udhcpd \
+                        date ntpd timeout; do
             grep -qx "$applet" busybox-applets.txt || {
               echo "BusyBox recovery binary is missing required applet: $applet"
               exit 1
@@ -276,6 +282,7 @@ jobs:
           install -m 0755 recovery-wifi/out/wpa_passphrase.ds "$ROOT/sbin/wpa_passphrase.ds"
           install -m 0755 recovery-wifi/out/wifi-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
           install -m 0755 recovery-wifi/out/wcnss-recovery "$ROOT/sbin/wcnss-recovery"
+          install -m 0755 recovery-wifi/out/recovery-time-sync "$ROOT/sbin/recovery-time-sync"
           install -m 0755 recovery-wifi/ds-recovery-check "$ROOT/sbin/ds-recovery-check"
           install -m 0644 recovery-wifi/out/WCNSS_qcom_cfg.ini \
             "$ROOT/lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini"
@@ -561,8 +568,8 @@ jobs:
           for path in \
             sbin/wifi sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
             sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
-            sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery sbin/ds-recovery-check \
-            lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
+            sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery sbin/recovery-time-sync \
+            sbin/ds-recovery-check lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
           do
             grep -Fxq "$path" kernel-initramfs-files.txt || {
               echo "Missing from kernel internal initramfs: $path"
