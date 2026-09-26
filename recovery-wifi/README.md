@@ -48,38 +48,45 @@ Test connectivity:
 wifi ping 1.1.1.1
 ```
 
-Start a local WPA2 recovery hotspot (2.4 GHz, channel 6 by default):
+Create one persistent WPA2 recovery hotspot profile (2.4 GHz, channel 6 by default):
 
 ```sh
-wifi hotspot start "Channel-Recovery" "recovery123"
+wifi hotspot create "Channel-Recovery" "recovery123"
 ```
 
-Use a specific 2.4 GHz channel from 1 through 11:
+A second `create` is refused while a saved hotspot already exists. Change the
+existing profile instead; multiple fields can be changed in one command:
 
 ```sh
-wifi hotspot start "Channel-Recovery" "recovery123" 11
+wifi hotspot config
+wifi hotspot config ssid "Channel-New"
+wifi hotspot config password "newpass123"
+wifi hotspot config channel 11
+wifi hotspot config ssid "Channel-New" channel 6
 ```
 
-The successful hotspot configuration is saved root-only in
-`/data/local/wifi/hotspot.conf`, so later boots can reuse it with:
+`wifi hotspot config` never prints the saved password in clear text. The
+profile is stored root-only in `/data/local/wifi/hotspot.conf`. Starting and
+stopping are separate from profile management:
 
 ```sh
 wifi hotspot start
-```
-
-Inspect the AP, connected/seen clients, or stop it and return to client mode:
-
-```sh
 wifi hotspot status
 wifi hotspot clients
 wifi hotspot stop
+wifi hotspot delete
 ```
+
+`stop` leaves the saved profile intact. `delete` removes the saved profile
+without implicitly stopping an already-running hotspot; if one is active it
+continues until `wifi hotspot stop`.
 
 The recovery hotspot uses `192.168.43.1/24` and serves DHCP leases from
 `192.168.43.20` through `192.168.43.60`. It is currently a local recovery
-LAN, not an Internet/NAT tethering service. STA and AP are intentionally
-exclusive in this first implementation; stopping the hotspot brings the
-existing client Wi-Fi stack back up.
+LAN, not an Internet/NAT tethering service. The separate experimental
+`start-vif` path has been hardware-validated with `wlan0` STA and `ap0` AP
+running concurrently on the PRONTO single-channel radio; the persistent
+profile lifecycle remains independent from that experimental path.
 
 ## Commands
 
@@ -91,11 +98,14 @@ existing client Wi-Fi stack back up.
 | `wifi connect "SSID" "PASSWORD"` | Connect to WPA/WPA2-PSK and obtain an IP address through DHCP. |
 | `wifi connect-sae "SSID" "PASSWORD"` | Connect to WPA3-SAE and obtain an IP address through DHCP. |
 | `wifi connect-open "SSID"` | Connect to an open network and obtain an IP address through DHCP. |
-| `wifi hotspot start "SSID" "PASSWORD" [CHANNEL]` | Start a WPA2-PSK 2.4 GHz AP. Channel defaults to 6; valid values are 1-11. A successful configuration is persisted. |
+| `wifi hotspot create "SSID" "PASSWORD" [CHANNEL]` | Create the single saved WPA2-PSK hotspot profile. Refuses to overwrite an existing profile. Channel defaults to 6; valid values are 1-11. |
+| `wifi hotspot config` | Show the saved hotspot profile with the password hidden. |
+| `wifi hotspot config KEY VALUE [KEY VALUE ...]` | Update `ssid`, `password`/`pass`, and/or `channel` in the saved profile. |
 | `wifi hotspot start` | Start the hotspot using the saved AP configuration. |
+| `wifi hotspot stop` | Stop AP/DHCP runtime and keep the saved profile. |
+| `wifi hotspot delete` | Delete the saved hotspot profile without implicitly stopping an active runtime. |
 | `wifi hotspot status` | Show AP state, interface address and DHCP-server status. |
 | `wifi hotspot clients` | Show the AP neighbor/client table. |
-| `wifi hotspot stop` | Stop AP/DHCP and restore the client Wi-Fi stack. |
 | `wifi dhcp` | Request/refresh IPv4 configuration through DHCP. |
 | `wifi status` | Show supplicant state, interface addresses, routes and DNS. |
 | `wifi ping HOST` | Ping a host through the recovery Wi-Fi connection. |

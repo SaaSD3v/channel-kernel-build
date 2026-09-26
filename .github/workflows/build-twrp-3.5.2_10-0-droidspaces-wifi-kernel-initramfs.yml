@@ -38,8 +38,11 @@ jobs:
           grep -qx 'CONFIG_DRIVER_NL80211=y' recovery-wifi/hostapd.config
           grep -qx 'CONFIG_LIBNL32=y' recovery-wifi/hostapd.config
           grep -q 'CONFIG_UDHCPD' recovery-wifi/build-userspace.sh
+          grep -q '^cmd_hotspot_create()' recovery-wifi/wifi
+          grep -q '^cmd_hotspot_config()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_start()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_stop()' recovery-wifi/wifi
+          grep -q '^cmd_hotspot_delete()' recovery-wifi/wifi
           grep -q '192\.168\.43\.1/24' recovery-wifi/wifi
 
       - name: Install dependencies

@@ -907,6 +907,169 @@ load_hotspot_conf() {
     "$BB" chmod 600 "$HOTSPOT_CONF" 2>/dev/null || true
 }
 
+hotspot_saved_value() {
+    hs_key="$1"
+    ensure_persistent_store || return 1
+    [ -f "$PERSIST_HOTSPOT" ] || return 1
+    "$BB" sed -n "s/^$hs_key=//p" "$PERSIST_HOTSPOT" 2>/dev/null |
+        "$BB" awk 'NR == 1 { print; exit }'
+}
+
+cmd_hotspot_create() {
+    case "$#" in
+        2|3) ;;
+        *)
+            echo 'usage: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+            return 2
+            ;;
+    esac
+
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+
+    if [ -f "$PERSIST_HOTSPOT" ]; then
+        existing_ssid="$(hotspot_saved_value ssid 2>/dev/null || true)"
+        [ -n "$existing_ssid" ] || existing_ssid="<unreadable>"
+        echo "A saved hotspot already exists: $existing_ssid"
+        echo 'Use: wifi hotspot config [ssid "NEW"] [password "NEW"] [channel N]'
+        echo 'Or delete it first with: wifi hotspot delete'
+        return 1
+    fi
+
+    channel="${3:-6}"
+    candidate="$STATE/hotspot.persist.$$"
+    make_hotspot_conf "$1" "$2" "$channel" "$candidate" || {
+        "$BB" rm -f "$candidate" 2>/dev/null || true
+        return 1
+    }
+
+    if ! persist_hotspot_conf "$candidate"; then
+        "$BB" rm -f "$candidate" 2>/dev/null || true
+        echo "Could not save hotspot configuration at $PERSIST_HOTSPOT"
+        return 1
+    fi
+    "$BB" rm -f "$candidate" 2>/dev/null || true
+
+    echo "Created saved hotspot: $1"
+    echo "Channel: $channel"
+    echo "Start it with: wifi hotspot start"
+}
+
+cmd_hotspot_config() {
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+    [ -f "$PERSIST_HOTSPOT" ] || {
+        echo 'No saved hotspot. Create one with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        return 1
+    }
+    "$BB" grep -qx '# dswifi-hotspot=1' "$PERSIST_HOTSPOT" 2>/dev/null || {
+        echo "Saved hotspot configuration is invalid. Delete it with: wifi hotspot delete"
+        return 1
+    }
+
+    saved_ssid="$(hotspot_saved_value ssid)"
+    saved_pass="$(hotspot_saved_value wpa_passphrase)"
+    saved_channel="$(hotspot_saved_value channel)"
+    [ -n "$saved_ssid" ] && [ -n "$saved_pass" ] && [ -n "$saved_channel" ] || {
+        echo "Saved hotspot configuration is incomplete. Delete it with: wifi hotspot delete"
+        return 1
+    }
+
+    if [ "$#" -eq 0 ]; then
+        echo "--- saved hotspot ---"
+        echo "ssid: $saved_ssid"
+        echo "security: WPA2-PSK/CCMP"
+        echo "channel: $saved_channel"
+        echo "password: configured (${#saved_pass} characters; hidden)"
+        if [ -f "$HOTSPOT_MARKER" ]; then
+            echo "runtime: active (saved changes apply on the next start)"
+        else
+            echo "runtime: inactive"
+        fi
+        return 0
+    fi
+
+    new_ssid="$saved_ssid"
+    new_pass="$saved_pass"
+    new_channel="$saved_channel"
+
+    while [ "$#" -gt 0 ]; do
+        key="$1"
+        shift
+        [ "$#" -gt 0 ] || {
+            echo "Missing value for hotspot config key: $key"
+            echo 'usage: wifi hotspot config [ssid "NEW"] [password "NEW"] [channel N]'
+            return 2
+        }
+        value="$1"
+        shift
+        case "$key" in
+            ssid) new_ssid="$value" ;;
+            password|pass) new_pass="$value" ;;
+            channel) new_channel="$value" ;;
+            *)
+                echo "Unknown hotspot config key: $key"
+                echo 'Supported keys: ssid, password, channel'
+                return 2
+                ;;
+        esac
+    done
+
+    candidate="$STATE/hotspot.persist.$$"
+    make_hotspot_conf "$new_ssid" "$new_pass" "$new_channel" "$candidate" || {
+        "$BB" rm -f "$candidate" 2>/dev/null || true
+        return 1
+    }
+
+    if ! persist_hotspot_conf "$candidate"; then
+        "$BB" rm -f "$candidate" 2>/dev/null || true
+        echo "Could not update saved hotspot configuration."
+        return 1
+    fi
+    "$BB" rm -f "$candidate" 2>/dev/null || true
+
+    echo "Updated saved hotspot configuration."
+    if [ -f "$HOTSPOT_MARKER" ]; then
+        echo "The running hotspot was not changed; new settings apply on the next start."
+    fi
+    cmd_hotspot_config
+}
+
+cmd_hotspot_delete() {
+    [ "$#" -eq 0 ] || {
+        echo "usage: wifi hotspot delete"
+        return 2
+    }
+
+    ensure_persistent_store || {
+        echo "Persistent Wi-Fi storage unavailable at $PERSIST_DIR"
+        return 1
+    }
+    [ -f "$PERSIST_HOTSPOT" ] || {
+        echo "No saved hotspot to delete."
+        return 1
+    }
+
+    deleted_ssid="$(hotspot_saved_value ssid 2>/dev/null || true)"
+    [ -n "$deleted_ssid" ] || deleted_ssid="<unknown>"
+
+    "$BB" rm -f "$PERSIST_HOTSPOT" || return 1
+    "$BB" sync
+
+    if [ ! -f "$HOTSPOT_MARKER" ]; then
+        "$BB" rm -f "$HOTSPOT_CONF" 2>/dev/null || true
+    fi
+
+    echo "Deleted saved hotspot: $deleted_ssid"
+    if [ -f "$HOTSPOT_MARKER" ]; then
+        echo "The current hotspot is still running. Use 'wifi hotspot stop' to stop it."
+    fi
+}
+
 start_hostapd() {
     clear_hotspot_state
     stop_supplicant
@@ -1074,25 +1237,16 @@ cmd_hotspot_start_vif() {
 }
 
 cmd_hotspot_start() {
-    new_config=0
+    [ "$#" -eq 0 ] || {
+        echo "usage: wifi hotspot start"
+        echo 'Create a saved hotspot first with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        return 2
+    }
 
-    case "$#" in
-        0)
-            if ! load_hotspot_conf; then
-                echo 'No saved hotspot. Usage: wifi hotspot start "SSID" "PASSWORD" [CHANNEL]'
-                return 2
-            fi
-            ;;
-        2|3)
-            channel="${3:-6}"
-            make_hotspot_conf "$1" "$2" "$channel" "$HOTSPOT_CONF" || return 1
-            new_config=1
-            ;;
-        *)
-            echo 'usage: wifi hotspot start "SSID" "PASSWORD" [CHANNEL]'
-            return 2
-            ;;
-    esac
+    if ! load_hotspot_conf; then
+        echo 'No saved hotspot. Create one with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+        return 2
+    fi
 
     prepare || {
         echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
@@ -1127,14 +1281,6 @@ cmd_hotspot_start() {
 
     printf '%s\n' "active" > "$HOTSPOT_MARKER"
     "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
-
-    if [ "$new_config" -eq 1 ]; then
-        if persist_hotspot_conf "$HOTSPOT_CONF"; then
-            echo "Saved hotspot configuration at $PERSIST_HOTSPOT"
-        else
-            echo "Hotspot is running, but persistent storage is unavailable; configuration is temporary."
-        fi
-    fi
 
     echo "Hotspot ready on $IFACE: $HOTSPOT_ADDR/24"
     cmd_hotspot_status
@@ -1464,13 +1610,18 @@ usage() {
         '  wifi networks' \
         '  wifi forget "SSID"' \
         '  wifi forget-all' \
-        '  wifi hotspot start "SSID" "PASSWORD" [CHANNEL]  # default channel 6' \
-        '  wifi hotspot start                               # reuse saved config' \
+        '  wifi hotspot create "SSID" "PASSWORD" [CHANNEL] # save new hotspot; default channel 6' \
+        '  wifi hotspot config                              # show saved config (password hidden)' \
+        '  wifi hotspot config ssid "NEW"                   # change saved SSID' \
+        '  wifi hotspot config password "NEW"               # change saved password' \
+        '  wifi hotspot config channel N                    # change saved channel (1-11)' \
+        '  wifi hotspot start                               # start saved hotspot' \
+        '  wifi hotspot stop                                # stop runtime; keep saved config' \
+        '  wifi hotspot delete                              # delete saved config; does not stop runtime' \
         '  wifi hotspot probe-vif                           # create/delete ap0 only' \
         '  wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL] # AP+STA test on ap0' \
         '  wifi hotspot status' \
         '  wifi hotspot clients' \
-        '  wifi hotspot stop' \
         '  wifi dhcp' \
         '  wifi status' \
         '  wifi ping HOST' \
@@ -1496,12 +1647,15 @@ case "$cmd" in
         sub="${1:-status}"
         [ "$#" -gt 0 ] && shift || true
         case "$sub" in
+            create) cmd_hotspot_create "$@" ;;
+            config) cmd_hotspot_config "$@" ;;
             start) cmd_hotspot_start "$@" ;;
+            stop) cmd_hotspot_stop ;;
+            delete) cmd_hotspot_delete "$@" ;;
             probe-vif) cmd_hotspot_probe_vif ;;
             start-vif) cmd_hotspot_start_vif "$@" ;;
             status) cmd_hotspot_status ;;
             clients) cmd_hotspot_clients ;;
-            stop) cmd_hotspot_stop ;;
             *) echo "Unknown hotspot command: $sub"; usage; exit 2 ;;
         esac
         ;;
