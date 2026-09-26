@@ -1,6 +1,6 @@
 name: Build Channel TWRP 3.5.2
 
-# validation rerun: recovery clock repair builder restored
+# validation rerun: recovery clock repair builder restored v3
 
 run-name: Channel TWRP 3.5.2 • Wi-Fi + Hotspot
 
