@@ -17,6 +17,7 @@ WPA=/sbin/wpa_supplicant.ds
 WPACLI=/sbin/wpa_cli.ds
 WPAPASS=/sbin/wpa_passphrase.ds
 HOSTAPD=/sbin/hostapd.ds
+IW=/sbin/iw.ds
 WCNSS=/sbin/wcnss-recovery
 STATE=/tmp/ds-wifi
 STOCK_VENDOR="$STATE/vendor-stock"
@@ -43,6 +44,7 @@ HOTSPOT_DHCP_LOG=$STATE/udhcpd.log
 HOTSPOT_ADDR=192.168.43.1
 HOTSPOT_CIDR=192.168.43.1/24
 IFACE=${WIFI_IFACE:-wlan0}
+HOTSPOT_IFACE=${WIFI_HOTSPOT_IFACE:-ap0}
 
 mkdir_state() {
     "$BB" mkdir -p "$STATE" "$CTRL" "$STOCK_VENDOR" /vendor /firmware /persist \
@@ -688,6 +690,99 @@ commit_validated_network() {
     return 0
 }
 
+delete_hotspot_vif() {
+    [ "$HOTSPOT_IFACE" = "$IFACE" ] && return 0
+    [ -d "/sys/class/net/$HOTSPOT_IFACE" ] || return 0
+
+    "$IW" dev "$HOTSPOT_IFACE" del >>"$PREPLOG" 2>&1 || return 1
+
+    i=0
+    while [ "$i" -lt 10 ] && [ -d "/sys/class/net/$HOTSPOT_IFACE" ]; do
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+    [ ! -d "/sys/class/net/$HOTSPOT_IFACE" ]
+}
+
+cmd_hotspot_probe_vif() {
+    [ -x "$IW" ] || {
+        echo "Missing recovery iw binary: $IW"
+        return 1
+    }
+    [ "$HOTSPOT_IFACE" != "$IFACE" ] || {
+        echo "WIFI_HOTSPOT_IFACE must differ from WIFI_IFACE for the VIF probe."
+        return 2
+    }
+    [ ! -f "$HOTSPOT_MARKER" ] || {
+        echo "Hotspot is active. Stop it before probing the AP VIF."
+        return 1
+    }
+
+    prepare || {
+        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        return 1
+    }
+
+    if ! delete_hotspot_vif; then
+        echo "Could not remove stale $HOTSPOT_IFACE before the probe."
+        return 1
+    fi
+
+    sta_before=""
+    if [ -S "$CTRL/$IFACE" ]; then
+        sta_before=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" sed -n 's/^wpa_state=//p')
+    fi
+
+    echo "Creating temporary AP VIF $HOTSPOT_IFACE on $IFACE..."
+    if ! "$IW" dev "$IFACE" interface add "$HOTSPOT_IFACE" type __ap >>"$PREPLOG" 2>&1; then
+        echo "PRONTO/cfg80211 rejected AP virtual-interface creation."
+        dmesg 2>/dev/null | "$BB" grep -iE 'wlan|cfg80211|softap|concurr|adapter' |
+            "$BB" tail -n 80 || true
+        return 1
+    fi
+
+    i=0
+    while [ "$i" -lt 5 ] && [ ! -d "/sys/class/net/$HOTSPOT_IFACE" ]; do
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+    if [ ! -d "/sys/class/net/$HOTSPOT_IFACE" ]; then
+        echo "$HOTSPOT_IFACE was not registered after nl80211 add_interface."
+        delete_hotspot_vif >/dev/null 2>&1 || true
+        return 1
+    fi
+
+    echo "--- AP VIF ---"
+    "$IW" dev "$HOTSPOT_IFACE" info 2>/dev/null || true
+    "$BB" ip link show dev "$HOTSPOT_IFACE" 2>/dev/null || true
+
+    sta_after=""
+    if [ -S "$CTRL/$IFACE" ]; then
+        sta_after=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" sed -n 's/^wpa_state=//p')
+        echo "--- STA after VIF creation ---"
+        "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" grep -E '^(wpa_state|ssid|bssid|freq|ip_address)=' || true
+    fi
+
+    if ! delete_hotspot_vif; then
+        echo "AP VIF was created, but cleanup failed; run: wifi logs"
+        return 1
+    fi
+
+    [ ! -d "/sys/class/net/$HOTSPOT_IFACE" ] || {
+        echo "$HOTSPOT_IFACE still exists after cleanup."
+        return 1
+    }
+
+    echo "AP VIF probe passed: created and removed $HOTSPOT_IFACE without converting $IFACE."
+    if [ -n "$sta_before" ]; then
+        echo "STA state: $sta_before -> ${sta_after:-unknown}"
+    fi
+    return 0
+}
+
 make_hotspot_conf() {
     ssid="$1"
     pass="$2"
@@ -1181,7 +1276,7 @@ cmd_logs() {
     cat "$PREPLOG" 2>/dev/null || true
     echo "===== wpa_supplicant ====="
     "$BB" tail -n 160 "$LOG" 2>/dev/null || true
-    echo "===== hotspot wpa_supplicant ====="
+    echo "===== hotspot hostapd ====="
     "$BB" tail -n 160 "$HOTSPOT_LOG" 2>/dev/null || true
     echo "===== hotspot udhcpd ====="
     "$BB" tail -n 80 "$HOTSPOT_DHCP_LOG" 2>/dev/null || true
@@ -1212,6 +1307,7 @@ usage() {
         '  wifi forget-all' \
         '  wifi hotspot start "SSID" "PASSWORD" [CHANNEL]  # default channel 6' \
         '  wifi hotspot start                               # reuse saved config' \
+        '  wifi hotspot probe-vif                           # test temporary ap0 alongside wlan0' \
         '  wifi hotspot status' \
         '  wifi hotspot clients' \
         '  wifi hotspot stop' \
@@ -1241,6 +1337,7 @@ case "$cmd" in
         [ "$#" -gt 0 ] && shift || true
         case "$sub" in
             start) cmd_hotspot_start "$@" ;;
+            probe-vif) cmd_hotspot_probe_vif ;;
             status) cmd_hotspot_status ;;
             clients) cmd_hotspot_clients ;;
             stop) cmd_hotspot_stop ;;

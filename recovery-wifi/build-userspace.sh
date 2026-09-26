@@ -13,6 +13,7 @@ WPA_TAG=hostap_2_9
 OPENSSL_TAG=OpenSSL_1_1_1w
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
 LIBNL_TAG=libnl3_2_25
+IW_COMMIT=f9081ee3c6c092e88da00d3959af7add56538295
 
 rm -rf "$OUT" "$SRC" "$PREFIX"
 mkdir -p "$OUT" "$SRC" "$PREFIX"
@@ -94,6 +95,27 @@ make -j"$(nproc)" \
 cp hostapd "$OUT/hostapd.ds"
 popd >/dev/null
 
+# Static iw from the same Droidspaces fork used by VirtualAP. Keep it separate
+# from Android/TWRP userspace so recovery can exercise cfg80211 add_virtual_intf
+# directly and create an AP VIF without converting the validated wlan0 STA.
+git init "$SRC/iw"
+git -C "$SRC/iw" remote add origin https://github.com/Droidspaces/iw-vap.git
+git -C "$SRC/iw" fetch --depth=1 origin "$IW_COMMIT"
+git -C "$SRC/iw" checkout --detach FETCH_HEAD
+pushd "$SRC/iw" >/dev/null
+make clean || true
+export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
+export LDFLAGS='-static -Wl,--gc-sections'
+make -j"$(nproc)" \
+  CC="$CC" \
+  PKG_CONFIG="pkg-config --static" \
+  CFLAGS="-Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3" \
+  V=1
+unset LDFLAGS
+cp iw "$OUT/iw.ds"
+popd >/dev/null
+
 # BusyBox supplies DHCP/network tooling without depending on TWRP Bionic.
 git init "$SRC/busybox"
 git -C "$SRC/busybox" remote add origin https://github.com/mirror/busybox.git
@@ -145,11 +167,11 @@ cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
 chmod 0755 \
   "$OUT/wifi" "$OUT/wifi-udhcpc.script" \
   "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/hostapd.ds" "$OUT/busybox.ds" "$OUT/wcnss-recovery"
+  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/wcnss-recovery"
 chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
 
 for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/hostapd.ds" "$OUT/busybox.ds" "$OUT/wcnss-recovery"; do
+         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/wcnss-recovery"; do
   "$STRIP" --strip-all "$f"
   file "$f"
   file "$f" | grep -q 'statically linked'

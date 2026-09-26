@@ -208,6 +208,7 @@ jobs:
           install -m 0755 recovery-wifi/out/busybox.ds "$ROOT/sbin/busybox.ds"
           install -m 0755 recovery-wifi/out/wpa_supplicant.ds "$ROOT/sbin/wpa_supplicant.ds"
           install -m 0755 recovery-wifi/out/hostapd.ds "$ROOT/sbin/hostapd.ds"
+          install -m 0755 recovery-wifi/out/iw.ds "$ROOT/sbin/iw.ds"
           install -m 0755 recovery-wifi/out/wpa_cli.ds "$ROOT/sbin/wpa_cli.ds"
           install -m 0755 recovery-wifi/out/wpa_passphrase.ds "$ROOT/sbin/wpa_passphrase.ds"
           install -m 0755 recovery-wifi/out/wifi-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
@@ -460,7 +461,7 @@ jobs:
             exit 1
           fi
           for path in \
-            sbin/wifi sbin/busybox.ds sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/wpa_cli.ds \
+            sbin/wifi sbin/busybox.ds sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery \
             lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
           do
