@@ -5,9 +5,28 @@ ROOT="${GITHUB_WORKSPACE:-$(pwd)}"
 OUT="$ROOT/recovery-wifi/out"
 SRC="$ROOT/recovery-wifi/src"
 PREFIX="$ROOT/recovery-wifi/prefix"
-CROSS=aarch64-linux-gnu-
-CC=${CROSS}gcc
-STRIP=${CROSS}strip
+
+# Device build profile. channel remains the default and therefore preserves the
+# already validated Moto G7 Play build. New ports add their own
+# recovery-wifi/devices/<codename>/device.conf instead of forking this script.
+DEVICE="${DEVICE:-channel}"
+DEVICE_PROFILE="$ROOT/recovery-wifi/devices/$DEVICE/device.conf"
+if [[ ! -f "$DEVICE_PROFILE" ]]; then
+  echo "Missing recovery Wi-Fi device profile: $DEVICE_PROFILE" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+source "$DEVICE_PROFILE"
+
+TARGET_ARCH="${DS_WIFI_ARCH:-arm64}"
+CROSS="${DS_WIFI_CROSS:-aarch64-linux-gnu-}"
+HOST_TRIPLE="${DS_WIFI_HOST:-aarch64-linux-gnu}"
+OPENSSL_TARGET="${DS_WIFI_OPENSSL_TARGET:-linux-aarch64}"
+CC="${CROSS}gcc"
+STRIP="${CROSS}strip"
+
+echo "Recovery Wi-Fi userspace device: $DEVICE"
+echo "  arch=$TARGET_ARCH host=$HOST_TRIPLE cross=$CROSS openssl=$OPENSSL_TARGET"
 
 WPA_TAG=hostap_2_9
 OPENSSL_TAG=OpenSSL_1_1_1w
@@ -23,7 +42,7 @@ git clone --depth=1 --branch "$LIBNL_TAG" https://github.com/thom311/libnl.git "
 pushd "$SRC/libnl" >/dev/null
 autoreconf -fi
 ./configure \
-  --host=aarch64-linux-gnu \
+  --host="$HOST_TRIPLE" \
   --prefix="$PREFIX" \
   --enable-static \
   --disable-shared \
@@ -39,7 +58,7 @@ git -C "$SRC/openssl" remote add origin https://github.com/openssl/openssl.git
 git -C "$SRC/openssl" fetch --depth=1 origin "refs/tags/$OPENSSL_TAG"
 git -C "$SRC/openssl" checkout --detach FETCH_HEAD
 pushd "$SRC/openssl" >/dev/null
-./Configure linux-aarch64 \
+./Configure "$OPENSSL_TARGET" \
   --cross-compile-prefix="$CROSS" \
   no-shared \
   no-tests
@@ -122,7 +141,7 @@ git -C "$SRC/busybox" remote add origin https://github.com/mirror/busybox.git
 git -C "$SRC/busybox" fetch --depth=1 origin "$BUSYBOX_COMMIT"
 git -C "$SRC/busybox" checkout --detach FETCH_HEAD
 pushd "$SRC/busybox" >/dev/null
-make ARCH=arm64 CROSS_COMPILE="$CROSS" defconfig
+make ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS" defconfig
 
 # The recovery hotspot uses BusyBox as its tiny DHCP server. Keep this
 # explicit so a BusyBox defconfig change cannot silently remove the applet.
@@ -134,8 +153,8 @@ fi
 
 sed -i 's/^# CONFIG_STATIC is not set$/CONFIG_STATIC=y/' .config
 sed -i 's/^CONFIG_TC=y$/# CONFIG_TC is not set/' .config || true
-make ARCH=arm64 CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
-make -j"$(nproc)" ARCH=arm64 CROSS_COMPILE="$CROSS"
+make ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
+make -j"$(nproc)" ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS"
 
 # Cross-built ARM64 binaries cannot be executed on the x86 GitHub runner.
 # Validate every applet used by /sbin/wifi from the resolved BusyBox config.
