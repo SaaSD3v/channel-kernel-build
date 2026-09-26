@@ -2,6 +2,7 @@ name: Build Channel TWRP 3.5.2 DroidSpaces
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches:
       - twrp-3.5.2_10-0-droidspaces
@@ -26,6 +27,8 @@ jobs:
     steps:
       - name: Checkout build repository
         uses: actions/checkout@v4
+        with:
+          ref: twrp-3.5.2_10-0-droidspaces
 
       - name: Install dependencies
         run: |
