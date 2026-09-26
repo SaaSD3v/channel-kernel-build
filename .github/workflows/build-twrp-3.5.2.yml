@@ -1,6 +1,6 @@
 name: Build Channel TWRP 3.5.2
 
-# validation rerun: recovery clock repair builder restored v3
+# validation rerun: pinned clang fallback
 
 run-name: Channel TWRP 3.5.2 • Wi-Fi + Hotspot
 
@@ -360,13 +360,34 @@ jobs:
 
       - name: Download AOSP Clang r353983c1
         run: |
-          curl -fL --retry 5 \
-            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-qpr3-release/clang-r353983c1.tar.gz" \
-            -o clang-r353983c1.tar.gz
+          set -euo pipefail
+          CLANG_DIR="$GITHUB_WORKSPACE/toolchains/clang-r353983c1"
+          CLANG_ARCHIVE="$GITHUB_WORKSPACE/clang-r353983c1.tar.gz"
+          PRIMARY="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android11-qpr3-release/clang-r353983c1.tar.gz"
+          MIRROR="https://github.com/msft-mirror-aosp/platform.prebuilts.clang.host.linux-x86.git"
+          MIRROR_COMMIT="7e2d7f3e8dba20760df041bf90ca5a15913631c8"
 
-          mkdir -p toolchains/clang-r353983c1
-          tar -xzf clang-r353983c1.tar.gz -C toolchains/clang-r353983c1
-          echo "CLANG_BIN=$GITHUB_WORKSPACE/toolchains/clang-r353983c1/bin" >> "$GITHUB_ENV"
+          rm -rf "$CLANG_DIR" "$CLANG_ARCHIVE"
+          mkdir -p "$CLANG_DIR"
+
+          if curl -fL --retry 5 "$PRIMARY" -o "$CLANG_ARCHIVE"; then
+            tar -xzf "$CLANG_ARCHIVE" -C "$CLANG_DIR"
+          else
+            echo "android.googlesource unavailable; using pinned AOSP GitHub mirror"
+            rm -rf "$CLANG_DIR" "$RUNNER_TEMP/aosp-clang-mirror"
+            git init "$RUNNER_TEMP/aosp-clang-mirror"
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" remote add origin "$MIRROR"
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" sparse-checkout init --cone
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" sparse-checkout set clang-r353983c1
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" fetch --depth=1 --filter=blob:none origin "$MIRROR_COMMIT"
+            git -C "$RUNNER_TEMP/aosp-clang-mirror" checkout --detach FETCH_HEAD
+            cp -a "$RUNNER_TEMP/aosp-clang-mirror/clang-r353983c1" "$CLANG_DIR"
+          fi
+
+          test -x "$CLANG_DIR/bin/clang"
+          "$CLANG_DIR/bin/clang" --version | tee clang-version.txt
+          grep -Fq 'r353983c1' clang-version.txt
+          echo "CLANG_BIN=$CLANG_DIR/bin" >> "$GITHUB_ENV"
 
       - name: Download GCC 4.9 AArch64
         run: |
