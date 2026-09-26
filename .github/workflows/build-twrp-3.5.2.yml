@@ -3,7 +3,9 @@ name: Build Channel TWRP 3.5.2
 run-name: Channel TWRP 3.5.2 • Wi-Fi + Hotspot
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - ci-twrp-iptables-validation
 
 permissions:
   contents: read
