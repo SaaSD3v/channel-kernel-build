@@ -109,3 +109,14 @@ For another device, add `recovery-wifi/devices/<codename>/device.conf` with its 
 
 For hotspot support, the target WLAN driver must expose AP operation through cfg80211/nl80211. The optional simultaneous STA + AP path additionally requires virtual-interface/concurrency support.
 
+### Unified TWRP Action
+
+Manual TWRP builds are exposed from the `main` branch through a single
+**Build Channel TWRP 3.5.2** workflow. Choose the desired variant there:
+`WIFI-HOTSPOT`, `WIFI-KERNEL-INITRAMFS`, `WIFI`,
+`WIFI-USERSPACE-SMOKE`, `DROIDSPACES`, or `STOCK-CONTROL`.
+
+The workflow files kept inside the TWRP development branches are internal
+reusable implementations for that selector; inherited LOS workflow copies were
+removed from these branches to keep the repository and Actions view clean.
+
