@@ -197,6 +197,7 @@ jobs:
           bash -n recovery-wifi/build-userspace.sh
           sh -n recovery-wifi/wifi
           sh -n recovery-wifi/wifi-udhcpc.script
+          sh -n recovery-wifi/ds-recovery-check
           chmod +x recovery-wifi/build-userspace.sh
           DEVICE="$DEVICE" recovery-wifi/build-userspace.sh
 
@@ -234,6 +235,7 @@ jobs:
           install -m 0755 recovery-wifi/out/wpa_passphrase.ds "$ROOT/sbin/wpa_passphrase.ds"
           install -m 0755 recovery-wifi/out/wifi-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
           install -m 0755 recovery-wifi/out/wcnss-recovery "$ROOT/sbin/wcnss-recovery"
+          install -m 0755 recovery-wifi/ds-recovery-check "$ROOT/sbin/ds-recovery-check"
           install -m 0644 recovery-wifi/out/WCNSS_qcom_cfg.ini \
             "$ROOT/lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini"
 
@@ -518,7 +520,7 @@ jobs:
           for path in \
             sbin/wifi sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
             sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
-            sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery \
+            sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery sbin/ds-recovery-check \
             lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
           do
             grep -Fxq "$path" kernel-initramfs-files.txt || {
