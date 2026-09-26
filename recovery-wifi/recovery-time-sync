@@ -1,0 +1,192 @@
+#!/sbin/sh
+# Recovery clock repair for Qualcomm TWRP.
+# Keeps our own monotonic last-good timestamp and performs one-shot NTP after
+# Wi-Fi DHCP. It never edits Qualcomm /persist/time/ats_* files.
+
+PATH=/sbin:/system/bin:/vendor/bin
+export PATH
+
+BB=/sbin/busybox.ds
+PERSIST_DIR=/persist/time
+STAMP="$PERSIST_DIR/ds-recovery-last-good"
+LOG=/tmp/ds-time-sync.log
+MIN_EPOCH=1704067200
+NTP_TIMEOUT=${DS_TIME_TIMEOUT:-12}
+NTP_SERVERS=${DS_TIME_SERVERS:-"time.cloudflare.com time.google.com pool.ntp.org"}
+
+say() {
+    printf '[time] %s\n' "$*"
+}
+
+log() {
+    printf '[time] %s\n' "$*" >> "$LOG" 2>/dev/null || true
+    say "$*"
+}
+
+now_epoch() {
+    "$BB" date -u +%s 2>/dev/null || date -u +%s 2>/dev/null
+}
+
+is_epoch() {
+    case "${1:-}" in
+        ''|*[!0-9]*) return 1 ;;
+    esac
+    [ "$1" -ge "$MIN_EPOCH" ] 2>/dev/null
+}
+
+persist_mounted() {
+    "$BB" awk '$2 == "/persist" { found=1 } END { exit found ? 0 : 1 }' /proc/mounts 2>/dev/null
+}
+
+read_stamp() {
+    [ -r "$STAMP" ] || return 1
+    value=$("$BB" cat "$STAMP" 2>/dev/null | "$BB" awk 'NR == 1 { print; exit }')
+    is_epoch "$value" || return 1
+    printf '%s\n' "$value"
+}
+
+set_epoch() {
+    target="$1"
+    is_epoch "$target" || return 1
+
+    # BusyBox is self-contained in our internal initramfs. Toybox date in the
+    # external TWRP ramdisk is retained as a compatibility fallback.
+    "$BB" date -u -s "@$target" >/dev/null 2>&1 ||         date -u "@$target" >/dev/null 2>&1
+}
+
+restore_floor() {
+    saved=$(read_stamp 2>/dev/null) || return 0
+    current=$(now_epoch 2>/dev/null) || return 1
+    is_epoch "$current" || current=0
+
+    if [ "$current" -lt "$saved" ] 2>/dev/null; then
+        if set_epoch "$saved"; then
+            log "restored last-good UTC floor: $saved"
+        else
+            log "could not restore last-good UTC floor"
+            return 1
+        fi
+    fi
+    return 0
+}
+
+save_good() {
+    current=$(now_epoch 2>/dev/null) || return 1
+    is_epoch "$current" || return 1
+    persist_mounted || {
+        log "/persist is not mounted; clock is fixed for this boot only"
+        return 1
+    }
+
+    old=$(read_stamp 2>/dev/null || true)
+    if is_epoch "$old" && [ "$current" -le "$old" ] 2>/dev/null; then
+        return 0
+    fi
+
+    "$BB" mkdir -p "$PERSIST_DIR" 2>/dev/null || return 1
+    tmp="$STAMP.$$"
+    printf '%s\n' "$current" > "$tmp" || return 1
+    "$BB" chmod 600 "$tmp" 2>/dev/null || {
+        "$BB" rm -f "$tmp"
+        return 1
+    }
+    "$BB" chown 0:0 "$tmp" 2>/dev/null || {
+        "$BB" rm -f "$tmp"
+        return 1
+    }
+    "$BB" mv -f "$tmp" "$STAMP" || {
+        "$BB" rm -f "$tmp"
+        return 1
+    }
+    "$BB" sync
+    log "saved last-good UTC epoch: $current"
+}
+
+sync_online() {
+    restore_floor || true
+
+    before=$(now_epoch 2>/dev/null || true)
+    is_epoch "$before" || before=0
+
+    set -- "$BB" ntpd -n -q
+    for server in $NTP_SERVERS; do
+        set -- "$@" -p "$server"
+    done
+
+    log "one-shot NTP sync (timeout ${NTP_TIMEOUT}s)"
+    "$BB" timeout "$NTP_TIMEOUT" "$@" >/tmp/ds-time-ntpd.log 2>&1
+    rc=$?
+
+    after=$(now_epoch 2>/dev/null || true)
+    is_epoch "$after" || {
+        log "NTP left an implausible clock"
+        restore_floor || true
+        return 1
+    }
+
+    # Some ntpd versions may be killed by timeout immediately after stepping
+    # the clock. Treat a large forward correction as success even in that case.
+    advanced=0
+    if [ "$before" -gt 0 ] 2>/dev/null && [ "$after" -gt "$before" ] 2>/dev/null; then
+        delta=$((after - before))
+        [ "$delta" -ge 60 ] && advanced=1
+    fi
+
+    if [ "$rc" -ne 0 ] && [ "$advanced" -ne 1 ]; then
+        log "NTP sync failed (rc=$rc); keeping existing clock"
+        restore_floor || true
+        return 1
+    fi
+
+    # Never allow network sync to go below a previously trusted NTP floor.
+    saved=$(read_stamp 2>/dev/null || true)
+    if is_epoch "$saved" && [ "$after" -lt "$saved" ] 2>/dev/null; then
+        set_epoch "$saved" || true
+        after="$saved"
+        log "NTP result was older than last-good; preserved floor $saved"
+    fi
+
+    save_good || true
+    log "UTC synchronized: $("$BB" date -u 2>/dev/null || date -u)"
+    return 0
+}
+
+status() {
+    printf 'Recovery clock status\n'
+    printf '%s\n' '---------------------'
+    printf 'system_utc: %s\n' "$("$BB" date -u 2>/dev/null || date -u 2>/dev/null)"
+    printf 'system_epoch: %s\n' "$(now_epoch 2>/dev/null || echo unknown)"
+
+    if [ -r /sys/class/rtc/rtc0/date ]; then
+        printf 'rtc0_date: %s\n' "$("$BB" cat /sys/class/rtc/rtc0/date 2>/dev/null)"
+    fi
+    if [ -r /sys/class/rtc/rtc0/time ]; then
+        printf 'rtc0_time: %s\n' "$("$BB" cat /sys/class/rtc/rtc0/time 2>/dev/null)"
+    fi
+    if [ -r /sys/class/rtc/rtc0/since_epoch ]; then
+        printf 'rtc0_since_epoch: %s\n' "$("$BB" cat /sys/class/rtc/rtc0/since_epoch 2>/dev/null)"
+    fi
+    if [ -r /persist/time/ats_2 ]; then
+        printf 'qcom_ats2: present (left untouched)\n'
+    else
+        printf 'qcom_ats2: unavailable\n'
+    fi
+
+    saved=$(read_stamp 2>/dev/null || true)
+    if is_epoch "$saved"; then
+        printf 'last_good_epoch: %s\n' "$saved"
+    else
+        printf 'last_good_epoch: none\n'
+    fi
+}
+
+case "${1:-status}" in
+    restore) restore_floor ;;
+    save) save_good ;;
+    online|sync) sync_online ;;
+    status) status ;;
+    *)
+        echo "usage: recovery-time-sync {restore|sync|online|save|status}" >&2
+        exit 2
+        ;;
+esac
