@@ -67,6 +67,39 @@ else
     warn '/proc/net/ip_tables_names indisponível'
 fi
 
+if [ -r /proc/net/ip_tables_targets ]; then
+    for target in DNAT MASQUERADE TCPMSS; do
+        grep -qx "$target" /proc/net/ip_tables_targets 2>/dev/null \
+            && ok "kernel xt target: $target" \
+            || bad "kernel xt target ausente: $target"
+    done
+else
+    bad '/proc/net/ip_tables_targets indisponível'
+fi
+
+if [ -r /proc/net/ip_tables_matches ]; then
+    grep -qx 'addrtype' /proc/net/ip_tables_matches 2>/dev/null \
+        && ok 'kernel xt match: addrtype' \
+        || bad 'kernel xt match ausente: addrtype'
+else
+    bad '/proc/net/ip_tables_matches indisponível'
+fi
+
+# Feature-dependent diagnostics: they are not fatal to a basic container but
+# explain exactly what will not work if a Manager toggle is enabled.
+grep -qw overlay /proc/filesystems 2>/dev/null \
+    && ok 'OverlayFS disponível' \
+    || warn 'OverlayFS ausente: modo volatile não funcionará'
+grep -qw cgroup2 /proc/filesystems 2>/dev/null \
+    && ok 'cgroup2 disponível' \
+    || warn 'cgroup2 ausente: DroidSpaces usará o caminho legacy de cgroup'
+[ -e /proc/self/ns/user ] \
+    && ok 'user namespace disponível' \
+    || warn 'user namespace ausente: allow-sandboxing não funcionará'
+[ -e /dev/ptmx ] \
+    && ok 'PTY disponível' \
+    || warn '/dev/ptmx ausente: consoles interativos podem falhar'
+
 # DroidSpaces itself contains functional namespace/veth/bridge probes.
 DS=""
 if command -v droidspaces >/dev/null 2>&1; then
@@ -83,7 +116,14 @@ fi
 
 if [ -n "$DS" ]; then
     printf '\n[INFO] Executando diagnóstico nativo: %s check\n' "$DS"
-    "$DS" check || warn 'droidspaces check retornou erro'
+    DS_OUT=$("$DS" check 2>&1)
+    DS_RC=$?
+    printf '%s\n' "$DS_OUT"
+    if [ "$DS_RC" -ne 0 ] || printf '%s\n' "$DS_OUT" | grep -q 'required feature(s) missing'; then
+        bad 'droidspaces check detectou requisito obrigatório ausente'
+    else
+        ok 'droidspaces check'
+    fi
 else
     warn 'binário DroidSpaces ainda não instalado; diagnóstico nativo ignorado'
 fi
