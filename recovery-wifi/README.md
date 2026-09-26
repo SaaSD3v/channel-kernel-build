@@ -185,3 +185,22 @@ network, so multiple known networks survive recovery reboots and can
 auto-associate without re-entering their password. If `/data` is unavailable,
 a successful connection remains usable for the current recovery session but is
 not persisted.
+
+## Porting note
+
+This branch is the kernel-initramfs Wi-Fi baseline for the Moto G7 Play
+(`channel`). Its WLAN bring-up is device-specific to the validated
+PRONTO/WCNSS path and should not be assumed to work unchanged on another
+device.
+
+The newer `twrp-3.5.2_10-0-droidspaces-wifi-hotspot` branch is the current
+reference for multi-device recovery Wi-Fi work. It separates portable static
+userspace build settings into `recovery-wifi/devices/<codename>/device.conf`
+while keeping kernel, firmware, recovery-image packaging, and WLAN bring-up
+device-specific.
+
+When porting, verify the target architecture/toolchain, recovery kernel/config,
+firmware locations, WLAN driver initialization, cfg80211/nl80211 AP support,
+boot-image format, DTB/DTBO handling, and partition size before reusing the
+common userspace.
+
