@@ -38,7 +38,7 @@ jobs:
           grep -qx 'CONFIG_LIBNL32=y' recovery-wifi/hostapd.config
           grep -q 'CONFIG_UDHCPD' recovery-wifi/build-userspace.sh
           grep -q 'IPTABLES_COMMIT=' recovery-wifi/build-userspace.sh
-          grep -q 'xtables-legacy-multi' recovery-wifi/build-userspace.sh
+          grep -q 'xtables-multi' recovery-wifi/build-userspace.sh
           grep -q '^cmd_hotspot_create()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_config()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_start()' recovery-wifi/wifi
