@@ -31,6 +31,7 @@ echo "  arch=$TARGET_ARCH host=$HOST_TRIPLE cross=$CROSS openssl=$OPENSSL_TARGET
 WPA_TAG=hostap_2_9
 OPENSSL_TAG=OpenSSL_1_1_1w
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
+IPTABLES_COMMIT=9b59ee3221ddef66ae1fe796088019496127f44f # iptables 1.8.0 legacy
 LIBNL_TAG=libnl3_2_25
 IW_COMMIT=8934cc42695817d63b00507c20eaefa98174e0a9 # iw v5.9
 
@@ -173,6 +174,38 @@ cp .config "$OUT/busybox.config"
 cp busybox "$OUT/busybox.ds"
 popd >/dev/null
 
+# Static legacy iptables for DroidSpaces port-forwarding in recovery.
+#
+# DroidSpaces v6 can program its base NAT rules through the kernel's raw
+# IP_TABLES API, but explicit port-forwards still execute iptables(8),
+# iptables-save and iptables-restore.  TWRP's external ramdisk is not relied
+# on for those tools: build a self-contained ARM64 legacy binary here.
+git init "$SRC/iptables"
+git -C "$SRC/iptables" remote add origin https://github.com/rtchack/iptables.git
+git -C "$SRC/iptables" fetch --depth=1 origin "$IPTABLES_COMMIT"
+git -C "$SRC/iptables" checkout --detach FETCH_HEAD
+pushd "$SRC/iptables" >/dev/null
+./autogen.sh
+PKG_CONFIG_LIBDIR=/nonexistent ./configure \
+  --host="$HOST_TRIPLE" \
+  --prefix="$PREFIX/iptables" \
+  --disable-shared \
+  --enable-static \
+  --disable-nftables \
+  --disable-ipv6 \
+  --disable-devel \
+  --disable-libipq \
+  --disable-bpf-compiler \
+  --disable-nfsynproxy \
+  --disable-connlabel \
+  --with-xt-lock-name=/tmp/xtables.lock \
+  CC="$CC" \
+  CFLAGS='-Os -ffunction-sections -fdata-sections' \
+  LDFLAGS='-static -Wl,--gc-sections'
+make -j"$(nproc)"
+cp iptables/xtables-legacy-multi "$OUT/iptables.ds"
+popd >/dev/null
+
 # Minimal recovery-only WCNSS handshake; no Android framework/QMI/vendor libs.
 "$CC" -static -Os -ffunction-sections -fdata-sections \
   -Wl,--gc-sections \
@@ -186,11 +219,11 @@ cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
 chmod 0755 \
   "$OUT/wifi" "$OUT/wifi-udhcpc.script" \
   "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/wcnss-recovery"
+  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"
 chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
 
 for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/wcnss-recovery"; do
+         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"; do
   "$STRIP" --strip-all "$f"
   file "$f"
   file "$f" | grep -q 'statically linked'
