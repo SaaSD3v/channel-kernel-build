@@ -238,13 +238,52 @@ not persisted.
 
 ## Hotspot validation state
 
-The hotspot implementation is kept separate from the already validated client
-Wi-Fi path. CI validates the shell controller, builds a dedicated static `hostapd` over
-`nl80211`, includes BusyBox `udhcpd`, stages the same compact internal
-initramfs payload, and rebuilds the TWRP image. The already validated client
-path continues to use its separate `wpa_supplicant` process.
+The hotspot implementation remains separate from the validated client Wi-Fi
+path. CI validates the shell controller, builds a dedicated static `hostapd`
+over `nl80211`, includes BusyBox `udhcpd`, stages the compact internal
+initramfs payload, and rebuilds the TWRP image.
 
-Physical-device validation still needs to confirm beacon visibility, WPA2
-association, DHCP lease delivery, client reachability to `192.168.43.1`, and
-the AP-to-STA restore path. Until that test is completed, the client Wi-Fi
-results listed above remain the hardware-validated baseline.
+Physical-device validation on the Moto G7 Play has confirmed:
+
+- WPA2 AP startup in TWRP recovery
+- DHCP lease delivery from the recovery hotspot
+- client reachability on the `192.168.43.0/24` recovery LAN
+- creation of a dedicated `ap0` virtual AP interface
+- simultaneous `wlan0` station + `ap0` access-point operation on the
+  PRONTO single-channel radio
+- preservation of the station default route while the AP subnet remains
+  reachable through `ap0`
+
+The validated concurrency path is exposed separately as `wifi hotspot
+start-vif`. The persistent hotspot profile lifecycle (`create`, `config`,
+`start`, `stop`, `delete`) remains independent from that test path.
+
+## Building and porting to other devices
+
+The static recovery userspace now loads a device profile from:
+
+```text
+recovery-wifi/devices/<codename>/device.conf
+```
+
+`channel` is the default and remains the only hardware-validated profile:
+
+```sh
+recovery-wifi/build-userspace.sh
+DEVICE=channel recovery-wifi/build-userspace.sh
+```
+
+The shared userspace profile controls architecture/toolchain values such as
+`DS_WIFI_ARCH`, `DS_WIFI_CROSS`, `DS_WIFI_HOST`, and
+`DS_WIFI_OPENSSL_TARGET`. See `recovery-wifi/devices/README.md` for the
+profile format.
+
+A new profile is only the userspace side of a port. The target device must also
+have a recovery kernel/config that exposes its WLAN driver, correct firmware
+staging, matching TWRP/boot-image packaging, and AP support through
+cfg80211/nl80211. The current `recovery-wifi/wifi` bring-up is specifically
+validated for the Moto G7 Play PRONTO/WCNSS path and should be treated as a
+reference implementation rather than a universal firmware loader.
+
+For simultaneous STA + AP, the target driver must additionally support a
+virtual AP interface/concurrency mode.
