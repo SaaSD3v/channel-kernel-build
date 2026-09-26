@@ -70,6 +70,46 @@ fi
 if [ -r /proc/net/ip_tables_targets ]; then
     for target in DNAT MASQUERADE TCPMSS; do
         grep -qx "$target" /proc/net/ip_tables_targets 2>/dev/null \
+            && ok "kernel xtables target: $target" \
+            || bad "kernel xtables sem target $target"
+    done
+else
+    bad '/proc/net/ip_tables_targets indisponível'
+fi
+
+if [ -r /proc/net/ip_tables_matches ]; then
+    for match in tcp udp; do
+        grep -qx "$match" /proc/net/ip_tables_matches 2>/dev/null \
+            && ok "kernel xtables match: $match" \
+            || bad "kernel xtables sem match $match"
+    done
+    grep -qx 'addrtype' /proc/net/ip_tables_matches 2>/dev/null \
+        && ok 'kernel xtables match: addrtype' \
+        || warn 'kernel xtables sem addrtype; DroidSpaces fará fallback para DNAT básico'
+else
+    bad '/proc/net/ip_tables_matches indisponível'
+fi
+
+if [ -e /proc/sys/net/ipv4/conf/all/route_localnet ]; then
+    [ -w /proc/sys/net/ipv4/conf/all/route_localnet ] \
+        && ok 'route_localnet disponível e gravável' \
+        || bad 'route_localnet existe mas não é gravável'
+else
+    bad 'route_localnet ausente; localhost port-forward não funcionará'
+fi
+
+# Capabilities that are optional in DroidSpaces. They never make this preflight
+# fail, but reporting them here avoids discovering the limitation only after
+# enabling the corresponding Manager option.
+[ -e /dev/loop-control ] && ok 'opcional: loop device para rootfs.img' || warn 'opcional: /dev/loop-control ausente (rootfs.img)'
+command -v e2fsck >/dev/null 2>&1 && ok 'opcional: e2fsck para rootfs.img ext4' || warn 'opcional: e2fsck ausente (rootfs.img ext4)'
+grep -qw overlay /proc/filesystems 2>/dev/null && ok 'opcional: OverlayFS/volatile' || warn 'opcional: OverlayFS indisponível'
+[ -e /dev/fuse ] && ok 'opcional: FUSE' || warn 'opcional: /dev/fuse ausente'
+[ -e /dev/net/tun ] && ok 'opcional: TUN/TAP' || warn 'opcional: /dev/net/tun ausente'
+
+if [ -r /proc/net/ip_tables_targets ]; then
+    for target in DNAT MASQUERADE TCPMSS; do
+        grep -qx "$target" /proc/net/ip_tables_targets 2>/dev/null \
             && ok "kernel xt target: $target" \
             || bad "kernel xt target ausente: $target"
     done
