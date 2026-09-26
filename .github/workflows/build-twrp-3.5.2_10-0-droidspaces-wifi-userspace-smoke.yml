@@ -1,20 +1,7 @@
 name: Smoke Channel Recovery Wi-Fi Userspace
 
 on:
-  workflow_dispatch:
   workflow_call:
-  push:
-    branches:
-      - twrp-3.5.2_10-0-droidspaces-wifi
-    paths:
-      - .github/workflows/build-twrp-3.5.2_10-0-droidspaces-wifi-userspace-smoke.yml
-      - recovery-wifi/build-userspace.sh
-      - recovery-wifi/wpa_supplicant.config
-      - recovery-wifi/wcnss-recovery.c
-      - recovery-wifi/wifi
-      - recovery-wifi/wifi-udhcpc.script
-      - recovery-wifi/repack_boot.py
-      - recovery-wifi/WCNSS_qcom_cfg.ini
 
 permissions:
   contents: read
