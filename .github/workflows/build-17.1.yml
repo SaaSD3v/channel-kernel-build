@@ -19,6 +19,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    environment: "keys"
     env:
       VARIANT: ${{ inputs.variant }}
 
@@ -173,19 +174,42 @@ jobs:
           cd anykernel
           zip -r9 "../$KERNEL_ZIP" * -x '*.git*'
 
-      - name: Upload to GoFile
+      - name: Upload final kernel to GoFile
         env:
-          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
+          GOFILE_TOKEN: ${{ secrets.GOFILE }}
         run: |
-          SERVER=$(curl -fsSL https://api.gofile.io/servers | jq -r '.data.servers[0].name')
-          RESPONSE=$(curl -fsSL -X POST "https://${SERVER}.gofile.io/contents/uploadfile" \
-            -H "Authorization: Bearer ${GOFILE_TOKEN}" \
-            -F "file=@${KERNEL_ZIP}")
-          echo "$RESPONSE" | jq .
-          DOWNLOAD_PAGE=$(echo "$RESPONSE" | jq -r '.data.downloadPage')
-          test -n "$DOWNLOAD_PAGE" && test "$DOWNLOAD_PAGE" != "null"
-          echo "GoFile link: $DOWNLOAD_PAGE" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          if [ -z "${GOFILE_TOKEN:-}" ]; then
+            echo "::warning::GOFILE is not configured in the keys environment; skipping GoFile upload."
+            exit 0
+          fi
+          test -s "$KERNEL_ZIP"
 
+          server_json="$(curl --silent --show-error --fail-with-body --retry 5 --retry-delay 3 --retry-all-errors https://api.gofile.io/servers)"
+          upload_server="$(printf '%s' "$server_json" | python3 -c 'import json,sys; j=json.load(sys.stdin); s=(j.get("data") or {}).get("servers") or []; print((s[0] or {}).get("name","") if s else "")')"
+          test -n "$upload_server" || { echo "::error::GoFile returned no upload server"; exit 1; }
+          upload_url="https://$upload_server.gofile.io/contents/uploadfile"
+
+          response="$(curl --silent --show-error --fail-with-body --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 --max-time 1200 \
+            -H "Authorization: Bearer $GOFILE_TOKEN" \
+            -F "file=@$KERNEL_ZIP" \
+            "$upload_url")"
+
+          mapfile -t meta < <(printf '%s' "$response" | python3 -c 'import json,sys; j=json.load(sys.stdin); d=j.get("data") or {}; print(j.get("status","")); print(d.get("downloadPage","")); print(d.get("parentFolderCode") or d.get("folderCode") or "")')
+          status="${meta[0]:-}"
+          page="${meta[1]:-}"
+          folder_code="${meta[2]:-}"
+          if [ "$status" != "ok" ]; then
+            echo "::error::GoFile rejected $KERNEL_ZIP"
+            printf '%s\n' "$response" >&2
+            exit 1
+          fi
+
+          {
+            echo "### GoFile"
+            [ -z "$page" ] || echo "- [$KERNEL_ZIP]($page)"
+            [ -z "$folder_code" ] || echo "- Folder: https://gofile.io/d/$folder_code"
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
