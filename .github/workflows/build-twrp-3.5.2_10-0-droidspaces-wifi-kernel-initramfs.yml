@@ -2,6 +2,7 @@ name: Build Channel TWRP 3.5.2 DroidSpaces + Wi-Fi Hotspot in kernel initramfs
 
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches:
       - twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs
@@ -29,6 +30,8 @@ jobs:
     steps:
       - name: Checkout build repository
         uses: actions/checkout@v4
+        with:
+          ref: twrp-3.5.2_10-0-droidspaces-wifi-hotspot
 
       - name: Validate recovery Wi-Fi hotspot sources
         run: |
