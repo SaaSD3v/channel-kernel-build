@@ -53,7 +53,7 @@ jobs:
             git curl wget ca-certificates \
             bc bison flex libssl-dev libelf-dev make libncurses-dev \
             python3 xz-utils cpio zip file autoconf automake libtool pkg-config \
-            gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+            gcc-aarch64-linux-gnu libc6-dev-arm64-cross qemu-user-static
 
       - name: Clone exact TWRP channel kernel base
         run: |
@@ -210,6 +210,37 @@ jobs:
           for token in iptables iptables-save iptables-restore DNAT MASQUERADE addrtype; do
             grep -Fq "$token" iptables-strings.txt || {
               echo "Static legacy iptables is missing built-in token/extension: $token"
+              exit 1
+            }
+          done
+
+          # Execute the final ARM64 multicall binaries under qemu-user. This
+          # catches broken argv[0] dispatch, missing static extensions and
+          # BusyBox applets that a config/string check alone would miss.
+          QEMU="$(command -v qemu-aarch64-static)"
+          test -x "$QEMU"
+          SMOKE="$RUNNER_TEMP/ds-arm64-smoke"
+          rm -rf "$SMOKE"
+          mkdir -p "$SMOKE"
+          cp recovery-wifi/out/iptables.ds "$SMOKE/iptables.ds"
+          ln -s iptables.ds "$SMOKE/iptables"
+          ln -s iptables.ds "$SMOKE/iptables-save"
+          ln -s iptables.ds "$SMOKE/iptables-restore"
+
+          "$QEMU" "$SMOKE/iptables" --version | tee iptables-version.txt
+          grep -Eq '^iptables v1\.6\.2' iptables-version.txt
+          "$QEMU" "$SMOKE/iptables-save" --version
+          "$QEMU" "$SMOKE/iptables-restore" --version
+          "$QEMU" "$SMOKE/iptables" -m addrtype -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -t nat -j DNAT -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -t nat -j MASQUERADE -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -t mangle -j TCPMSS -h >/dev/null
+
+          "$QEMU" recovery-wifi/out/busybox.ds --list > busybox-applets.txt
+          for applet in awk cat chmod chown cp grep ifconfig ip mkdir mount mv ping \
+                        readlink rm sed sha256sum sleep sync tail tee udhcpc udhcpd; do
+            grep -qx "$applet" busybox-applets.txt || {
+              echo "BusyBox recovery binary is missing required applet: $applet"
               exit 1
             }
           done
