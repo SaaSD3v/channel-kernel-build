@@ -39,7 +39,20 @@ Each successful workflow publishes the kernel ZIP as a GitHub Actions artifact a
 
 ## Usage
 
-Open the **Actions** tab, select the workflow matching your Android branch and desired variant, then choose **Run workflow**.
+Open the **Actions** tab and choose one of the three LineageOS kernel workflows:
+
+- **Build Channel Kernel 17.1**
+- **Build Channel Kernel 18.1**
+- **Build Channel Kernel 22.2**
+
+Click **Run workflow** and choose the desired `variant`:
+
+- `NORMAL`
+- `OPTIONAL`
+- `KSU-ONLY`
+- `REMOVE-KSU`
+
+The four old per-variant workflow files were consolidated into these three workflows, so the Actions list stays clean while preserving the same build variants.
 
 ## TWRP / DroidSpaces recovery branches
 
