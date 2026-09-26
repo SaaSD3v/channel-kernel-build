@@ -18,7 +18,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latestenv:
+    runs-on: ubuntu-latest
+    env:
       VARIANT: ${{ inputs.variant }}
 
     steps:
