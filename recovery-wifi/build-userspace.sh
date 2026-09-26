@@ -106,13 +106,13 @@ pushd "$SRC/iw" >/dev/null
 make clean || true
 export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
 export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
+export CFLAGS="-Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3"
 export LDFLAGS='-static -Wl,--gc-sections'
+export PKG_CONFIG="pkg-config --static"
 make -j"$(nproc)" \
   CC="$CC" \
-  PKG_CONFIG="pkg-config --static" \
-  CFLAGS="-Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3" \
   V=1
-unset LDFLAGS
+unset CFLAGS LDFLAGS PKG_CONFIG
 cp iw "$OUT/iw.ds"
 popd >/dev/null
 
