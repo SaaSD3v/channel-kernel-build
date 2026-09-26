@@ -14,6 +14,7 @@ permissions:
   contents: read
 
 env:
+  DEVICE: channel
   TWRP_KERNEL_REPO: https://github.com/TeamWin/android_kernel_motorola_sdm632.git
   TWRP_KERNEL_REF: 0fba78718c25ef55a211dd7608cb255a226dd8bf
   TWRP_BASE_URL: https://dl.twrp.me/channel/twrp-3.5.2_10-0-channel.img
@@ -34,6 +35,7 @@ jobs:
           set -euo pipefail
           /bin/sh -n recovery-wifi/wifi
           bash -n recovery-wifi/build-userspace.sh
+          test -f "recovery-wifi/devices/$DEVICE/device.conf"
           ! grep -qx 'CONFIG_AP=y' recovery-wifi/wpa_supplicant.config
           grep -qx 'CONFIG_DRIVER_NL80211=y' recovery-wifi/hostapd.config
           grep -qx 'CONFIG_LIBNL32=y' recovery-wifi/hostapd.config
@@ -197,7 +199,7 @@ jobs:
           sh -n recovery-wifi/wifi
           sh -n recovery-wifi/wifi-udhcpc.script
           chmod +x recovery-wifi/build-userspace.sh
-          recovery-wifi/build-userspace.sh
+          DEVICE="$DEVICE" recovery-wifi/build-userspace.sh
 
       - name: Stage Wi-Fi in kernel internal initramfs
         run: |
@@ -699,4 +701,6 @@ jobs:
             recovery-wifi/hostapd.config
             recovery-wifi/wifi-udhcpc.script
             recovery-wifi/WCNSS_qcom_cfg.ini
+            recovery-wifi/devices/channel/device.conf
+            recovery-wifi/devices/README.md
           if-no-files-found: error
