@@ -1,13 +1,7 @@
 name: Build Channel TWRP 3.5.2 DroidSpaces
 
 on:
-  workflow_dispatch:
   workflow_call:
-  push:
-    branches:
-      - twrp-3.5.2_10-0-droidspaces
-    paths:
-      - .github/workflows/build-twrp-3.5.2_10-0-droidspaces.yml
 
 permissions:
   contents: read
