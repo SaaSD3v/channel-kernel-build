@@ -1,0 +1,47 @@
+name: Build Channel TWRP 3.5.2
+
+run-name: TWRP 3.5.2 • ${{ inputs.variant }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: TWRP build variant
+        required: true
+        default: WIFI-HOTSPOT
+        type: choice
+        options:
+          - WIFI-HOTSPOT
+          - WIFI-KERNEL-INITRAMFS
+          - WIFI
+          - WIFI-USERSPACE-SMOKE
+          - DROIDSPACES
+          - STOCK-CONTROL
+
+permissions:
+  contents: read
+
+jobs:
+  stock-control:
+    if: ${{ inputs.variant == 'STOCK-CONTROL' }}
+    uses: SaaSD3v/channel-kernel-build/.github/workflows/build-twrp-3.5.2_10-0-stock-control.yml@twrp-3.5.2_10-0-droidspaces
+
+  droidspaces:
+    if: ${{ inputs.variant == 'DROIDSPACES' }}
+    uses: SaaSD3v/channel-kernel-build/.github/workflows/build-twrp-3.5.2_10-0-droidspaces.yml@twrp-3.5.2_10-0-droidspaces
+
+  wifi:
+    if: ${{ inputs.variant == 'WIFI' }}
+    uses: SaaSD3v/channel-kernel-build/.github/workflows/build-twrp-3.5.2_10-0-droidspaces-wifi.yml@twrp-3.5.2_10-0-droidspaces-wifi
+
+  wifi-userspace-smoke:
+    if: ${{ inputs.variant == 'WIFI-USERSPACE-SMOKE' }}
+    uses: SaaSD3v/channel-kernel-build/.github/workflows/build-twrp-3.5.2_10-0-droidspaces-wifi-userspace-smoke.yml@twrp-3.5.2_10-0-droidspaces-wifi
+
+  wifi-kernel-initramfs:
+    if: ${{ inputs.variant == 'WIFI-KERNEL-INITRAMFS' }}
+    uses: SaaSD3v/channel-kernel-build/.github/workflows/build-twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs.yml@twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs
+
+  wifi-hotspot:
+    if: ${{ inputs.variant == 'WIFI-HOTSPOT' }}
+    uses: SaaSD3v/channel-kernel-build/.github/workflows/build-twrp-3.5.2_10-0-droidspaces-wifi-kernel-initramfs.yml@twrp-3.5.2_10-0-droidspaces-wifi-hotspot
