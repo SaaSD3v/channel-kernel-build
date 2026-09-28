@@ -125,19 +125,24 @@ unzip -p "$INTEGRATED_ZIP" "$RAMDISK_NAME" > "$WORK/final-ramdisk.bin"
   exit 1
 }
 
-MAGIC="$(xxd -p -l 8 "$WORK/final-ramdisk.bin" | tr -d '\n')"
-case "$MAGIC" in
-  5d00008000*) ;;
+# The official Channel ramdisk is LZMA-Alone, but magiskboot may choose a
+# different valid dictionary size when it recompresses the modified CPIO.
+# Validate the stream and payload instead of pinning one LZMA property header.
+RAMDISK_DESC="$(file -b "$WORK/final-ramdisk.bin" 2>/dev/null || true)"
+case "$RAMDISK_DESC" in
+  *LZMA*) ;;
   *)
-    echo "ERROR: expected Channel LZMA-Alone props 5d00008000, magic=$MAGIC" >&2
+    echo "ERROR: integrated Channel ramdisk is not LZMA-Alone: $RAMDISK_DESC" >&2
     exit 1
     ;;
 esac
-
-# Channel's real TWRP 3.5.2 external ramdisk is a standard LZMA-Alone stream.
 xz --format=lzma -t "$WORK/final-ramdisk.bin"
 
 "$MAGISKBOOT" decompress "$WORK/final-ramdisk.bin" "$WORK/final-ramdisk.raw"
+cpio -it < "$WORK/final-ramdisk.raw" >/dev/null 2>&1 || {
+  echo "ERROR: integrated Channel ramdisk does not decode to a valid CPIO" >&2
+  exit 1
+}
 "$MAGISKBOOT" cpio "$WORK/final-ramdisk.raw" "exists system/bin/recovery-console" >/dev/null
 "$MAGISKBOOT" cpio "$WORK/final-ramdisk.raw" "exists init.rc" >/dev/null
 "$MAGISKBOOT" cpio "$WORK/final-ramdisk.raw" "exists init.recovery.service.rc" >/dev/null
