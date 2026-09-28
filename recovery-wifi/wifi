@@ -117,15 +117,12 @@ data_partition_mounted() {
 
 ensure_persistent_store() {
     if ! data_partition_mounted; then
-        twrp_bin=$(command -v twrp 2>/dev/null || true)
-        if [ -n "$twrp_bin" ]; then
-            log "persistence: /data is not mounted; trying TWRP mount for at most ${DATA_MOUNT_TIMEOUT}s"
-            "$BB" timeout "$DATA_MOUNT_TIMEOUT" "$twrp_bin" mount data >/dev/null 2>&1 || true
-        fi
+        log "persistence: /data is not mounted; mounting userdata directly"
+        mount_rw_partition /data userdata >/dev/null 2>&1 || true
     fi
 
     data_partition_mounted || {
-        log "persistence: /data unavailable; continuing with tmpfs runtime only"
+        log "persistence: userdata could not be mounted at /data; continuing with tmpfs runtime only"
         return 1
     }
 
@@ -252,6 +249,19 @@ mount_partition() {
     "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -o ro "$dev" "$target" 2>/dev/null || \
     "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -t ext4 -o ro "$dev" "$target" 2>/dev/null || \
     "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -t vfat -o ro "$dev" "$target" 2>/dev/null
+}
+
+mount_rw_partition() {
+    target="$1"
+    part="$2"
+    [ -d "$target" ] || "$BB" mkdir -p "$target"
+    is_mounted "$target" && return 0
+    dev="$(find_block "$part" 2>/dev/null || true)"
+    [ -n "$dev" ] || return 1
+
+    "$BB" timeout "$DATA_MOUNT_TIMEOUT" "$BB" mount -o rw "$dev" "$target" 2>/dev/null || \
+    "$BB" timeout "$DATA_MOUNT_TIMEOUT" "$BB" mount -t ext4 -o rw "$dev" "$target" 2>/dev/null || \
+    "$BB" timeout "$DATA_MOUNT_TIMEOUT" "$BB" mount -t f2fs -o rw "$dev" "$target" 2>/dev/null
 }
 
 stage_firmware() {
