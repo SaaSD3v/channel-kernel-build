@@ -531,6 +531,7 @@ hotspot_active_iface() {
 
 clear_hotspot_state() {
     active_iface="$(hotspot_active_iface)"
+    clear_hotspot_nat
     stop_udhcpd
     stop_hostapd
     if [ -f "$HOTSPOT_MARKER" ]; then
@@ -842,6 +843,7 @@ current_sta_channel() {
 }
 
 cleanup_vif_hotspot_failure() {
+    clear_hotspot_nat
     stop_udhcpd
     stop_hostapd
     "$BB" ip addr flush dev "$HOTSPOT_IFACE" 2>/dev/null || true
@@ -1252,6 +1254,79 @@ start_udhcpd() {
         "$BB" rm -f "$HOTSPOT_PID"
         return 1
     }
+}
+
+require_repeater_payload() {
+    [ -x "$IPTABLES" ] || {
+        echo "Missing recovery iptables alias: $IPTABLES"
+        return 1
+    }
+    [ -e /proc/sys/net/ipv4/ip_forward ] || {
+        echo "Kernel IPv4 forwarding control is unavailable."
+        return 1
+    }
+}
+
+clear_hotspot_nat() {
+    if [ -x "$IPTABLES" ]; then
+        "$IPTABLES" -D FORWARD -j "$HOTSPOT_FORWARD_CHAIN" 2>/dev/null || true
+        "$IPTABLES" -F "$HOTSPOT_FORWARD_CHAIN" 2>/dev/null || true
+        "$IPTABLES" -X "$HOTSPOT_FORWARD_CHAIN" 2>/dev/null || true
+
+        "$IPTABLES" -t nat -D POSTROUTING -j "$HOTSPOT_NAT_CHAIN" 2>/dev/null || true
+        "$IPTABLES" -t nat -F "$HOTSPOT_NAT_CHAIN" 2>/dev/null || true
+        "$IPTABLES" -t nat -X "$HOTSPOT_NAT_CHAIN" 2>/dev/null || true
+    fi
+
+    if [ -f "$HOTSPOT_IP_FORWARD_SAVED" ] && [ -w /proc/sys/net/ipv4/ip_forward ]; then
+        old_forward=$(cat "$HOTSPOT_IP_FORWARD_SAVED" 2>/dev/null || true)
+        case "$old_forward" in
+            0|1) printf '%s\n' "$old_forward" > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true ;;
+        esac
+    fi
+
+    "$BB" rm -f "$HOTSPOT_NAT_MARKER" "$HOTSPOT_IP_FORWARD_SAVED" 2>/dev/null || true
+}
+
+enable_hotspot_nat() {
+    require_repeater_payload || return 1
+
+    "$BB" ip route show default 2>/dev/null | "$BB" grep -q " dev $IFACE" || {
+        echo "No upstream default route through $IFACE."
+        return 1
+    }
+
+    cat /proc/sys/net/ipv4/ip_forward > "$HOTSPOT_IP_FORWARD_SAVED" 2>/dev/null || return 1
+    printf '%s\n' 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || return 1
+
+    # Remove only our own old jumps/chains. Never flush DroidSpaces/global rules.
+    "$IPTABLES" -D FORWARD -j "$HOTSPOT_FORWARD_CHAIN" 2>/dev/null || true
+    "$IPTABLES" -F "$HOTSPOT_FORWARD_CHAIN" 2>/dev/null || true
+    "$IPTABLES" -X "$HOTSPOT_FORWARD_CHAIN" 2>/dev/null || true
+    "$IPTABLES" -N "$HOTSPOT_FORWARD_CHAIN" || { clear_hotspot_nat; return 1; }
+    "$IPTABLES" -A "$HOTSPOT_FORWARD_CHAIN" -i "$HOTSPOT_IFACE" -o "$IFACE" -s "$HOTSPOT_SUBNET" -j ACCEPT || {
+        clear_hotspot_nat
+        return 1
+    }
+    "$IPTABLES" -A "$HOTSPOT_FORWARD_CHAIN" -i "$IFACE" -o "$HOTSPOT_IFACE" -d "$HOTSPOT_SUBNET" -m state --state ESTABLISHED,RELATED -j ACCEPT || {
+        clear_hotspot_nat
+        return 1
+    }
+    "$IPTABLES" -I FORWARD 1 -j "$HOTSPOT_FORWARD_CHAIN" || { clear_hotspot_nat; return 1; }
+
+    "$IPTABLES" -t nat -D POSTROUTING -j "$HOTSPOT_NAT_CHAIN" 2>/dev/null || true
+    "$IPTABLES" -t nat -F "$HOTSPOT_NAT_CHAIN" 2>/dev/null || true
+    "$IPTABLES" -t nat -X "$HOTSPOT_NAT_CHAIN" 2>/dev/null || true
+    "$IPTABLES" -t nat -N "$HOTSPOT_NAT_CHAIN" || { clear_hotspot_nat; return 1; }
+    "$IPTABLES" -t nat -A "$HOTSPOT_NAT_CHAIN" -s "$HOTSPOT_SUBNET" -o "$IFACE" -j MASQUERADE || {
+        clear_hotspot_nat
+        return 1
+    }
+    "$IPTABLES" -t nat -I POSTROUTING 1 -j "$HOTSPOT_NAT_CHAIN" || { clear_hotspot_nat; return 1; }
+
+    printf '%s\n' "$HOTSPOT_IFACE->$IFACE" > "$HOTSPOT_NAT_MARKER"
+    "$BB" chmod 600 "$HOTSPOT_NAT_MARKER" 2>/dev/null || true
+    return 0
 }
 
 restore_client_after_hotspot_failure() {
