@@ -37,6 +37,8 @@ jobs:
           bash -n recovery-wifi/build-userspace.sh
           test -f "recovery-wifi/devices/$DEVICE/device.conf"
           test -f recovery-cli-minimal.fragment
+          test -f scripts/apply-cli-minimal-kernel.sh
+          bash -n scripts/apply-cli-minimal-kernel.sh
           ! grep -qx 'CONFIG_AP=y' recovery-wifi/wpa_supplicant.config
           grep -qx 'CONFIG_DRIVER_NL80211=y' recovery-wifi/hostapd.config
           grep -qx 'CONFIG_LIBNL32=y' recovery-wifi/hostapd.config
@@ -80,6 +82,12 @@ jobs:
 
           echo "TWRP kernel base:" >> "$GITHUB_STEP_SUMMARY"
           git -C kernel log -1 --format='- %H %s' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply CLI-minimal kernel source adaptations
+        run: |
+          set -euo pipefail
+          chmod +x scripts/apply-cli-minimal-kernel.sh
+          scripts/apply-cli-minimal-kernel.sh kernel
 
       - name: Download exact TWRP 3.5.2_10-0 base image
         run: |
