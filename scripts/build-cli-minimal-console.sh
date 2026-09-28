@@ -35,9 +35,12 @@ unzip -p "$INTEGRATED_ZIP" "$RAMDISK_NAME" > "$WORK/final-ramdisk.bin"
 
 MAGIC="$(xxd -p -l 8 "$WORK/final-ramdisk.bin" | tr -d '\n')"
 case "$MAGIC" in
-  5d000000*) ;;
-  *) echo "ERROR: expected Channel LZMA ramdisk, magic=$MAGIC" >&2; exit 1 ;;
+  5d00008000*) ;;
+  *) echo "ERROR: expected Channel LZMA-Alone props 5d00008000, magic=$MAGIC" >&2; exit 1 ;;
 esac
+
+# Validate the compressed stream itself before mutating the boot image.
+xz --format=lzma -t "$WORK/final-ramdisk.bin"
 
 "$MAGISKBOOT" decompress "$WORK/final-ramdisk.bin" "$WORK/final-ramdisk.raw"
 "$MAGISKBOOT" cpio "$WORK/final-ramdisk.raw" "exists system/bin/recovery-console" >/dev/null
