@@ -1472,6 +1472,157 @@ cmd_hotspot_start_vif() {
     cmd_hotspot_status
 }
 
+repeater_active_guard() {
+    requested_band="$1"
+    [ ! -f "$HOTSPOT_MARKER" ] && return 0
+
+    active=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
+    case "$active" in
+        repeater-2g:*)
+            if [ "$requested_band" = 5g ]; then
+                echo "A 2.4 GHz repeater is already active. Stop it before starting the 5 GHz repeater."
+            else
+                echo "The 2.4 GHz repeater is already active."
+            fi
+            ;;
+        repeater-5g:*)
+            if [ "$requested_band" = 2g ]; then
+                echo "A 5 GHz repeater is already active. Stop it before starting the 2.4 GHz repeater."
+            else
+                echo "The 5 GHz repeater is already active."
+            fi
+            ;;
+        *)
+            echo "A hotspot is already active. Stop it first: wifi hotspot stop"
+            ;;
+    esac
+    return 1
+}
+
+cmd_hotspot_repeater_band() {
+    desired_band="$1"
+    shift
+
+    resolve_hotspot_request "$@" || {
+        echo 'usage: wifi hotspot repeater-2g|repeater-5g ["SSID" "PASSWORD" [CHANNEL]]'
+        return 2
+    }
+
+    [ -x "$IW" ] || { echo "Missing recovery iw binary: $IW"; return 1; }
+    require_repeater_payload || return 1
+    repeater_active_guard "$desired_band" || return 1
+
+    prepare || {
+        echo "Wi-Fi driver did not create $IFACE. Run: wifi logs"
+        return 1
+    }
+
+    sta_state=""
+    if [ -S "$CTRL/$IFACE" ]; then
+        sta_state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null |
+            "$BB" sed -n 's/^wpa_state=//p')
+    fi
+
+    if [ "$sta_state" != "COMPLETED" ]; then
+        echo "Repeater mode requires $IFACE to be connected to upstream Wi-Fi first."
+        echo 'Connect first with: wifi connect "SSID" "PASSWORD"'
+        return 1
+    fi
+
+    if ! load_sta_radio_info; then
+        echo "Could not map the current STA frequency to a supported 2.4/5 GHz AP channel."
+        return 1
+    fi
+
+    if [ "$desired_band" != auto ] && [ "$STA_BAND" != "$desired_band" ]; then
+        case "$STA_BAND" in
+            2g)
+                echo "$IFACE is currently connected to 2.4 GHz (${STA_FREQ} MHz, channel $STA_CHANNEL)."
+                echo "PRONTO STA+AP is single-channel, so repeater-5g cannot run on this upstream."
+                echo "Connect $IFACE to a 5 GHz upstream first, or use: wifi hotspot repeater-2g"
+                ;;
+            5g)
+                echo "$IFACE is currently connected to 5 GHz (${STA_FREQ} MHz, channel $STA_CHANNEL)."
+                echo "PRONTO STA+AP is single-channel, so repeater-2g cannot run on this upstream."
+                echo "Connect $IFACE to a 2.4 GHz upstream first, or use: wifi hotspot repeater-5g"
+                ;;
+        esac
+        return 1
+    fi
+
+    channel="$STA_CHANNEL"
+    case "$STA_BAND" in
+        2g) band_label='2.4 GHz' ;;
+        5g) band_label='5 GHz' ;;
+    esac
+
+    if [ "$HOTSPOT_REQUEST_CHANNEL" != "$channel" ]; then
+        echo "PRONTO STA+AP is single-channel; forcing repeater to $band_label channel $channel."
+    fi
+
+    make_hotspot_conf "$HOTSPOT_REQUEST_SSID" "$HOTSPOT_REQUEST_PASS" "$channel" "$HOTSPOT_CONF" "$HOTSPOT_IFACE" || return 1
+
+    if ! create_hotspot_vif; then
+        echo "Could not create AP VIF $HOTSPOT_IFACE."
+        dmesg 2>/dev/null |
+            "$BB" grep -iE 'wlan|cfg80211|softap|concurr|adapter' |
+            "$BB" tail -n 100 || true
+        return 1
+    fi
+
+    if ! start_hostapd_vif; then
+        echo "Could not start hostapd on $HOTSPOT_IFACE."
+        cleanup_vif_hotspot_failure
+        return 1
+    fi
+
+    if ! wait_hotspot_ready "$HOTSPOT_IFACE"; then
+        echo "hostapd never reached AP-ENABLED on $HOTSPOT_IFACE."
+        cleanup_vif_hotspot_failure
+        return 1
+    fi
+
+    "$BB" ip addr flush dev "$HOTSPOT_IFACE" 2>/dev/null || true
+    "$BB" ip addr add "$HOTSPOT_CIDR" dev "$HOTSPOT_IFACE" || {
+        echo "Could not assign $HOTSPOT_CIDR to $HOTSPOT_IFACE."
+        cleanup_vif_hotspot_failure
+        return 1
+    }
+    "$BB" ip link set "$HOTSPOT_IFACE" up 2>/dev/null || true
+
+    if ! start_udhcpd "$HOTSPOT_IFACE"; then
+        echo "AP is enabled but DHCP failed."
+        cleanup_vif_hotspot_failure
+        return 1
+    fi
+
+    if ! enable_hotspot_nat; then
+        echo "AP+STA came up, but internet sharing/NAT failed."
+        cleanup_vif_hotspot_failure
+        return 1
+    fi
+
+    printf 'repeater-%s:%s\n' "$STA_BAND" "$HOTSPOT_IFACE" > "$HOTSPOT_MARKER"
+    "$BB" chmod 600 "$HOTSPOT_MARKER" 2>/dev/null || true
+
+    echo "Wi-Fi $band_label repeater ready: $HOTSPOT_IFACE -> $IFACE."
+    echo "Hotspot: $HOTSPOT_ADDR/24 (channel $channel, ${STA_FREQ} MHz)."
+    echo "Internet sharing: IPv4 forwarding + MASQUERADE enabled."
+    cmd_hotspot_status
+}
+
+cmd_hotspot_repeater() {
+    cmd_hotspot_repeater_band auto "$@"
+}
+
+cmd_hotspot_repeater_2g() {
+    cmd_hotspot_repeater_band 2g "$@"
+}
+
+cmd_hotspot_repeater_5g() {
+    cmd_hotspot_repeater_band 5g "$@"
+}
+
 cmd_hotspot_start() {
     [ "$#" -eq 0 ] || {
         echo "usage: wifi hotspot start"
