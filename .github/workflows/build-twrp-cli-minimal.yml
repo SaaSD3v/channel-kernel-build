@@ -834,7 +834,13 @@ jobs:
           print(f"Output           : {OUTPUT}")
           PY
 
-      - name: Verify final TWRP image
+      - name: Remove TWRP service and finalize RCTools ramdisk
+        run: |
+          set -euo pipefail
+          python3 scripts/disable-twrp-service.py "$OUTPUT_IMG" "$OUTPUT_IMG.rctools"
+          mv "$OUTPUT_IMG.rctools" "$OUTPUT_IMG"
+
+      - name: Verify final RCTools image
         run: |
           test "$(head -c 8 "$OUTPUT_IMG")" = "ANDROID!"
           test "$(stat -c%s "$OUTPUT_IMG")" -le 33554432
@@ -870,8 +876,8 @@ jobs:
           base = split("twrp-base.img")
           final = split("${{ env.OUTPUT_IMG }}")
 
-          if final["ramdisk"] != base["ramdisk"]:
-              raise SystemExit("external TeamWin ramdisk changed")
+          if final["ramdisk"] == base["ramdisk"]:
+              raise SystemExit("external ramdisk did not receive the RCTools service-removal patch")
           if final["second"] != base["second"]:
               raise SystemExit("boot second stage changed")
           if final["dtbo"] != base["dtbo"]:
@@ -881,7 +887,7 @@ jobs:
 
           bh = bytearray(base["header"])
           fh = bytearray(final["header"])
-          for off, size in ((8, 4), (1636, 8)):
+          for off, size in ((8, 4), (16, 4), (1636, 8)):
               bh[off:off+size] = bytes(size)
               fh[off:off+size] = bytes(size)
           if bh != fh:
