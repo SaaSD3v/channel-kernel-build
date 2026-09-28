@@ -1007,7 +1007,7 @@ jobs:
   console:
     name: Add permanent headless Recovery Console
     needs: build
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout minimal integration scripts
