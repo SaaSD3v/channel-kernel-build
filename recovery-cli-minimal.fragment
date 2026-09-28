@@ -18,6 +18,7 @@
 # CONFIG_BACKLIGHT_LCD_SUPPORT is not set
 # CONFIG_LCD_CLASS_DEVICE is not set
 # CONFIG_MSM_EXT_DISPLAY is not set
+# CONFIG_MSM_MDSS_PLL is not set
 # CONFIG_QCOM_MDSS_PLL is not set
 # CONFIG_MSM_SDE_ROTATOR is not set
 
