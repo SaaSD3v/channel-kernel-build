@@ -825,21 +825,59 @@ create_hotspot_vif() {
     return 0
 }
 
-current_sta_channel() {
+load_sta_radio_info() {
     [ -S "$CTRL/$IFACE" ] || return 1
-    state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^wpa_state=//p')
+    sta_status=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null)
+    state=$(printf '%s\n' "$sta_status" | "$BB" sed -n 's/^wpa_state=//p')
     [ "$state" = "COMPLETED" ] || return 1
-    freq=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^freq=//p')
-    case "$freq" in
+
+    STA_FREQ=$(printf '%s\n' "$sta_status" | "$BB" sed -n 's/^freq=//p')
+    case "$STA_FREQ" in
         ''|*[!0-9]*) return 1 ;;
     esac
-    if [ "$freq" -ge 2412 ] && [ "$freq" -le 2462 ]; then
-        channel=$(( (freq - 2407) / 5 ))
-        [ "$channel" -ge 1 ] && [ "$channel" -le 11 ] || return 1
-        printf '%s\n' "$channel"
+
+    if [ "$STA_FREQ" -ge 2412 ] && [ "$STA_FREQ" -le 2472 ]; then
+        STA_CHANNEL=$(( (STA_FREQ - 2407) / 5 ))
+        [ "$STA_CHANNEL" -ge 1 ] && [ "$STA_CHANNEL" -le 13 ] || return 1
+        STA_BAND=2g
+        STA_HW_MODE=g
         return 0
     fi
+
+    if [ "$STA_FREQ" -ge 5180 ] && [ "$STA_FREQ" -le 5825 ]; then
+        STA_CHANNEL=$(( (STA_FREQ - 5000) / 5 ))
+        hotspot_channel_band "$STA_CHANNEL" || return 1
+        [ "$HOTSPOT_BAND" = 5g ] || return 1
+        STA_BAND=5g
+        STA_HW_MODE=a
+        return 0
+    fi
+
     return 1
+}
+
+resolve_hotspot_request() {
+    case "$#" in
+        0)
+            ensure_persistent_store || return 1
+            [ -f "$PERSIST_HOTSPOT" ] || {
+                echo 'No saved ap0 hotspot. Create one with: wifi hotspot create "SSID" "PASSWORD" [CHANNEL]'
+                return 1
+            }
+            HOTSPOT_REQUEST_SSID=$(hotspot_saved_value ssid) || return 1
+            HOTSPOT_REQUEST_PASS=$(hotspot_saved_value wpa_passphrase) || return 1
+            HOTSPOT_REQUEST_CHANNEL=$(hotspot_saved_value channel) || return 1
+            ;;
+        2|3)
+            HOTSPOT_REQUEST_SSID="$1"
+            HOTSPOT_REQUEST_PASS="$2"
+            HOTSPOT_REQUEST_CHANNEL=${3:-6}
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+    return 0
 }
 
 cleanup_vif_hotspot_failure() {
