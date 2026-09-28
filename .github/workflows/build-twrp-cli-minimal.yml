@@ -38,11 +38,7 @@ jobs:
           test -f "recovery-wifi/devices/$DEVICE/device.conf"
           test -f recovery-cli-minimal.fragment
           test -f scripts/apply-cli-minimal-kernel.sh
-          test -f scripts/build-cli-minimal-console.sh
-          test -f scripts/build-cli-minimal-console-full.sh
           bash -n scripts/apply-cli-minimal-kernel.sh
-          bash -n scripts/build-cli-minimal-console.sh
-          bash -n scripts/build-cli-minimal-console-full.sh
           ! grep -qx 'CONFIG_AP=y' recovery-wifi/wpa_supplicant.config
           grep -qx 'CONFIG_DRIVER_NL80211=y' recovery-wifi/hostapd.config
           grep -qx 'CONFIG_LIBNL32=y' recovery-wifi/hostapd.config
@@ -1029,131 +1025,6 @@ jobs:
 
           {
             echo "### GoFile — $uploaded individual build files"
-            [ -z "$folder_page" ] || echo "Folder: $folder_page"
-            echo
-            cat "$summary"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  console:
-    name: Add permanent headless Recovery Console
-    needs: build
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout minimal integration scripts
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Download green kernel-only minimal artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: channel-twrp-3.5.2_10-0-cli-minimal
-          path: base-artifact
-
-      - name: Install Recovery Console integration dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential git curl ca-certificates tar unzip zip cpio file xxd xz-utils lz4
-
-      - name: Validate console integration inputs
-        run: |
-          set -euo pipefail
-          test -s "base-artifact/$OUTPUT_IMG"
-          test "$(head -c 8 "base-artifact/$OUTPUT_IMG")" = "ANDROID!"
-          bash -n scripts/build-cli-minimal-console.sh
-          bash -n scripts/build-cli-minimal-console-full.sh
-          chmod +x scripts/build-cli-minimal-console.sh scripts/build-cli-minimal-console-full.sh
-          grep -Fq 'a524cfc92ccab42830c575120b048c424cd8a782' scripts/build-cli-minimal-console-full.sh
-          grep -Fq '692b3ab5bba4944eae9c93ebf9d8825879682941' scripts/build-cli-minimal-console-full.sh
-
-      - name: Build permanent headless Recovery Console image
-        run: |
-          set -euo pipefail
-          scripts/build-cli-minimal-console-full.sh "base-artifact/$OUTPUT_IMG" dist
-
-      - name: Verify headless Recovery Console image
-        run: |
-          set -euo pipefail
-          OUT=dist/channel-twrp-3.5.2_10-0-cli-minimal-recovery-console.img
-          test -s "$OUT"
-          test "$(head -c 8 "$OUT")" = "ANDROID!"
-          test "$(stat -c%s "$OUT")" -le 33554432
-          test -s "$OUT.sha256"
-          test -s "$OUT.ramdisk.bin"
-          test -s dist/recovery-console-channel-aarch64-headless
-          test -s dist/BUILD-INFO.txt
-          (cd dist && sha256sum -c channel-twrp-3.5.2_10-0-cli-minimal-recovery-console.img.sha256)
-          file dist/recovery-console-channel-aarch64-headless | tee console-file.txt
-          grep -Eq 'ELF 64-bit.*(ARM aarch64|AArch64)' console-file.txt
-          if readelf -l dist/recovery-console-channel-aarch64-headless | grep -q 'Requesting program interpreter'; then
-            echo 'Recovery Console must remain static'
-            exit 1
-          fi
-          grep -Fq 'Console mode: auto DRM/FBDEV, headless PTY/socket fallback 120x40' dist/BUILD-INFO.txt
-          grep -Fq 'Console autostart: YES' dist/BUILD-INFO.txt
-          grep -Fq 'Kernel integration: unchanged from minimal base' dist/BUILD-INFO.txt
-
-      - name: Upload headless Recovery Console artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: channel-twrp-3.5.2_10-0-cli-minimal-recovery-console
-          path: |
-            dist/channel-twrp-3.5.2_10-0-cli-minimal-recovery-console.img
-            dist/channel-twrp-3.5.2_10-0-cli-minimal-recovery-console.img.sha256
-            dist/channel-twrp-3.5.2_10-0-cli-minimal-recovery-console.img.ramdisk.bin
-            dist/channel-twrp-3.5.2_10-0-cli-minimal-recovery-console.img.ramdisk.bin.sha256
-            dist/recovery-console-channel-aarch64-headless
-            dist/recovery-console-channel-aarch64-headless.sha256
-            dist/BUILD-INFO.txt
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Upload headless Recovery Console files to GoFile
-        env:
-          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${GOFILE_TOKEN:-}" ]; then
-            echo '::warning::GOFILE_TOKEN repository secret is not configured; skipping GoFile upload.'
-            exit 0
-          fi
-
-          server_json="$(curl --silent --show-error --fail-with-body --retry 5 --retry-delay 3 --retry-all-errors https://api.gofile.io/servers)"
-          upload_server="$(printf '%s' "$server_json" | python3 -c 'import json,sys; j=json.load(sys.stdin); s=(j.get("data") or {}).get("servers") or []; print((s[0] or {}).get("name","") if s else "")')"
-          test -n "$upload_server"
-          upload_url="https://$upload_server.gofile.io/contents/uploadfile"
-          folder_id=""
-          folder_page=""
-          uploaded=0
-          summary="$RUNNER_TEMP/gofile-console-files.md"
-          : > "$summary"
-
-          while IFS= read -r -d '' file; do
-            args=(--silent --show-error --fail-with-body --retry 8 --retry-delay 5 --retry-all-errors --connect-timeout 30 --max-time 1200
-              -H "Authorization: Bearer $GOFILE_TOKEN"
-              -F "file=@$file")
-            if [ -n "$folder_id" ]; then
-              args+=(-F "folderId=$folder_id")
-            fi
-            response="$(curl "${args[@]}" "$upload_url")"
-            mapfile -t meta < <(printf '%s' "$response" | python3 -c 'import json,sys; j=json.load(sys.stdin); d=j.get("data") or {}; print(j.get("status","")); print(d.get("parentFolder") or d.get("folderId") or ""); print(d.get("downloadPage","")); print(d.get("parentFolderCode") or d.get("folderCode") or "")')
-            [ "${meta[0]:-}" = ok ] || { printf '%s\n' "$response" >&2; exit 1; }
-            [ -n "$folder_id" ] || folder_id="${meta[1]:-}"
-            if [ -z "$folder_page" ] && [ -n "${meta[3]:-}" ]; then
-              folder_page="https://gofile.io/d/${meta[3]}"
-            fi
-            if [ -n "${meta[2]:-}" ]; then
-              printf -- '- [%s](%s)\n' "$(basename "$file")" "${meta[2]}" >> "$summary"
-            else
-              printf -- '- %s\n' "$(basename "$file")" >> "$summary"
-            fi
-            uploaded=$((uploaded + 1))
-          done < <(find dist -maxdepth 1 -type f -print0 | sort -z)
-
-          {
-            echo "### GoFile — $uploaded headless Recovery Console files"
             [ -z "$folder_page" ] || echo "Folder: $folder_page"
             echo
             cat "$summary"
