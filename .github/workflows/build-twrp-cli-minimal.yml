@@ -52,6 +52,14 @@ jobs:
           grep -q '^cmd_hotspot_start()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_stop()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_delete()' recovery-wifi/wifi
+          grep -q '^cmd_hotspot_repeater()' recovery-wifi/wifi
+          grep -q '^cmd_hotspot_repeater_2g()' recovery-wifi/wifi
+          grep -q '^cmd_hotspot_repeater_5g()' recovery-wifi/wifi
+          grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/wifi
+          grep -Fq 'PERSIST_NETWORKS=$PERSIST_WLAN_DIR/networks' recovery-wifi/wifi
+          grep -Fq 'PERSIST_HOTSPOT=$PERSIST_AP_DIR/hotspot.conf' recovery-wifi/wifi
+          grep -Fq 'HOTSPOT_FORWARD_CHAIN=CHANNEL_HOTSPOT_FWD' recovery-wifi/wifi
+          grep -Fq 'HOTSPOT_NAT_CHAIN=CHANNEL_HOTSPOT_NAT' recovery-wifi/wifi
           grep -q '192\.168\.43\.1/24' recovery-wifi/wifi
 
       - name: Install dependencies
@@ -185,6 +193,7 @@ jobs:
           CONFIG_IPC_NS=y
           CONFIG_BRIDGE_NETFILTER=y
           CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
+          CONFIG_NETFILTER_XT_MATCH_STATE=y
           CONFIG_CGROUP_NET_PRIO=y
           CONFIG_DEVTMPFS=y
           CONFIG_VETH=y
@@ -251,6 +260,7 @@ jobs:
 
           "$QEMU" "$SMOKE/iptables-restore" --version | grep -Eq '^iptables-restore v1\.6\.2'
           "$QEMU" "$SMOKE/iptables" -m addrtype -h >/dev/null
+          "$QEMU" "$SMOKE/iptables" -m state -h >/dev/null
           "$QEMU" "$SMOKE/iptables" -t nat -j DNAT -h >/dev/null
           "$QEMU" "$SMOKE/iptables" -t nat -j MASQUERADE -h >/dev/null
           "$QEMU" "$SMOKE/iptables" -t mangle -j TCPMSS -h >/dev/null
@@ -490,6 +500,7 @@ jobs:
             CONFIG_BRIDGE_NETFILTER \
             CONFIG_NETFILTER_XTABLES \
             CONFIG_NETFILTER_XT_MATCH_ADDRTYPE \
+            CONFIG_NETFILTER_XT_MATCH_STATE \
             CONFIG_NETFILTER_XT_TARGET_TCPMSS \
             CONFIG_NF_CONNTRACK \
             CONFIG_NF_CONNTRACK_IPV4 \
@@ -520,7 +531,7 @@ jobs:
           grep -Fxq "CONFIG_INITRAMFS_SOURCE=\"$GITHUB_WORKSPACE/kernel/recovery-initramfs\"" "$CONFIG"
 
           grep -E \
-            '^(CONFIG_(SYSCTL|SYSVIPC|POSIX_MQUEUE|NAMESPACES|PID_NS|UTS_NS|IPC_NS|USER_NS|SECCOMP|SECCOMP_FILTER|CGROUPS|CGROUP_DEVICE|CGROUP_PIDS|MEMCG|CGROUP_SCHED|FAIR_GROUP_SCHED|CGROUP_FREEZER|CGROUP_NET_PRIO|DEVTMPFS|OVERLAY_FS|TMPFS_POSIX_ACL|TMPFS_XATTR|FW_LOADER|FW_LOADER_USER_HELPER|NET_NS|VETH|BRIDGE|NETFILTER|NETFILTER_ADVANCED|BRIDGE_NETFILTER|NETFILTER_XTABLES|NETFILTER_XT_MATCH_ADDRTYPE|NETFILTER_XT_TARGET_TCPMSS|NF_CONNTRACK|NF_CONNTRACK_IPV4|NF_NAT|NF_NAT_IPV4|NF_NAT_MASQUERADE_IPV4|NF_NAT_REDIRECT|IP_NF_IPTABLES|IP_NF_FILTER|IP_NF_NAT|IP_NF_TARGET_MASQUERADE|NETFILTER_XT_NAT|IP_ADVANCED_ROUTER|IP_MULTIPLE_TABLES|IP_SET|IP_SET_HASH_IP|IP_SET_HASH_NET|NETFILTER_XT_SET|NETFILTER_XT_MATCH_RECENT)=y|# CONFIG_ANDROID_PARANOID_NETWORK is not set)$' \
+            '^(CONFIG_(SYSCTL|SYSVIPC|POSIX_MQUEUE|NAMESPACES|PID_NS|UTS_NS|IPC_NS|USER_NS|SECCOMP|SECCOMP_FILTER|CGROUPS|CGROUP_DEVICE|CGROUP_PIDS|MEMCG|CGROUP_SCHED|FAIR_GROUP_SCHED|CGROUP_FREEZER|CGROUP_NET_PRIO|DEVTMPFS|OVERLAY_FS|TMPFS_POSIX_ACL|TMPFS_XATTR|FW_LOADER|FW_LOADER_USER_HELPER|NET_NS|VETH|BRIDGE|NETFILTER|NETFILTER_ADVANCED|BRIDGE_NETFILTER|NETFILTER_XTABLES|NETFILTER_XT_MATCH_ADDRTYPE|NETFILTER_XT_MATCH_STATE|NETFILTER_XT_TARGET_TCPMSS|NF_CONNTRACK|NF_CONNTRACK_IPV4|NF_NAT|NF_NAT_IPV4|NF_NAT_MASQUERADE_IPV4|NF_NAT_REDIRECT|IP_NF_IPTABLES|IP_NF_FILTER|IP_NF_NAT|IP_NF_TARGET_MASQUERADE|NETFILTER_XT_NAT|IP_ADVANCED_ROUTER|IP_MULTIPLE_TABLES|IP_SET|IP_SET_HASH_IP|IP_SET_HASH_NET|NETFILTER_XT_SET|NETFILTER_XT_MATCH_RECENT)=y|# CONFIG_ANDROID_PARANOID_NETWORK is not set)$' \
             "$CONFIG" | tee droidspaces-final-config.txt
 
       - name: Validate CLI-minimal kernel profile
@@ -853,7 +864,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: channel-twrp-3.5.2_10-0-droidspaces-wifi-hotspot
+          name: channel-twrp-3.5.2_10-0-cli-minimal
           path: |
             ${{ env.OUTPUT_IMG }}
             build/arch/arm64/boot/Image.gz-dtb
@@ -896,6 +907,8 @@ jobs:
             "build/arch/arm64/boot/Image.gz-dtb"
             "droidspaces.fragment"
             "droidspaces-final-config.txt"
+            "recovery-cli-minimal.fragment"
+            "cli-minimal-profile.txt"
             "official-twrp.config"
             "official-twrp-after-olddefconfig.config"
             "official-config-source-diff.txt"
