@@ -28,11 +28,15 @@ LOG="$STATE/wpa_supplicant.log"
 PREPLOG="$STATE/prepare.log"
 UDHCPC_SCRIPT=/sbin/wifi-udhcpc.script
 PERSIST_DIR=/data/local/wifi
-PERSIST_NETWORKS=$PERSIST_DIR/networks
 PERSIST_VERSION=$PERSIST_DIR/.version
+PERSIST_WLAN_DIR=$PERSIST_DIR/wlan
+PERSIST_NETWORKS=$PERSIST_WLAN_DIR/networks
+PERSIST_AP_DIR=$PERSIST_DIR/ap0
+PERSIST_HOTSPOT=$PERSIST_AP_DIR/hotspot.conf
+LEGACY_PERSIST_NETWORKS=$PERSIST_DIR/networks
+LEGACY_PERSIST_HOTSPOT=$PERSIST_DIR/hotspot.conf
 CANDIDATE=$STATE/candidate.conf
 PERSIST_COUNT=0
-PERSIST_HOTSPOT=$PERSIST_DIR/hotspot.conf
 HOTSPOT_CONF=$STATE/hotspot.conf
 HOTSPOT_MARKER=$STATE/hotspot.active
 HOTSPOT_LOG=$STATE/hotspot.log
@@ -78,9 +82,9 @@ ensure_persistent_store() {
 
     data_partition_mounted || return 1
 
-    "$BB" mkdir -p "$PERSIST_NETWORKS" 2>/dev/null || return 1
-    "$BB" chmod 700 "$PERSIST_DIR" "$PERSIST_NETWORKS" 2>/dev/null || return 1
-    "$BB" chown 0:0 "$PERSIST_DIR" "$PERSIST_NETWORKS" 2>/dev/null || return 1
+    "$BB" mkdir -p "$PERSIST_NETWORKS" "$PERSIST_AP_DIR" 2>/dev/null || return 1
+    "$BB" chmod 700 "$PERSIST_DIR" "$PERSIST_WLAN_DIR" "$PERSIST_NETWORKS" "$PERSIST_AP_DIR" 2>/dev/null || return 1
+    "$BB" chown 0:0 "$PERSIST_DIR" "$PERSIST_WLAN_DIR" "$PERSIST_NETWORKS" "$PERSIST_AP_DIR" 2>/dev/null || return 1
 
     if [ -f "$PERSIST_VERSION" ]; then
         ver=$(cat "$PERSIST_VERSION" 2>/dev/null)
@@ -96,8 +100,35 @@ ensure_persistent_store() {
         "$BB" mv -f "$vtmp" "$PERSIST_VERSION" || { "$BB" rm -f "$vtmp"; return 1; }
     fi
 
+    migrate_legacy_persistent_store
     recover_buggy_pending_profiles
     return 0
+}
+
+migrate_legacy_persistent_store() {
+    migrated=0
+
+    if [ -d "$LEGACY_PERSIST_NETWORKS" ] && [ "$LEGACY_PERSIST_NETWORKS" != "$PERSIST_NETWORKS" ]; then
+        for legacy in "$LEGACY_PERSIST_NETWORKS"/*.conf; do
+            [ -f "$legacy" ] || continue
+            name=${legacy##*/}
+            target="$PERSIST_NETWORKS/$name"
+            if [ ! -f "$target" ]; then
+                "$BB" mv "$legacy" "$target" 2>/dev/null && migrated=1 || true
+            fi
+        done
+    fi
+
+    if [ -f "$LEGACY_PERSIST_HOTSPOT" ] && [ "$LEGACY_PERSIST_HOTSPOT" != "$PERSIST_HOTSPOT" ]; then
+        if [ ! -f "$PERSIST_HOTSPOT" ]; then
+            "$BB" mv "$LEGACY_PERSIST_HOTSPOT" "$PERSIST_HOTSPOT" 2>/dev/null && migrated=1 || true
+        fi
+    fi
+
+    if [ "$migrated" -eq 1 ]; then
+        "$BB" sync
+        log "migrated legacy Wi-Fi profiles into wlan/ and ap0/"
+    fi
 }
 
 network_id() {
