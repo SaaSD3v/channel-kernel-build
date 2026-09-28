@@ -28,7 +28,7 @@ jobs:
       - name: Checkout build repository
         uses: actions/checkout@v4
         with:
-          ref: twrp-cli-minimal
+          ref: ${{ github.sha }}
 
       - name: Validate recovery Wi-Fi hotspot sources
         run: |
@@ -1018,7 +1018,7 @@ jobs:
       - name: Checkout minimal integration scripts
         uses: actions/checkout@v4
         with:
-          ref: twrp-cli-minimal
+          ref: ${{ github.sha }}
 
       - name: Download green kernel-only minimal artifact
         uses: actions/download-artifact@v4
