@@ -118,7 +118,11 @@ data_partition_mounted() {
 ensure_persistent_store() {
     if ! data_partition_mounted; then
         log "persistence: /data is not mounted; mounting userdata directly"
-        mount_rw_partition /data userdata >/dev/null 2>&1 || true
+        if [ -x /sbin/rctools ]; then
+            /sbin/rctools mount data none rw >/dev/null 2>&1 || true
+        else
+            mount_rw_partition /data userdata >/dev/null 2>&1 || true
+        fi
     fi
 
     data_partition_mounted || {
