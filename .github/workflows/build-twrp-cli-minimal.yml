@@ -69,6 +69,26 @@ jobs:
           grep -Fq '"$BB" timeout 12 "$WPA"' recovery-wifi/wifi
           grep -Fq 'lease.env' recovery-wifi/wifi
           grep -Fq 'kill "$dhcp_pid"' recovery-wifi/wifi
+          grep -Fq 'WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}' recovery-wifi/wifi
+          grep -Fq 'DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}' recovery-wifi/wifi
+          grep -Fq 'MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}' recovery-wifi/wifi
+          grep -Fq 'stage=persistence checking saved wlan profiles' recovery-wifi/wifi
+          grep -Fq 'stage=supplicant starting' recovery-wifi/wifi
+          grep -Fq 'stage=association waiting up to 25s' recovery-wifi/wifi
+          grep -Fq 'stage=dhcp acquiring lease' recovery-wifi/wifi
+          grep -Fq 'if [ "$#" -eq 0 ]; then' recovery-wifi/wifi
+          if grep -Fq '"$WPACLI" -p' recovery-wifi/wifi; then
+            echo "Direct unbounded wpa_cli invocation remains"
+            exit 1
+          fi
+          if grep -Fq '"$IPTABLES" -' recovery-wifi/wifi; then
+            echo "Direct unbounded iptables invocation remains"
+            exit 1
+          fi
+          if grep -Fq 'twrp mount data' recovery-wifi/wifi; then
+            echo "Unbounded twrp mount data invocation remains"
+            exit 1
+          fi
           grep -q '^cmd_ping()' recovery-wifi/wifi
           grep -Fq 'Static resolver fallback:' recovery-wifi/wifi
           grep -q 'CONFIG_NSLOOKUP' recovery-wifi/build-userspace.sh
