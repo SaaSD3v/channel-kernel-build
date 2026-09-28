@@ -154,7 +154,7 @@ fi
 
 # Recovery time repair uses a one-shot BusyBox NTP client after DHCP. Keep the
 # date/timeout applets explicit so a future BusyBox defconfig cannot remove it.
-for symbol in CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT; do
+for symbol in CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT CONFIG_NSLOOKUP; do
   if grep -q "^# $symbol is not set$" .config; then
     sed -i "s/^# $symbol is not set$/$symbol=y/" .config
   elif ! grep -q "^$symbol=y$" .config; then
@@ -173,7 +173,7 @@ for symbol in \
   CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
   CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
   CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK CONFIG_CP CONFIG_MV CONFIG_RM CONFIG_CHOWN \
-  CONFIG_SHA256SUM CONFIG_SYNC CONFIG_READLINK CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT
+  CONFIG_SHA256SUM CONFIG_SYNC CONFIG_READLINK CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT CONFIG_NSLOOKUP
 do
   grep -qx "$symbol=y" .config || {
     echo "Missing required BusyBox setting: $symbol=y" >&2
