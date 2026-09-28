@@ -81,7 +81,7 @@ ipt() {
 }
 
 sync_store() {
-    "$BB" timeout "$SYNC_TIMEOUT" sync_store >/dev/null 2>&1 || {
+    "$BB" timeout "$SYNC_TIMEOUT" "$BB" sync >/dev/null 2>&1 || {
         log "persistent storage sync exceeded ${SYNC_TIMEOUT}s; continuing"
         return 0
     }
