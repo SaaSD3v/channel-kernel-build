@@ -75,7 +75,7 @@ jobs:
           grep -Fq 'Internet sharing/NAT is disabled in start-vif mode' recovery-wifi/wifi
           grep -Fq "hotspot_dns=" recovery-wifi/wifi
           grep -Fq "xtables state match" recovery-wifi/ds-recovery-check
-          grep -Fq "kernel xt match: $match" recovery-wifi/ds-recovery-check
+          grep -Fq 'kernel xt match: $match' recovery-wifi/ds-recovery-check
           grep -Fq 'HOTSPOT_FORWARD_CHAIN=CHANNEL_HOTSPOT_FWD' recovery-wifi/wifi
           grep -Fq 'HOTSPOT_NAT_CHAIN=CHANNEL_HOTSPOT_NAT' recovery-wifi/wifi
           grep -q '192\.168\.43\.1/24' recovery-wifi/wifi
