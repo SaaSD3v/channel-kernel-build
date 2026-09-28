@@ -1680,6 +1680,19 @@ cmd_hotspot_status() {
     fi
 
     echo "--- hotspot ---"
+    hotspot_mode=$(cat "$HOTSPOT_MARKER" 2>/dev/null || true)
+    case "$hotspot_mode" in
+        active) echo "mode: AP-only on wlan0" ;;
+        repeater-2g:*) echo "mode: repeater 2.4 GHz (AP+STA+NAT)" ;;
+        repeater-5g:*) echo "mode: repeater 5 GHz (AP+STA+NAT)" ;;
+        repeater:*) echo "mode: repeater legacy/auto (AP+STA+NAT)" ;;
+        vif:*) echo "mode: VIF concurrency (AP+STA, no NAT)" ;;
+        *) echo "mode: unknown" ;;
+    esac
+
+    active_iface="$(hotspot_active_iface)"
+    echo "interface: $active_iface"
+
     pid=""
     [ -f "$HOTSPOT_HOSTAPD_PID" ] && pid="$(cat "$HOTSPOT_HOSTAPD_PID" 2>/dev/null)"
     case "$pid" in
@@ -1692,11 +1705,11 @@ cmd_hotspot_status() {
             fi
             ;;
     esac
-    [ -f "$HOTSPOT_LOG" ] && "$BB" tail -n 12 "$HOTSPOT_LOG" 2>/dev/null || true
-    active_iface="$(hotspot_active_iface)"
-    echo "interface: $active_iface"
+    [ -f "$HOTSPOT_LOG" ] && "$BB" tail -n 15 "$HOTSPOT_LOG" 2>/dev/null || true
+
     echo "--- address ---"
     "$BB" ip addr show dev "$active_iface" 2>/dev/null || true
+
     echo "--- DHCP ---"
     pid=""
     [ -f "$HOTSPOT_PID" ] && pid="$(cat "$HOTSPOT_PID" 2>/dev/null)"
@@ -1710,6 +1723,16 @@ cmd_hotspot_status() {
             fi
             ;;
     esac
+
+    echo "--- internet sharing ---"
+    if [ -f "$HOTSPOT_NAT_MARKER" ]; then
+        echo "NAT: enabled ($HOTSPOT_IFACE -> $IFACE)"
+        echo "ip_forward: $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo unknown)"
+        "$BB" ip route show default 2>/dev/null || true
+        "$BB" ip route show "$HOTSPOT_SUBNET" 2>/dev/null || true
+    else
+        echo "NAT: disabled"
+    fi
 }
 
 cmd_hotspot_clients() {
