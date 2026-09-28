@@ -1,0 +1,29 @@
+# Channel recovery CLI-minimal profile, stage 1.
+#
+# Goal: remove physical handset UI/camera paths while preserving the recovery
+# control plane: ADB, hardware buttons/input events, uinput, Wi-Fi/PRONTO,
+# DroidSpaces networking/namespaces, KGSL/Adreno and VIDC.
+#
+# Keep this first stage conservative. Audio, Bluetooth/NFC, LEDs/haptics and
+# nonessential USB functions are intentionally deferred until device boot/ADB
+# validation.
+
+# Physical framebuffer / MDSS display stack.
+# CONFIG_FB is not set
+# CONFIG_BACKLIGHT_LCD_SUPPORT is not set
+# CONFIG_LCD_CLASS_DEVICE is not set
+# CONFIG_MSM_EXT_DISPLAY is not set
+# CONFIG_MSM_MDSS_PLL is not set
+# CONFIG_MSM_SDE_ROTATOR is not set
+
+# Physical touch / desktop-pointer classes. Keep INPUT, EVDEV, UINPUT,
+# INPUT_KEYBOARD and KEYBOARD_GPIO enabled by the base config.
+# CONFIG_INPUT_MOUSEDEV is not set
+# CONFIG_INPUT_JOYSTICK is not set
+# CONFIG_INPUT_TABLET is not set
+# CONFIG_INPUT_TOUCHSCREEN is not set
+
+# Physical camera stack. Keep MEDIA_SUPPORT / VIDEO_V4L2 because VIDC 3X
+# remains useful for headless multimedia workloads.
+# CONFIG_MSM_CAMERA is not set
+# CONFIG_MSMB_CAMERA is not set
