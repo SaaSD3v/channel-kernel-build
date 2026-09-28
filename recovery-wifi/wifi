@@ -1977,12 +1977,19 @@ cmd_forget_all() {
 }
 
 cmd_status() {
+    echo "--- driver ---"
+    [ -d "/sys/class/net/$IFACE" ] && echo "$IFACE: present" || echo "$IFACE: not present"
+    [ -e "$STATE/wcnss.opened" ] && echo "wcnss trigger: complete" || echo "wcnss trigger: unknown"
+
     echo "--- supplicant ---"
     "$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null || true
+
     echo "--- address ---"
     "$BB" ip addr show dev "$IFACE" 2>/dev/null || true
+
     echo "--- route ---"
     "$BB" ip route 2>/dev/null || true
+
     echo "--- DNS ---"
     cat /etc/resolv.conf 2>/dev/null || true
 }
@@ -2016,22 +2023,61 @@ cmd_down() {
 cmd_logs() {
     echo "===== recovery Wi-Fi prepare ====="
     cat "$PREPLOG" 2>/dev/null || true
+
+    echo
     echo "===== wpa_supplicant ====="
-    "$BB" tail -n 160 "$LOG" 2>/dev/null || true
+    "$BB" tail -n 180 "$LOG" 2>/dev/null || true
+
+    echo
     echo "===== hotspot hostapd ====="
-    "$BB" tail -n 160 "$HOTSPOT_LOG" 2>/dev/null || true
+    "$BB" tail -n 180 "$HOTSPOT_LOG" 2>/dev/null || true
+
+    echo
     echo "===== hotspot udhcpd ====="
-    "$BB" tail -n 80 "$HOTSPOT_DHCP_LOG" 2>/dev/null || true
+    "$BB" tail -n 100 "$HOTSPOT_DHCP_LOG" 2>/dev/null || true
+
+    echo
     echo "===== kernel WLAN/WCNSS ====="
-    dmesg 2>/dev/null | "$BB" grep -iE 'wlan|wcnss|pronto|firmware|cfg80211|rfkill' | "$BB" tail -n 200 || true
+    dmesg 2>/dev/null |
+        "$BB" grep -iE 'wlan|wcnss|pronto|firmware|cfg80211|rfkill|pil|subsys|softap|concurr|adapter' |
+        "$BB" tail -n 240 || true
+
+    echo
     echo "===== nodes ====="
     ls -l /dev/wcnss* /sys/module/wlan/parameters 2>/dev/null || true
+
+    echo
     echo "===== staged firmware ====="
     ls -l /lib/firmware /lib/firmware/wlan/prima 2>/dev/null || true
+
+    echo
+    echo "===== persistence ====="
+    ls -la "$PERSIST_DIR" "$PERSIST_WLAN_DIR" "$PERSIST_NETWORKS" "$PERSIST_AP_DIR" 2>/dev/null || true
+    [ -f "$PERSIST_HOTSPOT" ] && {
+        echo "--- saved ap0 config ---"
+        "$BB" sed 's/^wpa_passphrase=.*/wpa_passphrase=<hidden>/' "$PERSIST_HOTSPOT" 2>/dev/null || true
+    }
+
+    echo
+    echo "===== repeater NAT ====="
+    [ -f "$HOTSPOT_NAT_MARKER" ] && cat "$HOTSPOT_NAT_MARKER" 2>/dev/null || echo "NAT marker: absent"
+    echo "ip_forward: $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null || echo unavailable)"
+    if [ -x "$IPTABLES" ]; then
+        "$IPTABLES" -L "$HOTSPOT_FORWARD_CHAIN" -n -v 2>/dev/null || true
+        "$IPTABLES" -t nat -L "$HOTSPOT_NAT_CHAIN" -n -v 2>/dev/null || true
+    fi
+
+    echo
     echo "===== WCNSS trigger marker ====="
     ls -l "$STATE/wcnss.opened" 2>/dev/null || true
+
+    echo
     echo "===== mounts ====="
     "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|mnt/vendor/persist|lib/firmware|tmp/ds-wifi/vendor-stock) ' /proc/mounts 2>/dev/null || true
+
+    echo
+    echo "===== runtime state ====="
+    ls -la "$STATE" "$CTRL" 2>/dev/null || true
 }
 
 cmd_test() {
