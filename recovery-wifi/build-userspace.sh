@@ -29,6 +29,7 @@ echo "Recovery Wi-Fi userspace device: $DEVICE"
 echo "  arch=$TARGET_ARCH host=$HOST_TRIPLE cross=$CROSS openssl=$OPENSSL_TARGET"
 
 WPA_TAG=hostap_2_9
+WPA_COMMIT=ca8c2bd28ad53f431d6ee60ef754e98cfdb4c17b
 OPENSSL_TAG=OpenSSL_1_1_1w
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
 IPTABLES_COMMIT=c16bdec15137b241586310d0e61bc88cc3726004 # iptables 1.6.2 legacy
@@ -71,9 +72,31 @@ popd >/dev/null
 # built through the standalone Makefile; recovery has no HIDL framework.
 # Use the upstream hostap tag instead so the binary is genuinely self-contained.
 git init "$SRC/wpa"
-git -C "$SRC/wpa" remote add origin https://git.w1.fi/hostap.git
-git -C "$SRC/wpa" fetch --depth=1 origin "refs/tags/$WPA_TAG"
-git -C "$SRC/wpa" checkout --detach FETCH_HEAD
+hostap_fetched=0
+for hostap_origin in \
+    https://github.com/rsta2/hostap.git \
+    https://git.w1.fi/hostap.git
+do
+  git -C "$SRC/wpa" remote remove origin >/dev/null 2>&1 || true
+  git -C "$SRC/wpa" remote add origin "$hostap_origin"
+  if timeout 75 git -C "$SRC/wpa" -c http.lowSpeedLimit=1024 -c http.lowSpeedTime=30 \
+      fetch --depth=1 origin "refs/tags/$WPA_TAG"; then
+    resolved=$(git -C "$SRC/wpa" rev-parse 'FETCH_HEAD^{commit}')
+    if [ "$resolved" = "$WPA_COMMIT" ]; then
+      echo "Pinned hostap source: $hostap_origin @ $resolved"
+      hostap_fetched=1
+      break
+    fi
+    echo "Rejecting hostap mirror with unexpected commit: $resolved" >&2
+  else
+    echo "Hostap source unavailable: $hostap_origin" >&2
+  fi
+done
+[ "$hostap_fetched" -eq 1 ] || {
+  echo "Could not fetch pinned hostap $WPA_TAG / $WPA_COMMIT" >&2
+  exit 1
+}
+git -C "$SRC/wpa" checkout --detach "$WPA_COMMIT"
 cp "$ROOT/recovery-wifi/wpa_supplicant.config" "$SRC/wpa/wpa_supplicant/.config"
 cat >> "$SRC/wpa/wpa_supplicant/.config" <<EOF
 CFLAGS += -Os -ffunction-sections -fdata-sections -I$PREFIX/include/libnl3 -I$SRC/openssl/include
