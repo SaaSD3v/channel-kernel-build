@@ -1064,7 +1064,7 @@ persist_hotspot_conf() {
     source="$1"
     ensure_persistent_store || return 1
 
-    tmp="$PERSIST_AP_DIR/.hotspot.$"
+    tmp="$PERSIST_AP_DIR/.hotspot.$$"
     {
         printf '%s\n' '# dswifi-hotspot=1'
         "$BB" cat "$source"
