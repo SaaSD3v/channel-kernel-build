@@ -587,15 +587,48 @@ do_dhcp() {
         echo "Hotspot is active; client DHCP is disabled. Use: wifi hotspot status"
         return 1
     fi
-    if "$BB" udhcpc -i "$IFACE" -s "$UDHCPC_SCRIPT" -p "$STATE/udhcpc.pid" \
-        -t 8 -T 3 -A 1 -q; then
-        # One-shot only: no resident time daemon. Clock failure is non-fatal
-        # to Wi-Fi, but successful sync immediately fixes apt/TLS in containers.
-        if [ -x "$TIME_SYNC" ]; then
-            "$TIME_SYNC" online || echo "Warning: network is up, but UTC sync failed." >&2
+
+    "$BB" rm -f "$STATE/lease.env" "$STATE/udhcpc.pid" 2>/dev/null || true
+
+    # BusyBox udhcpc has been observed on PRONTO recovery builds to keep the
+    # caller blocked after the bound script already installed the lease.
+    # Run it in foreground mode under our own watchdog and use lease.env as
+    # the commit point. Once bound/renew finished writing lease.env, the IP,
+    # route and DNS are already installed and the client may be terminated.
+    "$BB" udhcpc -f -n -i "$IFACE" -s "$UDHCPC_SCRIPT"         -p "$STATE/udhcpc.pid" -t 8 -T 3 -A 1 -q &
+    dhcp_pid=$!
+
+    i=0
+    while [ "$i" -lt 30 ]; do
+        if [ -s "$STATE/lease.env" ]; then
+            if kill -0 "$dhcp_pid" 2>/dev/null; then
+                kill "$dhcp_pid" 2>/dev/null || true
+            fi
+            wait "$dhcp_pid" 2>/dev/null || true
+            "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
+
+            if [ -x "$TIME_SYNC" ]; then
+                "$TIME_SYNC" online || echo "Warning: network is up, but UTC sync failed." >&2
+            fi
+            return 0
         fi
-        return 0
+
+        if ! kill -0 "$dhcp_pid" 2>/dev/null; then
+            wait "$dhcp_pid" 2>/dev/null || true
+            break
+        fi
+
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+
+    if kill -0 "$dhcp_pid" 2>/dev/null; then
+        kill "$dhcp_pid" 2>/dev/null || true
+        wait "$dhcp_pid" 2>/dev/null || true
     fi
+    "$BB" rm -f "$STATE/udhcpc.pid" 2>/dev/null || true
+
+    [ -s "$STATE/lease.env" ] && return 0
     return 1
 }
 
