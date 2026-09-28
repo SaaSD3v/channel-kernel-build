@@ -21,6 +21,9 @@
 # CONFIG_MSM_MDSS_PLL is not set
 # CONFIG_QCOM_MDSS_PLL is not set
 # CONFIG_MSM_SDE_ROTATOR is not set
+# CONFIG_REGULATOR_QPNP_LABIBB is not set
+# CONFIG_REGULATOR_QPNP_LCDB is not set
+# CONFIG_LEDS_QPNP_WLED is not set
 
 # Physical touch / desktop-pointer classes. Keep INPUT, EVDEV, UINPUT,
 # INPUT_KEYBOARD and KEYBOARD_GPIO enabled by the base config.
@@ -35,3 +38,5 @@
 # CONFIG_MSMB_CAMERA is not set
 # CONFIG_SPECTRA_CAMERA is not set
 # CONFIG_SPECTRA2_CAMERA is not set
+# CONFIG_LEDS_QPNP_FLASH is not set
+# CONFIG_LEDS_QPNP_FLASH_V2 is not set
