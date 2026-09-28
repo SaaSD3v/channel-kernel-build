@@ -57,6 +57,7 @@ HOTSPOT_SUBNET=192.168.43.0/24
 WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}
 CONTROL_TIMEOUT=${WIFI_CONTROL_TIMEOUT:-5}
 DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}
+MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}
 SYNC_TIMEOUT=${WIFI_SYNC_TIMEOUT:-5}
 IFACE=${WIFI_IFACE:-wlan0}
 HOTSPOT_IFACE=${WIFI_HOTSPOT_IFACE:-ap0}
@@ -247,9 +248,10 @@ mount_partition() {
     dev="$(find_block "$part" 2>/dev/null || true)"
     [ -n "$dev" ] || return 1
     # Let mount auto-detect first; recovery partitions differ between firmware revisions.
-    "$BB" mount -o ro "$dev" "$target" 2>/dev/null || \
-    "$BB" mount -t ext4 -o ro "$dev" "$target" 2>/dev/null || \
-    "$BB" mount -t vfat -o ro "$dev" "$target" 2>/dev/null
+    # Every attempt is bounded so a damaged/unresponsive partition cannot wedge wifi up.
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -o ro "$dev" "$target" 2>/dev/null || \
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -t ext4 -o ro "$dev" "$target" 2>/dev/null || \
+    "$BB" timeout "$MOUNT_TIMEOUT" "$BB" mount -t vfat -o ro "$dev" "$target" 2>/dev/null
 }
 
 stage_firmware() {
@@ -381,7 +383,7 @@ prepare() {
 
     # QCOM_RTC_FIX may reconstruct a stale wall clock from ats_2. Our own
     # last-good floor is monotonic and does not modify Qualcomm's ATS files.
-    [ -x "$TIME_SYNC" ] && "$TIME_SYNC" restore >/dev/null 2>&1 || true
+    [ -x "$TIME_SYNC" ] && "$BB" timeout 5 "$TIME_SYNC" restore >/dev/null 2>&1 || true
 
     stage_firmware
 
