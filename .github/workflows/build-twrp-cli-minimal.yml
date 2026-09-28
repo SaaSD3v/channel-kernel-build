@@ -38,7 +38,11 @@ jobs:
           test -f "recovery-wifi/devices/$DEVICE/device.conf"
           test -f recovery-cli-minimal.fragment
           test -f scripts/apply-cli-minimal-kernel.sh
+          test -f scripts/build-cli-minimal-console.sh
+          test -f scripts/build-cli-minimal-console-full.sh
           bash -n scripts/apply-cli-minimal-kernel.sh
+          bash -n scripts/build-cli-minimal-console.sh
+          bash -n scripts/build-cli-minimal-console-full.sh
           ! grep -qx 'CONFIG_AP=y' recovery-wifi/wpa_supplicant.config
           grep -qx 'CONFIG_DRIVER_NL80211=y' recovery-wifi/hostapd.config
           grep -qx 'CONFIG_LIBNL32=y' recovery-wifi/hostapd.config

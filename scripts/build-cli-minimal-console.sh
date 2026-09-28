@@ -25,6 +25,26 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$(dirname "$OUTPUT_IMG")"
 
+to_raw_cpio() {
+  input="$1"
+  output="$2"
+
+  if cpio -it < "$input" >/dev/null 2>&1; then
+    cp -f "$input" "$output"
+  else
+    "$MAGISKBOOT" decompress "$input" "$output"
+  fi
+
+  [ -s "$output" ] || {
+    echo "ERROR: failed to obtain raw ramdisk CPIO from $input" >&2
+    return 1
+  }
+  cpio -it < "$output" >/dev/null 2>&1 || {
+    echo "ERROR: decoded ramdisk is not a valid CPIO: $input" >&2
+    return 1
+  }
+}
+
 echo "==> Verifying official installer ramdisk against minimal base"
 INSTALLER_RAMDISK_NAME="$(
   unzip -Z1 "$INSTALLER" |
@@ -70,8 +90,8 @@ dst.write_bytes(ramdisk)
 print(f"Base external ramdisk: {len(ramdisk)} bytes")
 PY
 
-"$MAGISKBOOT" decompress "$WORK/base-ramdisk.bin" "$WORK/base-ramdisk.raw"
-"$MAGISKBOOT" decompress "$WORK/installer-ramdisk.bin" "$WORK/installer-ramdisk.raw"
+to_raw_cpio "$WORK/base-ramdisk.bin" "$WORK/base-ramdisk.raw"
+to_raw_cpio "$WORK/installer-ramdisk.bin" "$WORK/installer-ramdisk.raw"
 
 cmp -s "$WORK/base-ramdisk.raw" "$WORK/installer-ramdisk.raw" || {
   echo "ERROR: official installer ramdisk does not match minimal base TWRP ramdisk" >&2
