@@ -37,12 +37,16 @@ else
     warn '/sbin/recovery-time-sync ausente; apt/TLS pode falhar se QCOM ATS estiver velho'
 fi
 
-check_file /proc/self/ns/mnt
-check_file /proc/self/ns/pid
-check_file /proc/self/ns/uts
-check_file /proc/self/ns/ipc
-check_file /proc/self/ns/net
-check_file /proc/sys/net/ipv4/ip_forward
+for f in \
+    /proc/self/ns/mnt \
+    /proc/self/ns/pid \
+    /proc/self/ns/uts \
+    /proc/self/ns/ipc \
+    /proc/self/ns/net \
+    /proc/sys/net/ipv4/ip_forward
+do
+    check_file "$f"
+done
 
 [ -x /sbin/iptables.ds ] && ok 'iptables legacy static binary' || bad '/sbin/iptables.ds ausente'
 [ -e /sbin/iptables ] && ok 'iptables frontend' || bad '/sbin/iptables ausente'
@@ -57,8 +61,9 @@ if [ -x "$IPT" ]; then
     check_cmd 'iptables nat table' "$IPT" -t nat -L -n
     check_cmd 'iptables mangle table' "$IPT" -t mangle -L -n
 
-    # Userspace extension presence. These use help mode and do not modify rules.
+    # Help-mode extension probes: userspace only, no firewall mutation.
     check_cmd 'xtables addrtype match' "$IPT" -m addrtype -h
+    check_cmd 'xtables state match' "$IPT" -m state -h
     check_cmd 'xtables DNAT target' "$IPT" -t nat -j DNAT -h
     check_cmd 'xtables MASQUERADE target' "$IPT" -t nat -j MASQUERADE -h
     check_cmd 'xtables TCPMSS target' "$IPT" -t mangle -j TCPMSS -h
@@ -77,22 +82,19 @@ fi
 if [ -r /proc/net/ip_tables_targets ]; then
     for target in DNAT MASQUERADE TCPMSS; do
         grep -qx "$target" /proc/net/ip_tables_targets 2>/dev/null \
-            && ok "kernel xtables target: $target" \
-            || bad "kernel xtables sem target $target"
+            && ok "kernel xt target: $target" \
+            || bad "kernel xt target ausente: $target"
     done
 else
     bad '/proc/net/ip_tables_targets indisponível'
 fi
 
 if [ -r /proc/net/ip_tables_matches ]; then
-    for match in tcp udp; do
+    for match in tcp udp addrtype state; do
         grep -qx "$match" /proc/net/ip_tables_matches 2>/dev/null \
-            && ok "kernel xtables match: $match" \
-            || bad "kernel xtables sem match $match"
+            && ok "kernel xt match: $match" \
+            || bad "kernel xt match ausente: $match"
     done
-    grep -qx 'addrtype' /proc/net/ip_tables_matches 2>/dev/null \
-        && ok 'kernel xtables match: addrtype' \
-        || warn 'kernel xtables sem addrtype; DroidSpaces fará fallback para DNAT básico'
 else
     bad '/proc/net/ip_tables_matches indisponível'
 fi
@@ -105,38 +107,12 @@ else
     bad 'route_localnet ausente; localhost port-forward não funcionará'
 fi
 
-# Capabilities that are optional in DroidSpaces. They never make this preflight
-# fail, but reporting them here avoids discovering the limitation only after
-# enabling the corresponding Manager option.
+# Optional/feature-dependent diagnostics.
 [ -e /dev/loop-control ] && ok 'opcional: loop device para rootfs.img' || warn 'opcional: /dev/loop-control ausente (rootfs.img)'
 command -v e2fsck >/dev/null 2>&1 && ok 'opcional: e2fsck para rootfs.img ext4' || warn 'opcional: e2fsck ausente (rootfs.img ext4)'
 grep -qw overlay /proc/filesystems 2>/dev/null && ok 'opcional: OverlayFS/volatile' || warn 'opcional: OverlayFS indisponível'
 [ -e /dev/fuse ] && ok 'opcional: FUSE' || warn 'opcional: /dev/fuse ausente'
 [ -e /dev/net/tun ] && ok 'opcional: TUN/TAP' || warn 'opcional: /dev/net/tun ausente'
-
-if [ -r /proc/net/ip_tables_targets ]; then
-    for target in DNAT MASQUERADE TCPMSS; do
-        grep -qx "$target" /proc/net/ip_tables_targets 2>/dev/null \
-            && ok "kernel xt target: $target" \
-            || bad "kernel xt target ausente: $target"
-    done
-else
-    bad '/proc/net/ip_tables_targets indisponível'
-fi
-
-if [ -r /proc/net/ip_tables_matches ]; then
-    grep -qx 'addrtype' /proc/net/ip_tables_matches 2>/dev/null \
-        && ok 'kernel xt match: addrtype' \
-        || bad 'kernel xt match ausente: addrtype'
-else
-    bad '/proc/net/ip_tables_matches indisponível'
-fi
-
-# Feature-dependent diagnostics: they are not fatal to a basic container but
-# explain exactly what will not work if a Manager toggle is enabled.
-grep -qw overlay /proc/filesystems 2>/dev/null \
-    && ok 'OverlayFS disponível' \
-    || warn 'OverlayFS ausente: modo volatile não funcionará'
 grep -qw cgroup2 /proc/filesystems 2>/dev/null \
     && ok 'cgroup2 disponível' \
     || warn 'cgroup2 ausente: DroidSpaces usará o caminho legacy de cgroup'
@@ -147,7 +123,6 @@ grep -qw cgroup2 /proc/filesystems 2>/dev/null \
     && ok 'PTY disponível' \
     || warn '/dev/ptmx ausente: consoles interativos podem falhar'
 
-# DroidSpaces itself contains functional namespace/veth/bridge probes.
 DS=""
 if command -v droidspaces >/dev/null 2>&1; then
     DS=$(command -v droidspaces)

@@ -1306,7 +1306,13 @@ start_udhcpd() {
     : > "$HOTSPOT_LEASES"
     : > "$HOTSPOT_DHCP_LOG"
 
-    hotspot_dns=$("$BB" awk '/^nameserver[[:space:]]+/ { print $2; exit }' /etc/resolv.conf 2>/dev/null || true)
+    hotspot_dns=$("$BB" awk '
+        $1 == "nameserver" &&
+        $2 ~ /^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$/ {
+            print $2
+            exit
+        }
+    ' /etc/resolv.conf 2>/dev/null || true)
     [ -n "$hotspot_dns" ] || hotspot_dns=8.8.8.8
 
     {
@@ -1495,7 +1501,7 @@ cmd_hotspot_start_vif() {
     if [ "$sta_state" = "COMPLETED" ]; then
         echo "wlan0 STA was kept running; this stage validates AP+STA concurrency."
     fi
-    echo "Upstream NAT/bridge to DroidSpaces/OpenWrt is intentionally not enabled in this test stage."
+    echo "Internet sharing/NAT is disabled in start-vif mode; use 'wifi hotspot repeater' for upstream internet."
     cmd_hotspot_status
 }
 
