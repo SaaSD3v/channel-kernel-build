@@ -2007,37 +2007,69 @@ cmd_logs() {
     "$BB" grep -E ' /(vendor|firmware|vendor/firmware_mnt|persist|mnt/vendor/persist|lib/firmware|tmp/ds-wifi/vendor-stock) ' /proc/mounts 2>/dev/null || true
 }
 
+cmd_test() {
+    echo "Channel recovery Wi-Fi validation"
+
+    for f in "$BB" "$WPA" "$WPACLI" "$HOSTAPD" "$IW" "$IPTABLES" "$WCNSS" "$UDHCPC_SCRIPT"; do
+        [ -x "$f" ] && echo "OK   $f" || echo "MISS $f"
+    done
+
+    for f in /dev/wcnss_ctrl /dev/wcnss_wlan /sys/module/wlan/parameters/fwpath; do
+        [ -e "$f" ] && echo "OK   $f" || echo "MISS $f"
+    done
+
+    echo
+    if is_mounted /system; then
+        echo "NOTE /system is mounted externally; recovery Wi-Fi does not require it"
+    else
+        echo "OK   /system remains unmounted"
+    fi
+
+    echo
+    echo "persistent wlan: $PERSIST_NETWORKS"
+    echo "persistent ap0 : $PERSIST_HOTSPOT"
+    cmd_status
+}
+
 usage() {
-    printf '%s\n' \
-        'Recovery Wi-Fi (Motorola channel)' \
-        '' \
-        '  wifi prepare' \
-        '  wifi up' \
-        '  wifi scan' \
-        '  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK' \
-        '  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE' \
-        '  wifi connect-open "SSID"' \
-        '  wifi networks' \
-        '  wifi forget "SSID"' \
-        '  wifi forget-all' \
-        '  wifi hotspot create "SSID" "PASSWORD" [CHANNEL] # save new hotspot; default channel 6' \
-        '  wifi hotspot config                              # show saved config (password hidden)' \
-        '  wifi hotspot config ssid "NEW"                   # change saved SSID' \
-        '  wifi hotspot config password "NEW"               # change saved password' \
-        '  wifi hotspot config channel N                    # change saved channel (1-11)' \
-        '  wifi hotspot start                               # start saved hotspot' \
-        '  wifi hotspot stop                                # stop runtime; keep saved config' \
-        '  wifi hotspot delete                              # delete saved config; does not stop runtime' \
-        '  wifi hotspot probe-vif                           # create/delete ap0 only' \
-        '  wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL] # AP+STA test on ap0' \
-        '  wifi hotspot status' \
-        '  wifi hotspot clients' \
-        '  wifi dhcp' \
-        '  wifi status' \
-        '  wifi ping HOST' \
-        '  wifi disconnect' \
-        '  wifi down' \
-        '  wifi logs'
+    cat <<'EOF'
+Recovery Wi-Fi (Motorola channel)
+
+  wifi prepare
+  wifi up
+  wifi start                         # alias for up
+  wifi scan
+  wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK
+  wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE
+  wifi connect-open "SSID"
+  wifi networks
+  wifi forget "SSID"
+  wifi forget-all
+
+  wifi hotspot create "SSID" "PASSWORD" [CHANNEL]
+  wifi hotspot config
+  wifi hotspot config ssid|password|channel VALUE
+  wifi hotspot delete
+  wifi hotspot start                 # AP-only on wlan0, uses saved profile
+  wifi hotspot probe-vif
+  wifi hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]] # AP+STA, no NAT
+  wifi hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]   # auto band, AP+STA+NAT
+  wifi hotspot repeater-2g ["SSID" "PASSWORD" [CHANNEL]] # require wlan0 2.4 GHz
+  wifi hotspot repeater-5g ["SSID" "PASSWORD" [CHANNEL]] # require wlan0 5 GHz
+  wifi hotspot status
+  wifi hotspot clients
+  wifi hotspot stop
+
+  wifi dhcp
+  wifi status
+  wifi ping HOST
+  wifi disconnect
+  wifi down
+  wifi stop                          # alias for down
+  wifi logs
+  wifi test
+  wifi help
+EOF
 }
 
 mkdir_state
@@ -2045,7 +2077,7 @@ cmd="${1:-help}"
 shift 2>/dev/null || true
 case "$cmd" in
     prepare) prepare ;;
-    up) cmd_up ;;
+    up|start) cmd_up ;;
     scan) cmd_scan ;;
     connect) cmd_connect "$@" ;;
     connect-sae) cmd_connect_sae "$@" ;;
@@ -2064,6 +2096,9 @@ case "$cmd" in
             delete) cmd_hotspot_delete "$@" ;;
             probe-vif) cmd_hotspot_probe_vif ;;
             start-vif) cmd_hotspot_start_vif "$@" ;;
+            repeater) cmd_hotspot_repeater "$@" ;;
+            repeater-2g) cmd_hotspot_repeater_2g "$@" ;;
+            repeater-5g) cmd_hotspot_repeater_5g "$@" ;;
             status) cmd_hotspot_status ;;
             clients) cmd_hotspot_clients ;;
             *) echo "Unknown hotspot command: $sub"; usage; exit 2 ;;
@@ -2073,8 +2108,9 @@ case "$cmd" in
     status) cmd_status ;;
     ping) [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; exit 2; }; "$BB" ping -c 4 "$1" ;;
     disconnect) cmd_disconnect ;;
-    down) cmd_down ;;
+    down|stop) cmd_down ;;
     logs) cmd_logs ;;
-    help|-h|--help) usage ;;
+    test) cmd_test ;;
+    help|h|-h|--help) usage ;;
     *) echo "Unknown command: $cmd"; usage; exit 2 ;;
 esac
