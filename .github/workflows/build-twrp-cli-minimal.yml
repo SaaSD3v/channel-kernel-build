@@ -68,7 +68,8 @@ jobs:
           grep -Fq 'repeater-5g) cmd_hotspot_repeater_5g "$@" ;;' recovery-wifi/wifi
           grep -Fq '"$BB" timeout 12 "$WPA"' recovery-wifi/wifi
           grep -Fq 'lease.env' recovery-wifi/wifi
-          grep -Fq 'kill "$dhcp_pid"' recovery-wifi/wifi
+          grep -Fq 'stop_child_bounded "$dhcp_pid"' recovery-wifi/wifi
+          grep -Fq '"$BB" timeout "$SYNC_TIMEOUT" "$BB" sync' recovery-wifi/wifi
           grep -Fq 'WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}' recovery-wifi/wifi
           grep -Fq 'DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}' recovery-wifi/wifi
           grep -Fq 'MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}' recovery-wifi/wifi
