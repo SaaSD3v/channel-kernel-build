@@ -65,7 +65,7 @@ jobs:
           grep -Fq '"$BB" timeout 12 "$WPA"' recovery-wifi/wifi
           grep -Fq 'lease.env' recovery-wifi/wifi
           grep -Fq 'kill "$dhcp_pid"' recovery-wifi/wifi
-          grep -Fq '^cmd_ping()' recovery-wifi/wifi
+          grep -q '^cmd_ping()' recovery-wifi/wifi
           grep -Fq 'Static resolver fallback:' recovery-wifi/wifi
           grep -q 'CONFIG_NSLOOKUP' recovery-wifi/build-userspace.sh
           grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/wifi
