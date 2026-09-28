@@ -191,28 +191,40 @@ umount_one() {
     say "unmounted: $target"
 }
 
-mount_all_active() {
-    rc=0
-    for spec in "data active" "system active" "vendor active" "oem active" "persist none" "persist2 none"; do
-        set -- $spec
-        mount_one "$1" "$2" rw || rc=1
-        echo
-    done
-    return "$rc"
+mount_slot_group() {
+    slot_arg="$1"
+    item="$2"
+    mode="${3:-rw}"
+
+    case "$slot_arg" in
+        a|b|active) ;;
+        *) err "slot must be a, b or active"; return 2 ;;
+    esac
+
+    case "$item" in
+        all)
+            rc=0
+            for p in system vendor oem; do
+                mount_one "$p" "$slot_arg" "$mode" || rc=1
+                echo
+            done
+            return "$rc"
+            ;;
+        system|vendor|oem)
+            mount_one "$item" "$slot_arg" "$mode"
+            ;;
+        *)
+            err "slot mounts support: system, vendor, oem or all"
+            return 2
+            ;;
+    esac
 }
 
-mount_all_slots() {
+mount_common_group() {
+    mode="${1:-rw}"
     rc=0
-    mount_one data none rw || rc=1
-    echo
-    for p in system vendor oem; do
-        for s in a b; do
-            mount_one "$p" "$s" rw || rc=1
-            echo
-        done
-    done
-    for p in persist persist2; do
-        mount_one "$p" none rw || rc=1
+    for p in data persist persist2; do
+        mount_one "$p" none "$mode" || rc=1
         echo
     done
     return "$rc"
@@ -231,7 +243,7 @@ show_mounts() {
 show_partitions() {
     root=$(find_byname_root) || { err "by-name directory not found"; return 1; }
     printf 'by-name: %s\n' "$root"
-    ls -l "$root" 2>/dev/null
+    "$BB" ls -l "$root" 2>/dev/null
 }
 
 show_slot() {
@@ -254,7 +266,7 @@ show_block() {
         return 1
     }
     printf '%s\n' "$dev"
-    ls -l "$dev" 2>/dev/null || true
+    "$BB" ls -l "$dev" 2>/dev/null || true
 }
 
 show_info() {
@@ -295,23 +307,32 @@ rctools block NAME [a|b|active|none]
   Resolve a raw block device without mounting it.
   Use this for boot, dtbo, vbmeta and other non-filesystem partitions.
 
-rctools mount NAME [a|b|active|none] [rw|ro]
+rctools mount a system|vendor|oem|all [rw|ro]
 
-  Mount a filesystem partition directly, without the TWRP service.
-  Default mode is rw. system/vendor/oem use the active slot unless specified.
+  Mount only slot A. "all" means system_a + vendor_a + oem_a.
 
-rctools mount all
+rctools mount b system|vendor|oem|all [rw|ro]
 
-  Mount data + system/vendor/oem from the active slot + persist/persist2.
+  Mount only slot B. "all" means system_b + vendor_b + oem_b.
 
-rctools mount all-slots
+rctools mount active system|vendor|oem|all [rw|ro]
 
-  Mount data, system_a/system_b, vendor_a/vendor_b, oem_a/oem_b,
-  persist and persist2 simultaneously.
+  Mount the currently active slot without needing to know whether it is A or B.
 
-rctools umount NAME [a|b|active|none]
+rctools mount data [rw|ro]
+rctools mount persist [rw|ro]
+rctools mount persist2 [rw|ro]
 
-  Unmount the RCTools mountpoint for a partition.
+  Mount non-A/B partitions independently.
+
+rctools mount common [rw|ro]
+
+  Mount data + persist + persist2. It does not mount either A/B slot.
+
+rctools umount a|b|active system|vendor|oem
+rctools umount data|persist|persist2
+
+  Unmount one RCTools mountpoint. Slots remain independent.
 
 rctools mounts
 
@@ -403,16 +424,49 @@ case "$cmd" in
         sub="${1:-}"
         [ "$#" -gt 0 ] && shift || true
         case "$sub" in
-            "") err "usage: rctools mount NAME [a|b|active|none] [rw|ro]"; exit 2 ;;
-            all) mount_all_active ;;
-            all-slots) mount_all_slots ;;
-            *) mount_one "$sub" "${1:-active}" "${2:-rw}" ;;
+            a|b|active)
+                [ "$#" -ge 1 ] || { err "usage: rctools mount $sub system|vendor|oem|all [rw|ro]"; exit 2; }
+                item="$1"; shift
+                mount_slot_group "$sub" "$item" "${1:-rw}"
+                ;;
+            data|userdata|persist|persist2|carrier|metadata|logs)
+                mount_one "$sub" none "${1:-rw}"
+                ;;
+            common)
+                mount_common_group "${1:-rw}"
+                ;;
+            "")
+                err "usage: rctools mount {a|b|active} system|vendor|oem|all [rw|ro]"
+                err "   or: rctools mount data|persist|persist2 [rw|ro]"
+                exit 2
+                ;;
+            *)
+                # Compatibility syntax kept for scripts: rctools mount system a
+                mount_one "$sub" "${1:-active}" "${2:-rw}"
+                ;;
         esac
         ;;
     umount|unmount)
-        [ "$#" -ge 1 ] || { err "usage: rctools umount NAME [a|b|active|none]"; exit 2; }
-        name="$1"; shift
-        umount_one "$name" "${1:-active}"
+        sub="${1:-}"
+        [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            a|b|active)
+                [ "$#" -ge 1 ] || { err "usage: rctools umount $sub system|vendor|oem"; exit 2; }
+                item="$1"
+                case "$item" in
+                    system|vendor|oem) umount_one "$item" "$sub" ;;
+                    *) err "slot unmount supports system, vendor or oem"; exit 2 ;;
+                esac
+                ;;
+            data|userdata|persist|persist2|carrier|metadata|logs)
+                umount_one "$sub" none
+                ;;
+            *)
+                err "usage: rctools umount {a|b|active} system|vendor|oem"
+                err "   or: rctools umount data|persist|persist2"
+                exit 2
+                ;;
+        esac
         ;;
     mounts)
         show_mounts
