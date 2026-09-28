@@ -524,6 +524,18 @@ hotspot_active_iface() {
                 active="${marker#vif:}"
                 [ -n "$active" ] && { printf '%s\n' "$active"; return 0; }
                 ;;
+            repeater:*)
+                active="${marker#repeater:}"
+                [ -n "$active" ] && { printf '%s\n' "$active"; return 0; }
+                ;;
+            repeater-2g:*)
+                active="${marker#repeater-2g:}"
+                [ -n "$active" ] && { printf '%s\n' "$active"; return 0; }
+                ;;
+            repeater-5g:*)
+                active="${marker#repeater-5g:}"
+                [ -n "$active" ] && { printf '%s\n' "$active"; return 0; }
+                ;;
         esac
     fi
     printf '%s\n' "$IFACE"
