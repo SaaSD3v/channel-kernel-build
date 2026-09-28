@@ -56,12 +56,6 @@ The branch carries the full Channel Wi-Fi client plus the Albus-style runtime fe
 
 See [recovery-wifi/README.md](recovery-wifi/README.md).
 
-## Headless Recovery Console
-
-The workflow also builds a second image with the pinned Channel Recovery Console permanently integrated. The console supports a no-DRM/no-fbdev fallback: the PTY, Unix socket, replay buffer and attach path remain active using synthetic 120x40 terminal geometry.
-
-Kernel and Wi-Fi payload are inherited unchanged from the minimal base image; only the external TWRP ramdisk is patched for the Recovery Console service after verifying that the official installer ramdisk matches the minimal image's TWRP ramdisk content.
-
 ## Validation policy
 
 CI success proves compilation, image structure, static userspace and configuration contracts. It does **not** prove device boot.
