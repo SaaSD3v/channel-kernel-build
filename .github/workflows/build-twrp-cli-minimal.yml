@@ -57,6 +57,14 @@ jobs:
           grep -q '^cmd_hotspot_repeater()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_repeater_2g()' recovery-wifi/wifi
           grep -q '^cmd_hotspot_repeater_5g()' recovery-wifi/wifi
+          grep -Fq 'up|start) cmd_up ;;' recovery-wifi/wifi
+          grep -Fq 'down|stop) cmd_down ;;' recovery-wifi/wifi
+          grep -Fq 'repeater) cmd_hotspot_repeater "$@" ;;' recovery-wifi/wifi
+          grep -Fq 'repeater-2g) cmd_hotspot_repeater_2g "$@" ;;' recovery-wifi/wifi
+          grep -Fq 'repeater-5g) cmd_hotspot_repeater_5g "$@" ;;' recovery-wifi/wifi
+          grep -Fq '"$BB" timeout 12 "$WPA"' recovery-wifi/wifi
+          grep -Fq 'lease.env' recovery-wifi/wifi
+          grep -Fq 'kill "$dhcp_pid"' recovery-wifi/wifi
           grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/wifi
           grep -Fq 'PERSIST_NETWORKS=$PERSIST_WLAN_DIR/networks' recovery-wifi/wifi
           grep -Fq 'PERSIST_HOTSPOT=$PERSIST_AP_DIR/hotspot.conf' recovery-wifi/wifi
