@@ -916,6 +916,25 @@ cmd_hotspot_probe_vif() {
     return 0
 }
 
+hotspot_channel_band() {
+    channel="$1"
+    case "$channel" in
+        1|2|3|4|5|6|7|8|9|10|11|12|13)
+            HOTSPOT_BAND=2g
+            HOTSPOT_HW_MODE=g
+            return 0
+            ;;
+        36|40|44|48|52|56|60|64|100|104|108|112|116|120|124|128|132|136|140|144|149|153|157|161|165)
+            HOTSPOT_BAND=5g
+            HOTSPOT_HW_MODE=a
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 make_hotspot_conf() {
     ssid="$1"
     pass="$2"
@@ -932,13 +951,11 @@ make_hotspot_conf() {
         echo "Hotspot password must contain 8-63 characters." >&2
         return 1
     }
-    case "$channel" in
-        1|2|3|4|5|6|7|8|9|10|11) ;;
-        *)
-            echo "Hotspot channel must be between 1 and 11." >&2
-            return 1
-            ;;
-    esac
+    hotspot_channel_band "$channel" || {
+        echo "Unsupported hotspot channel: $channel" >&2
+        echo "2.4 GHz: channels 1-13; 5 GHz: standard channels 36-165." >&2
+        return 1
+    }
     if printf '%s' "$ssid" | "$BB" grep -q '[[:cntrl:]]' ||
        printf '%s' "$pass" | "$BB" grep -q '[[:cntrl:]]'; then
         echo "Hotspot SSID/password cannot contain control characters." >&2
@@ -950,7 +967,7 @@ make_hotspot_conf() {
         printf '%s\n' 'driver=nl80211'
         printf 'ctrl_interface=%s\n' "$HOTSPOT_CTRL"
         printf 'ssid=%s\n' "$ssid"
-        printf '%s\n' 'hw_mode=g'
+        printf 'hw_mode=%s\n' "$HOTSPOT_HW_MODE"
         printf 'channel=%s\n' "$channel"
         printf '%s\n' 'auth_algs=1'
         printf '%s\n' 'wpa=2'
@@ -968,7 +985,7 @@ persist_hotspot_conf() {
     source="$1"
     ensure_persistent_store || return 1
 
-    tmp="$PERSIST_DIR/.hotspot.$$"
+    tmp="$PERSIST_AP_DIR/.hotspot.$"
     {
         printf '%s\n' '# dswifi-hotspot=1'
         "$BB" cat "$source"
@@ -1066,6 +1083,15 @@ cmd_hotspot_config() {
         echo "--- saved hotspot ---"
         echo "ssid: $saved_ssid"
         echo "security: WPA2-PSK/CCMP"
+        if hotspot_channel_band "$saved_channel"; then
+            case "$HOTSPOT_BAND" in
+                2g) saved_band_label='2.4 GHz' ;;
+                5g) saved_band_label='5 GHz' ;;
+            esac
+        else
+            saved_band_label='unknown'
+        fi
+        echo "band: $saved_band_label"
         echo "channel: $saved_channel"
         echo "password: configured (${#saved_pass} characters; hidden)"
         if [ -f "$HOTSPOT_MARKER" ]; then
@@ -1201,6 +1227,9 @@ start_udhcpd() {
     : > "$HOTSPOT_LEASES"
     : > "$HOTSPOT_DHCP_LOG"
 
+    hotspot_dns=$("$BB" awk '/^nameserver[[:space:]]+/ { print $2; exit }' /etc/resolv.conf 2>/dev/null || true)
+    [ -n "$hotspot_dns" ] || hotspot_dns=8.8.8.8
+
     {
         printf '%s\n' 'start 192.168.43.20'
         printf '%s\n' 'end 192.168.43.60'
@@ -1208,6 +1237,7 @@ start_udhcpd() {
         printf '%s\n' 'max_leases 41'
         printf '%s\n' 'opt subnet 255.255.255.0'
         printf '%s\n' 'opt router 192.168.43.1'
+        printf 'opt dns %s\n' "$hotspot_dns"
         printf '%s\n' 'opt lease 86400'
         printf 'lease_file %s\n' "$HOTSPOT_LEASES"
         printf 'pidfile %s\n' "$HOTSPOT_PID"
