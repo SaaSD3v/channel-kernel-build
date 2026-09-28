@@ -10,11 +10,7 @@ test -f "$AUTO_HDR"
 
 disable_auto_conf_symbol() {
   local symbol="$1"
-  if grep -qx "${symbol}=y" "$AUTO_CONF"; then
-    sed -i "s/^${symbol}=y$/# ${symbol} is not set/" "$AUTO_CONF"
-  elif ! grep -qx "# ${symbol} is not set" "$AUTO_CONF"; then
-    echo "# ${symbol} is not set" >> "$AUTO_CONF"
-  fi
+  sed -i "/^${symbol}=y$/d" "$AUTO_CONF"
 }
 
 disable_auto_header_symbol() {
@@ -35,8 +31,8 @@ disable_auto_header_symbol CONFIG_SND_SOC_MSM_HDMI_CODEC_RX
 disable_auto_conf_symbol CONFIG_AVTIMER_LEGACY
 disable_auto_header_symbol CONFIG_AVTIMER_LEGACY
 
-grep -qx '# CONFIG_SND_SOC_MSM_HDMI_CODEC_RX is not set' "$AUTO_CONF"
-grep -qx '# CONFIG_AVTIMER_LEGACY is not set' "$AUTO_CONF"
+! grep -q '^CONFIG_SND_SOC_MSM_HDMI_CODEC_RX=' "$AUTO_CONF"
+! grep -q '^CONFIG_AVTIMER_LEGACY=' "$AUTO_CONF"
 ! grep -q '^#define[[:space:]]\+CONFIG_SND_SOC_MSM_HDMI_CODEC_RX[[:space:]]\+1$' "$AUTO_HDR"
 ! grep -q '^#define[[:space:]]\+CONFIG_AVTIMER_LEGACY[[:space:]]\+1$' "$AUTO_HDR"
 
