@@ -1379,13 +1379,10 @@ restore_client_after_hotspot_failure() {
 }
 
 cmd_hotspot_start_vif() {
-    case "$#" in
-        2|3) ;;
-        *)
-            echo 'usage: wifi hotspot start-vif "SSID" "PASSWORD" [CHANNEL]'
-            return 2
-            ;;
-    esac
+    resolve_hotspot_request "$@" || {
+        echo 'usage: wifi hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]]'
+        return 2
+    }
 
     [ -x "$IW" ] || { echo "Missing recovery iw binary: $IW"; return 1; }
     [ ! -f "$HOTSPOT_MARKER" ] || {
@@ -1398,26 +1395,27 @@ cmd_hotspot_start_vif() {
         return 1
     }
 
-    requested_channel="6"
-    [ "$#" -ge 3 ] && requested_channel="$3"
+    requested_channel="$HOTSPOT_REQUEST_CHANNEL"
     channel="$requested_channel"
 
     sta_state=""
     [ -S "$CTRL/$IFACE" ] && sta_state=$("$WPACLI" -p "$CTRL" -i "$IFACE" status 2>/dev/null | "$BB" sed -n 's/^wpa_state=//p')
     if [ "$sta_state" = "COMPLETED" ]; then
-        sta_channel="$(current_sta_channel 2>/dev/null || true)"
-        if [ -z "$sta_channel" ]; then
-            echo "STA is connected outside supported 2.4 GHz channels 1-11."
-            echo "For this concurrency test, connect wlan0 to a 2.4 GHz network first."
+        if ! load_sta_radio_info; then
+            echo "Could not map the current STA frequency to a supported AP channel."
             return 1
         fi
-        if [ "$requested_channel" != "$sta_channel" ]; then
-            echo "STA+AP is single-channel on PRONTO; forcing AP channel $sta_channel instead of $requested_channel."
+        if [ "$requested_channel" != "$STA_CHANNEL" ]; then
+            case "$STA_BAND" in
+                2g) sta_band_label='2.4 GHz' ;;
+                5g) sta_band_label='5 GHz' ;;
+            esac
+            echo "STA+AP is single-channel on PRONTO; forcing AP to $sta_band_label channel $STA_CHANNEL."
         fi
-        channel="$sta_channel"
+        channel="$STA_CHANNEL"
     fi
 
-    make_hotspot_conf "$1" "$2" "$channel" "$HOTSPOT_CONF" "$HOTSPOT_IFACE" || return 1
+    make_hotspot_conf "$HOTSPOT_REQUEST_SSID" "$HOTSPOT_REQUEST_PASS" "$channel" "$HOTSPOT_CONF" "$HOTSPOT_IFACE" || return 1
 
     if ! create_hotspot_vif; then
         echo "Could not create AP VIF $HOTSPOT_IFACE."
