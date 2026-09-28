@@ -2002,6 +2002,38 @@ deconfigure_network() {
     }
 }
 
+cmd_ping() {
+    [ "$#" -ge 1 ] || {
+        echo 'usage: wifi ping HOST'
+        return 2
+    }
+
+    host="$1"
+    if "$BB" ping -c 4 "$host"; then
+        return 0
+    fi
+
+    dns=$("$BB" awk '/^nameserver[[:space:]]+/ { print $2; exit }' /etc/resolv.conf 2>/dev/null || true)
+    [ -n "$dns" ] || return 1
+
+    resolved=$("$BB" nslookup "$host" "$dns" 2>/dev/null |
+        "$BB" awk '
+            /^Name:[[:space:]]*/ { answer=1; next }
+            answer && /^Address:[[:space:]]*/ {
+                ip=$2
+                sub(/:[0-9]+$/, "", ip)
+                if (ip ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+                    print ip
+                    exit
+                }
+            }
+        ')
+
+    [ -n "$resolved" ] || return 1
+    echo "Static resolver fallback: $host -> $resolved via $dns"
+    "$BB" ping -c 4 "$resolved"
+}
+
 cmd_disconnect() {
     if [ -f "$HOTSPOT_MARKER" ]; then
         echo "Hotspot is active. Use: wifi hotspot stop"
@@ -2176,7 +2208,7 @@ case "$cmd" in
         ;;
     dhcp) do_dhcp ;;
     status) cmd_status ;;
-    ping) [ "$#" -ge 1 ] || { echo 'usage: wifi ping HOST'; exit 2; }; "$BB" ping -c 4 "$1" ;;
+    ping) cmd_ping "$@" ;;
     disconnect) cmd_disconnect ;;
     down|stop) cmd_down ;;
     logs) cmd_logs ;;
