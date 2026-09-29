@@ -29,8 +29,8 @@ int tinybeep_main(int argc, char **argv)
     unsigned int i;
     unsigned int frame = 0;
     const unsigned int total_frames = 48000 / 4;
-    const unsigned int chunk_frames = 240;
-    int16_t samples[240 * 2];
+    const unsigned int chunk_frames = 1024;
+    int16_t samples[1024 * 2];
     struct pcm_config config;
     struct pcm *pcm;
 
@@ -52,7 +52,7 @@ int tinybeep_main(int argc, char **argv)
     config.channels = 2;
     config.rate = 48000;
     config.period_size = chunk_frames;
-    config.period_count = 4;
+    config.period_count = 2;
     config.format = PCM_FORMAT_S16_LE;
     config.start_threshold = chunk_frames;
     config.stop_threshold = chunk_frames * config.period_count;
