@@ -288,7 +288,7 @@ jobs:
           sh -n recovery-wifi/ds-recovery-check
           chmod +x recovery-wifi/build-userspace.sh
           DEVICE="$DEVICE" recovery-wifi/build-userspace.sh
-          recovery-wifi/build-gpu-userspace.sh
+          bash recovery-wifi/build-gpu-userspace.sh
 
           test -x recovery-wifi/out/iptables.ds
           test -r recovery-wifi/out/libsync.so
