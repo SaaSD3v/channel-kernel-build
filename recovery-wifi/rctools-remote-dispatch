@@ -1,0 +1,15 @@
+#!/sbin/sh
+STATE=/tmp/rctools-remote
+service=$(cat "$STATE/service" 2>/dev/null || printf '%s' both)
+cmd=${SSH_ORIGINAL_COMMAND-}
+case "$cmd" in
+  /sbin/rctools-sftp-gate)
+    case "$service" in sftp|both) exec /sbin/rctools-sftp-gate;; *) echo "SFTP is disabled by RCTools." >&2; exit 126;; esac
+    ;;
+  '')
+    case "$service" in ssh|both) exec /sbin/sh;; *) echo "SSH shell is disabled by RCTools; use SFTP." >&2; exit 126;; esac
+    ;;
+  *)
+    case "$service" in ssh|both) exec /sbin/sh -c "$cmd";; *) echo "SSH command execution is disabled by RCTools; use SFTP." >&2; exit 126;; esac
+    ;;
+esac
