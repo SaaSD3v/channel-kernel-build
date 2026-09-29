@@ -6,6 +6,7 @@ DROPBEAR=/sbin/dropbear.ds
 NET=/sbin/rctools-net
 STATE=/tmp/rctools-remote
 AUTHDIR=$STATE/auth
+EMPTYKEYDIR=$STATE/no-keys
 PIDFILE=$STATE/dropbear.pid
 SERVICE=$STATE/service
 AUTH=$STATE/auth
@@ -17,8 +18,9 @@ BACKUP=$STATE/etc-backup
 say(){ printf '%s\n' "$*"; }
 err(){ printf 'rctools remote: %s\n' "$*" >&2; }
 init(){
-  "$BB" mkdir -p "$STATE" "$AUTHDIR"
-  "$BB" chmod 0700 "$STATE" "$AUTHDIR" 2>/dev/null || true
+  "$BB" mkdir -p "$STATE" "$AUTHDIR" "$EMPTYKEYDIR"
+  "$BB" chmod 0700 "$STATE" "$AUTHDIR" "$EMPTYKEYDIR" 2>/dev/null || true
+  "$BB" rm -f "$EMPTYKEYDIR/authorized_keys"
   [ -s "$SERVICE" ] || echo both >"$SERVICE"
   [ -s "$AUTH" ] || echo temporary >"$AUTH"
   [ -s "$PORT" ] || echo 2222 >"$PORT"
@@ -164,7 +166,12 @@ start(){
   [ "$mode" != temporary ] || [ -s "$HASH" ] || auth_cmd temporary || return 1
   prepare_account || { restore_etc; return 1; }
   "$BB" mkdir -p /etc/dropbear
-  set -- -R -m -j -k -P "$PIDFILE" -p "$(get "$PORT")" -D "$AUTHDIR" -c /sbin/rctools-remote-dispatch
+  case "$mode" in
+    key|twofactor) keydir="$AUTHDIR" ;;
+    password|temporary|open) keydir="$EMPTYKEYDIR" ;;
+    *) err "unsupported authentication mode: $mode"; restore_etc; return 1 ;;
+  esac
+  set -- -R -m -j -k -P "$PIDFILE" -p "$(get "$PORT")" -D "$keydir" -c /sbin/rctools-remote-dispatch
   case "$mode" in key) set -- "$@" -s;; open) set -- "$@" -B;; twofactor) set -- "$@" -t;; esac
   "$DROPBEAR" "$@" || { rc=$?; restore_etc; err "dropbear failed rc=$rc"; return "$rc"; }
   i=0; while [ "$i" -lt 20 ]; do running && break; "$BB" sleep 0.1; i=$((i+1)); done
