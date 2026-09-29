@@ -78,7 +78,7 @@ restore_etc(){
 }
 root_passwd(){
   cred="$1"
-  t="$STATE/passwd.$"
+  t="$STATE/passwd.$$"
   if [ -f /etc/passwd ]; then
     "$BB" awk -F: -v p="$cred" 'BEGIN{OFS=":";d=0} $1=="root"{print "root",p,"0","0","root","/","/bin/sh";d=1;next}{print} END{if(!d)print "root",p,"0","0","root","/","/bin/sh"}' /etc/passwd >"$t"
   else printf 'root:%s:0:0:root:/:/bin/sh\n' "$cred" >"$t"; fi
