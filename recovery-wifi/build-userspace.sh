@@ -256,6 +256,7 @@ git -C "$SRC/openssh" remote add origin https://github.com/openssh/openssh-porta
 git -C "$SRC/openssh" fetch --depth=1 origin "$OPENSSH_COMMIT"
 git -C "$SRC/openssh" checkout --detach FETCH_HEAD
 pushd "$SRC/openssh" >/dev/null
+autoreconf -fi
 CC="$CC" \
 CPPFLAGS="-I$SRC/openssl/include" \
 LDFLAGS="-static -Wl,--gc-sections -L$SRC/openssl" \
