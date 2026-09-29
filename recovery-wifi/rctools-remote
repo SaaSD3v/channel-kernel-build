@@ -5,11 +5,12 @@ BB=/sbin/busybox.ds
 DROPBEAR=/sbin/dropbear.ds
 NET=/sbin/rctools-net
 STATE=/tmp/rctools-remote
-AUTHDIR=$STATE/auth
+AUTHDIR=$STATE/keys
 EMPTYKEYDIR=$STATE/no-keys
+LEGACY_AUTH=$STATE/auth
 PIDFILE=$STATE/dropbear.pid
 SERVICE=$STATE/service
-AUTH=$STATE/auth
+AUTH=$STATE/auth-mode
 PORT=$STATE/port
 HASH=$STATE/hash
 TEMP=$STATE/temp-password
@@ -17,8 +18,20 @@ BACKUP=$STATE/etc-backup
 
 say(){ printf '%s\n' "$*"; }
 err(){ printf 'rctools remote: %s\n' "$*" >&2; }
+clear_screen(){ printf '\033[2J\033[H'; }
+pause_screen(){ printf '\nPress Enter to continue...'; IFS= read -r _pause || true; }
 init(){
-  "$BB" mkdir -p "$STATE" "$AUTHDIR" "$EMPTYKEYDIR"
+  "$BB" mkdir -p "$STATE"
+  # Migrate the broken early layout where $STATE/auth was both the key
+  # directory and the authentication-mode file.
+  if [ -d "$LEGACY_AUTH" ]; then
+    "$BB" mkdir -p "$AUTHDIR"
+    if [ -s "$LEGACY_AUTH/authorized_keys" ] && [ ! -s "$AUTHDIR/authorized_keys" ]; then
+      "$BB" cp "$LEGACY_AUTH/authorized_keys" "$AUTHDIR/authorized_keys"
+    fi
+    "$BB" rm -rf "$LEGACY_AUTH"
+  fi
+  "$BB" mkdir -p "$AUTHDIR" "$EMPTYKEYDIR"
   "$BB" chmod 0700 "$STATE" "$AUTHDIR" "$EMPTYKEYDIR" 2>/dev/null || true
   "$BB" rm -f "$EMPTYKEYDIR/authorized_keys"
   [ -s "$SERVICE" ] || echo both >"$SERVICE"
@@ -196,16 +209,175 @@ start_hotspot(){
   "$NET" hotspot start || return $?
   start
 }
+service_menu(){
+  while :; do
+    clear_screen
+    say "========================================"
+    say "        Remote Access - Services"
+    say "========================================"
+    say " Current: $(get "$SERVICE")"
+    echo
+    say " [1] SSH only       - terminal/shell"
+    say " [2] SFTP only      - file management"
+    say " [3] SSH + SFTP     - both"
+    say " [0] Back"
+    echo
+    printf 'Select: '
+    IFS= read -r c || return 0
+    case "$c" in
+      1) service_cmd ssh; pause_screen ;;
+      2) service_cmd sftp; pause_screen ;;
+      3) service_cmd both; pause_screen ;;
+      0) return 0 ;;
+      *) err "invalid selection"; pause_screen ;;
+    esac
+  done
+}
+
+auth_menu(){
+  while :; do
+    clear_screen
+    say "========================================"
+    say "      Remote Access - Authentication"
+    say "========================================"
+    say " Current: $(get "$AUTH")"
+    echo
+    say " [1] Temporary password"
+    say " [2] Custom password"
+    say " [3] Public key only"
+    say " [4] Public key + password"
+    say " [5] Open / no password"
+    say " [0] Back"
+    echo
+    printf 'Select: '
+    IFS= read -r c || return 0
+    case "$c" in
+      1) auth_cmd temporary; pause_screen ;;
+      2)
+        printf 'New password: '
+        IFS= read -r p
+        auth_cmd password "$p"
+        p=
+        pause_screen
+        ;;
+      3) auth_cmd key; pause_screen ;;
+      4)
+        printf 'Password (public key will also be required): '
+        IFS= read -r p
+        auth_cmd twofactor "$p"
+        p=
+        pause_screen
+        ;;
+      5) auth_cmd open; pause_screen ;;
+      0) return 0 ;;
+      *) err "invalid selection"; pause_screen ;;
+    esac
+  done
+}
+
+keys_menu(){
+  while :; do
+    clear_screen
+    say "========================================"
+    say "        Remote Access - Public Keys"
+    say "========================================"
+    echo
+    say " [1] Add public key from file"
+    say " [2] Paste public key"
+    say " [3] List keys"
+    say " [4] Clear all keys"
+    say " [0] Back"
+    echo
+    printf 'Select: '
+    IFS= read -r c || return 0
+    case "$c" in
+      1)
+        printf 'Public-key file path: '
+        IFS= read -r path
+        key_cmd add "$path"
+        pause_screen
+        ;;
+      2)
+        say "Paste one complete ssh-rsa / ssh-ed25519 / ecdsa-sha2-* public-key line:"
+        IFS= read -r line
+        key_cmd add-line "$line"
+        pause_screen
+        ;;
+      3) key_cmd list; pause_screen ;;
+      4) key_cmd clear; pause_screen ;;
+      0) return 0 ;;
+      *) err "invalid selection"; pause_screen ;;
+    esac
+  done
+}
+
+hotspot_menu(){
+  clear_screen
+  say "========================================"
+  say "       Remote Access - Hotspot"
+  say "========================================"
+  say "Leave SSID blank to use the hotspot already configured in RCTools."
+  echo
+  printf 'SSID: '
+  IFS= read -r ssid
+  if [ -z "$ssid" ]; then
+    start_hotspot
+    pause_screen
+    return
+  fi
+  printf 'Password: '
+  IFS= read -r pass
+  printf 'Channel [6]: '
+  IFS= read -r channel
+  [ -n "$channel" ] || channel=6
+  start_hotspot "$ssid" "$pass" "$channel"
+  pass=
+  pause_screen
+}
+
 menu(){
   while :; do
-    echo; say "========================================"; say "        RCTools - Remote Access"; say "========================================"
+    clear_screen
     running && run=running || run=stopped
-    say " Status  : $run"; say " Service : $(get "$SERVICE")"; say " Auth    : $(get "$AUTH")"; say " Port    : $(get "$PORT")"
-    echo; say " [1] Start"; say " [2] Stop"; say " [3] SSH only"; say " [4] SFTP only"; say " [5] SSH + SFTP"
-    say " [6] Temporary password"; say " [7] Public key only"; say " [8] Open / no password"; say " [9] Connection info"
-    say " [10] Start using configured hotspot"; say " [0] Back"; printf 'Select: '; read c || return 0
-    case "$c" in 1) start;;2) stop;;3) service_cmd ssh;;4) service_cmd sftp;;5) service_cmd both;;6) auth_cmd temporary;;
-      7) auth_cmd key;;8) auth_cmd open;;9) info;;10) start_hotspot;;0) return 0;;*) err "invalid selection";; esac
+    say "========================================"
+    say "        RCTools - Remote Access"
+    say "========================================"
+    say " Server  : $run"
+    say " Service : $(get "$SERVICE")"
+    say " Auth    : $(get "$AUTH")"
+    say " Port    : $(get "$PORT")"
+    echo
+    say " [1] Start server on current network"
+    say " [2] Stop server"
+    say " [3] Services"
+    say " [4] Authentication"
+    say " [5] Public keys"
+    say " [6] Change port"
+    say " [7] Connection info"
+    say " [8] Start hotspot + server"
+    say " [0] Back"
+    echo
+    printf 'Select: '
+    IFS= read -r c || return 0
+    case "$c" in
+      1) clear_screen; start; pause_screen ;;
+      2) clear_screen; stop; pause_screen ;;
+      3) service_menu ;;
+      4) auth_menu ;;
+      5) keys_menu ;;
+      6)
+        clear_screen
+        say "Current port: $(get "$PORT")"
+        printf 'New port: '
+        IFS= read -r p
+        port_cmd "$p"
+        pause_screen
+        ;;
+      7) clear_screen; info; pause_screen ;;
+      8) hotspot_menu ;;
+      0) clear_screen; return 0 ;;
+      *) err "invalid selection"; pause_screen ;;
+    esac
   done
 }
 help(){
