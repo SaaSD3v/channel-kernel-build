@@ -1,0 +1,277 @@
+#!/sbin/sh
+# RCTools internal audio backend for Motorola Channel.
+# Invoke through /sbin/rctools audio ...; this is not a second public CLI.
+
+PATH=/sbin:/system/bin:/vendor/bin
+TMPDIR=/tmp
+TMP=/tmp
+TEMP=/tmp
+export PATH TMPDIR TMP TEMP
+
+BB=/sbin/busybox.ds
+RCTOOLS=/sbin/rctools
+TINYMIX=/sbin/tinymix
+TINYPLAY=/sbin/tinyplay
+TINYCAP=/sbin/tinycap
+PCMINFO=/sbin/tinypcminfo
+TINYBEEP=/sbin/tinybeep
+ADSP_BOOT=/sys/kernel/boot_adsp/boot
+FW_PATH=/sys/module/firmware_class/parameters/path
+SPEAKER_ROUTE='QUIN_MI2S_RX Audio Mixer MultiMedia1'
+CARD=0
+PCM_DEVICE=0
+WAIT_ADSP=15
+WAIT_CARD=10
+
+say() { printf '%s\n' "$*"; }
+err() { printf 'rctools-audio: %s\n' "$*" >&2; }
+
+mounted_at() {
+    target="$1"
+    "$BB" awk -v m="$target" '$2 == m { found=1 } END { exit found ? 0 : 1 }' /proc/mounts 2>/dev/null
+}
+
+adsp_dir() {
+    for d in /sys/bus/msm_subsys/devices/subsys*; do
+        [ -e "$d" ] || continue
+        fw=$("$BB" cat "$d/firmware_name" 2>/dev/null || true)
+        name=$("$BB" cat "$d/name" 2>/dev/null || true)
+        if [ "$fw" = "adsp" ] || [ "$name" = "adsp" ]; then
+            printf '%s\n' "$d"
+            return 0
+        fi
+    done
+    return 1
+}
+
+adsp_state() {
+    d=$(adsp_dir) || { printf '%s\n' unknown; return 1; }
+    "$BB" cat "$d/state" 2>/dev/null || printf '%s\n' unknown
+}
+
+ensure_modem() {
+    if ! mounted_at /mnt/modem; then
+        "$RCTOOLS" mount modem active ro || return 1
+    fi
+    [ -r /mnt/modem/image/adsp.mdt ] || {
+        err "missing /mnt/modem/image/adsp.mdt"
+        return 1
+    }
+}
+
+ensure_vendor() {
+    if ! mounted_at /mnt/vendor; then
+        "$RCTOOLS" mount active vendor ro >/dev/null 2>&1 || {
+            err "warning: vendor could not be mounted read-only"
+            return 0
+        }
+    fi
+}
+
+FW_BIND_ACTIVE=0
+FW_OLD_PATH=
+
+cleanup_fw_bind() {
+    if [ "$FW_BIND_ACTIVE" = 1 ]; then
+        "$BB" umount /lib/firmware >/dev/null 2>&1 || true
+        FW_BIND_ACTIVE=0
+    fi
+    if [ -w "$FW_PATH" ]; then
+        printf '%s\n' "$FW_OLD_PATH" > "$FW_PATH" 2>/dev/null || true
+    fi
+}
+
+boot_adsp() {
+    state=$(adsp_state 2>/dev/null || true)
+    if [ "$state" = "ONLINE" ]; then
+        say "ADSP: ONLINE"
+        return 0
+    fi
+
+    ensure_modem || return 1
+    [ -w "$ADSP_BOOT" ] || {
+        err "ADSP loader is unavailable: $ADSP_BOOT"
+        return 1
+    }
+    [ -w "$FW_PATH" ] || {
+        err "firmware_class.path is not writable"
+        return 1
+    }
+
+    "$BB" mkdir -p /lib/firmware
+
+    if mounted_at /lib/firmware; then
+        fw_src=$("$BB" awk '$2 == "/lib/firmware" { print $1; exit }' /proc/mounts)
+        modem_src=$("$BB" awk '$2 == "/mnt/modem" { print $1; exit }' /proc/mounts)
+        fw_real=$("$BB" readlink -f "$fw_src" 2>/dev/null || printf '%s' "$fw_src")
+        modem_real=$("$BB" readlink -f "$modem_src" 2>/dev/null || printf '%s' "$modem_src")
+        if [ -n "$fw_real" ] && [ "$fw_real" = "$modem_real" ]; then
+            "$BB" umount /lib/firmware || return 1
+        else
+            err "/lib/firmware already has an unrelated mount: $fw_src"
+            return 1
+        fi
+    fi
+
+    FW_OLD_PATH=$("$BB" cat "$FW_PATH" 2>/dev/null || true)
+    "$BB" mount -o bind /mnt/modem/image /lib/firmware || {
+        err "could not bind modem firmware at /lib/firmware"
+        return 1
+    }
+    FW_BIND_ACTIVE=1
+    printf '%s\n' /lib/firmware > "$FW_PATH" || {
+        cleanup_fw_bind
+        return 1
+    }
+
+    say "ADSP: loading from active modem image"
+    printf '%s\n' 1 > "$ADSP_BOOT" || {
+        cleanup_fw_bind
+        return 1
+    }
+
+    i=0
+    while [ "$i" -lt "$WAIT_ADSP" ]; do
+        state=$(adsp_state 2>/dev/null || true)
+        [ "$state" = "ONLINE" ] && break
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+
+    # The ADSP firmware is resident after boot. Remove the temporary bind so
+    # /lib/firmware/wlan/prima from the internal initramfs is visible again.
+    cleanup_fw_bind
+
+    state=$(adsp_state 2>/dev/null || true)
+    if [ "$state" != "ONLINE" ]; then
+        err "ADSP did not reach ONLINE (state=${state:-unknown})"
+        return 1
+    fi
+    say "ADSP: ONLINE"
+}
+
+wait_card() {
+    i=0
+    while [ "$i" -lt "$WAIT_CARD" ]; do
+        if "$BB" grep -q 'msm8953_snd_card-tas2560' /proc/asound/cards 2>/dev/null; then
+            return 0
+        fi
+        "$BB" sleep 1
+        i=$((i + 1))
+    done
+    err "msm8953_snd_card-tas2560 did not register"
+    return 1
+}
+
+route_speaker() {
+    [ -x "$TINYMIX" ] || { err "missing TinyALSA mixer: $TINYMIX"; return 1; }
+    "$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 1 || {
+        err "could not enable speaker route: $SPEAKER_ROUTE"
+        return 1
+    }
+    say "speaker route:"
+    "$TINYMIX" -D "$CARD" get "$SPEAKER_ROUTE"
+}
+
+cmd_prepare() {
+    boot_adsp || return 1
+    ensure_vendor
+    wait_card || return 1
+
+    [ -c /dev/snd/controlC0 ] || {
+        err "/dev/snd/controlC0 is missing"
+        return 1
+    }
+    [ -c /dev/snd/pcmC0D0p ] || {
+        err "/dev/snd/pcmC0D0p is missing"
+        return 1
+    }
+
+    route_speaker || return 1
+
+    if [ -r /mnt/vendor/lib/rfsa/adsp/capi_v2_smartAmp_TAS25xx.so.1 ]; then
+        say "TAS25xx SmartAmp payload: present"
+    else
+        say "TAS25xx SmartAmp payload: not visible under /mnt/vendor"
+    fi
+    say "audio prepare: ready"
+}
+
+cmd_status() {
+    say "--- ADSP ---"
+    d=$(adsp_dir 2>/dev/null || true)
+    [ -n "$d" ] && {
+        printf 'subsystem: %s\n' "$d"
+        printf 'state:     %s\n' "$(adsp_state 2>/dev/null || true)"
+    } || say "subsystem: not found"
+
+    say "--- ALSA ---"
+    "$BB" cat /proc/asound/cards 2>/dev/null || true
+    say "--- PCM ---"
+    "$BB" cat /proc/asound/pcm 2>/dev/null || true
+    say "--- speaker route ---"
+    if [ -x "$TINYMIX" ] && [ -c /dev/snd/controlC0 ]; then
+        "$TINYMIX" -D "$CARD" get "$SPEAKER_ROUTE" 2>/dev/null || true
+    else
+        say "not available"
+    fi
+    say "--- firmware ---"
+    printf 'firmware_class.path: %s\n' "$("$BB" cat "$FW_PATH" 2>/dev/null || true)"
+    "$BB" awk '$2 == "/mnt/modem" || $2 == "/lib/firmware" || $2 == "/mnt/vendor" { print }' /proc/mounts 2>/dev/null
+}
+
+cmd_mixer() {
+    [ -x "$TINYMIX" ] || { err "missing $TINYMIX"; return 1; }
+    if [ "$#" -eq 0 ]; then
+        exec "$TINYMIX" -D "$CARD" contents
+    fi
+    exec "$TINYMIX" -D "$CARD" "$@"
+}
+
+cmd_pcm() {
+    [ -x "$PCMINFO" ] || { err "missing $PCMINFO"; return 1; }
+    exec "$PCMINFO" -D "$CARD" -d "$PCM_DEVICE"
+}
+
+cmd_test() {
+    cmd_prepare || return 1
+    [ -x "$TINYBEEP" ] || { err "missing $TINYBEEP"; return 1; }
+    say "Playing low-level 1 kHz test tone for 250 ms..."
+    "$TINYBEEP" -D "$CARD" -d "$PCM_DEVICE"
+}
+
+cmd_stop() {
+    if [ -x "$TINYMIX" ] && [ -c /dev/snd/controlC0 ]; then
+        "$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 >/dev/null 2>&1 || true
+    fi
+    say "speaker route disabled; ADSP left online"
+}
+
+help_audio() {
+    printf '%s\n' \
+        'RCTools audio - Channel recovery ALSA/TAS2560 backend' \
+        '' \
+        '  rctools audio prepare' \
+        '  rctools audio status' \
+        '  rctools audio mixer [get|set|controls|contents] ...' \
+        '  rctools audio pcm' \
+        '  rctools audio test' \
+        '  rctools audio stop'
+}
+
+[ -x "$BB" ] || { err "missing BusyBox backend: $BB"; exit 1; }
+[ -x "$RCTOOLS" ] || { err "missing RCTools frontend: $RCTOOLS"; exit 1; }
+
+cmd="${1:-help}"
+[ "$#" -gt 0 ] && shift || true
+
+case "$cmd" in
+    prepare) cmd_prepare ;;
+    status) cmd_status ;;
+    mixer) cmd_mixer "$@" ;;
+    pcm) cmd_pcm ;;
+    test) cmd_test ;;
+    stop) cmd_stop ;;
+    help|h|-h|--help) help_audio ;;
+    *) err "unknown audio command: $cmd"; help_audio; exit 2 ;;
+esac

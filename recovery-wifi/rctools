@@ -12,6 +12,7 @@ BB=/sbin/busybox.ds
 NET=/sbin/rctools-net
 DSCHECK=/sbin/ds-recovery-check
 TIMESYNC=/sbin/recovery-time-sync
+AUDIO=/sbin/rctools-audio
 BYNAME=/dev/block/bootdevice/by-name
 MOUNT_TIMEOUT=${RCTOOLS_MOUNT_TIMEOUT:-8}
 
@@ -340,6 +341,14 @@ help_main() {
         '  rctools hotspot clients' \
         '  rctools hotspot stop' \
         '' \
+        'Audio:' \
+        '  rctools audio prepare' \
+        '  rctools audio status' \
+        '  rctools audio mixer [get|set|controls|contents] ...' \
+        '  rctools audio pcm' \
+        '  rctools audio test' \
+        '  rctools audio stop' \
+        '' \
         'DroidSpaces / time:' \
         '  rctools droidspaces check' \
         '  rctools time status' \
@@ -429,6 +438,10 @@ case "$cmd" in
     hotspot)
         [ -x "$NET" ] || { err "network backend missing: $NET"; exit 1; }
         exec "$NET" hotspot "$@"
+        ;;
+    audio)
+        [ -x "$AUDIO" ] || { err "audio backend missing: $AUDIO"; exit 1; }
+        exec "$AUDIO" "$@"
         ;;
     droidspaces|ds)
         sub="${1:-check}"

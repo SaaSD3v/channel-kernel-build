@@ -35,6 +35,7 @@ BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
 IPTABLES_COMMIT=c16bdec15137b241586310d0e61bc88cc3726004 # iptables 1.6.2 legacy
 LIBNL_TAG=libnl3_2_25
 IW_COMMIT=8934cc42695817d63b00507c20eaefa98174e0a9 # iw v5.9
+TINYALSA_COMMIT=1c5fb68ced57d838f2b7ecd0c00bc1fefc9ab60d # tinyalsa v2.0.0
 
 rm -rf "$OUT" "$SRC" "$PREFIX"
 mkdir -p "$OUT" "$SRC" "$PREFIX"
@@ -159,6 +160,49 @@ unset CFLAGS LDFLAGS PKG_CONFIG
 cp iw "$OUT/iw.ds"
 popd >/dev/null
 
+
+# TinyALSA recovery toolkit. Build one static multicall binary instead of four
+# separate static executables so libc and libtinyalsa are stored only once.
+git init "$SRC/tinyalsa"
+git -C "$SRC/tinyalsa" remote add origin https://github.com/tinyalsa/tinyalsa.git
+git -C "$SRC/tinyalsa" fetch --depth=1 origin "$TINYALSA_COMMIT"
+git -C "$SRC/tinyalsa" checkout --detach FETCH_HEAD
+test "$(git -C "$SRC/tinyalsa" rev-parse HEAD)" = "$TINYALSA_COMMIT"
+
+make -C "$SRC/tinyalsa/src" clean || true
+make -C "$SRC/tinyalsa/src" -j"$(nproc)" \
+  CROSS_COMPILE="$CROSS" \
+  CFLAGS='-Os -ffunction-sections -fdata-sections' \
+  libtinyalsa.a
+
+TINYOBJ="$SRC/tinyalsa/recovery-obj"
+rm -rf "$TINYOBJ"
+mkdir -p "$TINYOBJ"
+
+for tool in tinyplay tinycap tinymix tinypcminfo; do
+  "$CC" -Os -ffunction-sections -fdata-sections \
+    -I"$SRC/tinyalsa/include" \
+    -Dmain="${tool}_main" \
+    -c "$SRC/tinyalsa/utils/${tool}.c" \
+    -o "$TINYOBJ/${tool}.o"
+done
+
+"$CC" -Os -ffunction-sections -fdata-sections \
+  -I"$SRC/tinyalsa/include" \
+  -c "$ROOT/recovery-wifi/tinybeep.c" \
+  -o "$TINYOBJ/tinybeep.o"
+
+"$CC" -Os -ffunction-sections -fdata-sections \
+  -c "$ROOT/recovery-wifi/tinyalsa-multicall.c" \
+  -o "$TINYOBJ/tinyalsa-multicall.o"
+
+"$CC" -static -no-pie -Wl,--gc-sections \
+  "$TINYOBJ/tinyalsa-multicall.o" \
+  "$TINYOBJ/tinyplay.o" "$TINYOBJ/tinycap.o" \
+  "$TINYOBJ/tinymix.o" "$TINYOBJ/tinypcminfo.o" "$TINYOBJ/tinybeep.o" \
+  "$SRC/tinyalsa/src/libtinyalsa.a" -ldl \
+  -o "$OUT/tinyalsa.ds"
+
 # BusyBox supplies DHCP/network tooling without depending on TWRP Bionic.
 git init "$SRC/busybox"
 git -C "$SRC/busybox" remote add origin https://github.com/mirror/busybox.git
@@ -256,11 +300,11 @@ cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
 chmod 0755 \
   "$OUT/rctools-net" "$OUT/wifi-udhcpc.script" "$OUT/recovery-time-sync" \
   "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"
+  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery" "$OUT/tinyalsa.ds"
 chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
 
 for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"; do
+         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery" "$OUT/tinyalsa.ds"; do
   "$STRIP" --strip-all "$f"
   file "$f"
   file "$f" | grep -q 'statically linked'
