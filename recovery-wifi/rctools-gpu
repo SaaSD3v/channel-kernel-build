@@ -1,0 +1,177 @@
+#!/sbin/sh
+# RCTools GPU - headless Adreno/KGSL backend for Motorola Channel.
+
+PATH=/sbin:/system/bin:/vendor/bin
+TMPDIR=/tmp
+TMP=/tmp
+TEMP=/tmp
+export PATH TMPDIR TMP TEMP
+
+BB=/sbin/busybox.ds
+RCTOOLS=/sbin/rctools
+GPU_PROBE=/sbin/rctools-gpu-probe.so
+LIBSYNC=/sbin/libsync.so
+VENDOR=/mnt/vendor
+KGSL=/sys/class/kgsl/kgsl-3d0
+GPU_LIBPATH=/sbin:/system/lib64:/mnt/vendor/lib64:/mnt/vendor/lib64/egl:/mnt/vendor/lib64/hw
+
+say() { printf '%s\n' "$*"; }
+err() { printf 'rctools gpu: %s\n' "$*" >&2; }
+
+mounted_vendor() {
+    "$BB" awk '$2 == "/mnt/vendor" { found=1 } END { exit found ? 0 : 1 }' /proc/mounts 2>/dev/null
+}
+
+ensure_vendor() {
+    if mounted_vendor; then
+        return 0
+    fi
+
+    "$RCTOOLS" mount active vendor ro >/dev/null || {
+        err "could not mount active vendor read-only"
+        return 1
+    }
+}
+
+required_file() {
+    [ -r "$1" ] || {
+        err "missing required file: $1"
+        return 1
+    }
+}
+
+prepare_gpu() {
+    [ "$(id -u 2>/dev/null)" = "0" ] || {
+        err "run from a root recovery shell"
+        return 1
+    }
+
+    [ -c /dev/kgsl-3d0 ] || {
+        err "/dev/kgsl-3d0 is missing"
+        return 1
+    }
+    [ -c /dev/ion ] || {
+        err "/dev/ion is missing"
+        return 1
+    }
+
+    required_file "$LIBSYNC" || return 1
+    required_file "$GPU_PROBE" || return 1
+    required_file /system/bin/linker64 || return 1
+    required_file /system/bin/sh || return 1
+
+    ensure_vendor || return 1
+
+    for f in         "$VENDOR/lib64/libgsl.so"         "$VENDOR/lib64/libadreno_utils.so"         "$VENDOR/lib64/libllvm-glnext.so"         "$VENDOR/lib64/egl/libEGL_adreno.so"         "$VENDOR/lib64/egl/libGLESv2_adreno.so"         "$VENDOR/lib64/egl/eglSubDriverAndroid.so"         "$VENDOR/firmware/a530_pm4.fw"         "$VENDOR/firmware/a530_pfp.fw"
+    do
+        required_file "$f" || return 1
+    done
+
+    return 0
+}
+
+show_status() {
+    say '--- Channel headless GPU ---'
+    if [ -c /dev/kgsl-3d0 ]; then
+        "$BB" ls -l /dev/kgsl-3d0 2>/dev/null
+    else
+        say '/dev/kgsl-3d0: missing'
+    fi
+    if [ -c /dev/ion ]; then
+        "$BB" ls -l /dev/ion 2>/dev/null
+    else
+        say '/dev/ion: missing'
+    fi
+
+    if [ -d "$KGSL" ]; then
+        for f in gpu_model gpuclk max_gpuclk max_pwrlevel min_pwrlevel default_pwrlevel num_pwrlevels; do
+            [ -r "$KGSL/$f" ] && printf '%s=%s\n' "$f" "$(cat "$KGSL/$f" 2>/dev/null)"
+        done
+    else
+        say 'KGSL sysfs: missing'
+    fi
+
+    if mounted_vendor; then
+        say 'vendor: mounted at /mnt/vendor'
+    else
+        say 'vendor: not mounted'
+    fi
+
+    [ -r "$LIBSYNC" ] && say 'libsync: embedded' || say 'libsync: missing'
+    [ -r "$GPU_PROBE" ] && say 'egl probe: embedded' || say 'egl probe: missing'
+}
+
+show_libs() {
+    ensure_vendor || return 1
+    for f in         "$VENDOR/lib64/libgsl.so"         "$VENDOR/lib64/libadreno_utils.so"         "$VENDOR/lib64/libllvm-glnext.so"         "$VENDOR/lib64/libOpenCL.so"         "$VENDOR/lib64/libC2D2.so"         "$VENDOR/lib64/hw/vulkan.msm8953.so"         "$VENDOR/lib64/egl/libEGL_adreno.so"         "$VENDOR/lib64/egl/libGLESv2_adreno.so"         "$VENDOR/lib64/egl/eglSubDriverAndroid.so"
+    do
+        if [ -r "$f" ]; then
+            "$BB" ls -l "$f"
+        else
+            say "missing: $f"
+        fi
+    done
+}
+
+show_firmware() {
+    ensure_vendor || return 1
+    say "firmware_class.path=$(cat /sys/module/firmware_class/parameters/path 2>/dev/null)"
+    for f in a530_pm4.fw a530_pfp.fw; do
+        if [ -r "$VENDOR/firmware/$f" ]; then
+            "$BB" ls -l "$VENDOR/firmware/$f"
+        else
+            say "missing: $VENDOR/firmware/$f"
+        fi
+    done
+}
+
+load_test() {
+    prepare_gpu || return 1
+    say 'stage=linker loading libgsl'
+    LD_LIBRARY_PATH="$GPU_LIBPATH"     LD_PRELOAD="$VENDOR/lib64/libgsl.so"         /system/bin/sh -c ':'
+    rc=$?
+    [ "$rc" -eq 0 ] && say 'PASS GPU_LINKER_OK'
+    return "$rc"
+}
+
+run_probe() {
+    prepare_gpu || return 1
+
+    say 'stage=headless EGL/GLES2 probe'
+    LD_LIBRARY_PATH="$GPU_LIBPATH"     LD_PRELOAD="$GPU_PROBE"         /system/bin/sh -c ':'
+}
+
+show_logs() {
+    dmesg | "$BB" grep -iE         'kgsl|adreno|a506|a530|gpu|iommu|firmware|zap|egl|gsl|fault|error'         | "$BB" tail -n 250
+}
+
+help_gpu() {
+    printf '%s\n'         'RCTools GPU - headless Qualcomm Adreno backend'         ''         '  rctools gpu status      # KGSL/ION/model/clocks and payload state'         '  rctools gpu prepare     # mount active vendor RO and validate stack'         '  rctools gpu load        # prove libgsl + embedded libsync can link'         '  rctools gpu probe       # EGL pbuffer + GLES2 render/readback test'         '  rctools gpu libs        # show Qualcomm userspace components'         '  rctools gpu firmware    # show Adreno firmware/path state'         '  rctools gpu logs        # recent KGSL/Adreno/IOMMU diagnostics'
+}
+
+[ -x "$BB" ] || { err "missing BusyBox backend: $BB"; exit 1; }
+
+cmd="${1:-status}"
+[ "$#" -gt 0 ] && shift || true
+
+case "$cmd" in
+    status) show_status ;;
+    prepare)
+        prepare_gpu && {
+            say 'GPU headless runtime ready'
+            say "LD_LIBRARY_PATH=$GPU_LIBPATH"
+        }
+        ;;
+    load|linker) load_test ;;
+    probe|test) run_probe ;;
+    libs) show_libs ;;
+    firmware|fw) show_firmware ;;
+    logs|log) show_logs ;;
+    help|h|-h|--help) help_gpu ;;
+    *)
+        err "unknown GPU command: $cmd"
+        echo
+        help_gpu
+        exit 2
+        ;;
+esac
