@@ -1,12 +1,12 @@
-name: Build Channel RCTools CLI Minimal
+name: Build Channel Remote Access
 
-run-name: Channel RCTools CLI Minimal • DroidSpaces + Wi-Fi
+run-name: Channel Remote Access • SSH + SFTP
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - twrp-cli-minimal
+      - channel-remote-access
 
 permissions:
   contents: read
@@ -17,11 +17,11 @@ env:
   TWRP_KERNEL_REF: 0fba78718c25ef55a211dd7608cb255a226dd8bf
   TWRP_BASE_URL: https://dl.twrp.me/channel/twrp-3.5.2_10-0-channel.img
   TWRP_BASE_SHA256: 486c3e11250c1233112372129c796b55e0cd5d0f4ac605906d90b0f9b574056c
-  OUTPUT_IMG: channel-rctools-cli-minimal.img
+  OUTPUT_IMG: channel-rctools-remote-access.img
 
 jobs:
   build:
-    name: Channel RCTools minimal recovery
+    name: Channel RCTools remote access recovery
     runs-on: ubuntu-22.04
 
     steps:
@@ -35,6 +35,14 @@ jobs:
           set -euo pipefail
           /bin/sh -n recovery-wifi/rctools-net
           /bin/sh -n recovery-wifi/rctools
+          /bin/sh -n recovery-wifi/rctools-remote
+          /bin/sh -n recovery-wifi/rctools-remote-dispatch
+          /bin/sh -n recovery-wifi/rctools-sftp-gate
+          grep -Fq 'REMOTE=/sbin/rctools-remote' recovery-wifi/rctools
+          grep -Fq 'rctools remote start-hotspot' recovery-wifi/rctools
+          grep -Fq 'rctools remote auth twofactor PASSWORD' recovery-wifi/rctools
+          grep -Fq 'DROPBEAR_SFTPSERVER 1' recovery-wifi/dropbear-localoptions.h
+          grep -Fq 'SFTPSERVER_PATH "/sbin/rctools-sftp-gate"' recovery-wifi/dropbear-localoptions.h
           bash -n recovery-wifi/build-userspace.sh
           python3 -m py_compile scripts/disable-twrp-service.py
           grep -Fq 'rctools mount a system|vendor|oem|all' recovery-wifi/rctools
@@ -278,10 +286,22 @@ jobs:
           sh -n recovery-wifi/wifi-udhcpc.script
           sh -n recovery-wifi/recovery-time-sync
           sh -n recovery-wifi/ds-recovery-check
+          sh -n recovery-wifi/rctools-remote
+          sh -n recovery-wifi/rctools-remote-dispatch
+          sh -n recovery-wifi/rctools-sftp-gate
           chmod +x recovery-wifi/build-userspace.sh
           DEVICE="$DEVICE" recovery-wifi/build-userspace.sh
 
           test -x recovery-wifi/out/iptables.ds
+          test -x recovery-wifi/out/dropbear.ds
+          test -x recovery-wifi/out/sftp-server.ds
+          file recovery-wifi/out/dropbear.ds | tee dropbear-file.txt
+          file recovery-wifi/out/sftp-server.ds | tee sftp-server-file.txt
+          grep -q 'ARM aarch64' dropbear-file.txt
+          grep -q 'statically linked' dropbear-file.txt
+          grep -q 'ARM aarch64' sftp-server-file.txt
+          grep -q 'statically linked' sftp-server-file.txt
+          aarch64-linux-gnu-strings recovery-wifi/out/dropbear.ds | grep -Fq '/sbin/rctools-sftp-gate'
           file recovery-wifi/out/iptables.ds | tee iptables-file.txt
           grep -q 'ARM aarch64' iptables-file.txt
           grep -q 'statically linked' iptables-file.txt
@@ -330,7 +350,7 @@ jobs:
           "$QEMU" recovery-wifi/out/busybox.ds --list > busybox-applets.txt
           for applet in awk cat chmod chown cp grep ifconfig ip mkdir mount mv ping \
                         readlink rm sed sha256sum sleep sync tail tee udhcpc udhcpd umount \
-                        date ntpd timeout nslookup; do
+                        date ntpd timeout nslookup mkpasswd cryptpw dd; do
             grep -qx "$applet" busybox-applets.txt || {
               echo "BusyBox recovery binary is missing required applet: $applet"
               exit 1
@@ -346,6 +366,11 @@ jobs:
           mkdir -p "$ROOT/sbin" "$ROOT/lib/firmware/wlan/prima"
 
           install -m 0755 recovery-wifi/out/rctools-net "$ROOT/sbin/rctools-net"
+          install -m 0755 recovery-wifi/out/rctools-remote "$ROOT/sbin/rctools-remote"
+          install -m 0755 recovery-wifi/out/rctools-remote-dispatch "$ROOT/sbin/rctools-remote-dispatch"
+          install -m 0755 recovery-wifi/out/rctools-sftp-gate "$ROOT/sbin/rctools-sftp-gate"
+          install -m 0755 recovery-wifi/out/dropbear.ds "$ROOT/sbin/dropbear.ds"
+          install -m 0755 recovery-wifi/out/sftp-server.ds "$ROOT/sbin/sftp-server.ds"
           test ! -e "$ROOT/sbin/wifi"
           install -m 0755 recovery-wifi/rctools "$ROOT/sbin/rctools"
           install -m 0755 recovery-wifi/out/busybox.ds "$ROOT/sbin/busybox.ds"
@@ -711,7 +736,8 @@ jobs:
             exit 1
           fi
           for path in \
-            sbin/rctools sbin/rctools-net sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
+            sbin/rctools sbin/rctools-net sbin/rctools-remote sbin/rctools-remote-dispatch sbin/rctools-sftp-gate \
+            sbin/dropbear.ds sbin/sftp-server.ds sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
             sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery sbin/recovery-time-sync \
             sbin/ds-recovery-check lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
@@ -934,7 +960,8 @@ jobs:
             echo "- Recovery Wi-Fi payload: embedded in the kernel internal initramfs"
             echo "- External TeamWin ramdisk: patched only to remove the TWRP recovery service"
             echo "- /system/bin/recovery: retained for manual compatibility"
-            echo "- RCTools: /sbin/rctools with direct A/B mounts, Wi-Fi, hotspot, DroidSpaces and time tools"
+            echo "- RCTools: /sbin/rctools with A/B mounts, Wi-Fi, hotspot, SSH/SFTP remote access, DroidSpaces and time tools"
+            echo "- Remote access: static Dropbear server + static OpenSSH sftp-server, root filesystem exposed from /"
             echo
             echo "SHA-256:"
             cat twrp-droidspaces.sha256
@@ -943,7 +970,7 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: channel-rctools-cli-minimal
+          name: channel-rctools-remote-access
           path: |
             ${{ env.OUTPUT_IMG }}
             build/arch/arm64/boot/Image.gz-dtb
@@ -962,6 +989,10 @@ jobs:
             recovery-wifi/out/SHA256SUMS
             recovery-wifi/rctools
             recovery-wifi/rctools-net
+            recovery-wifi/rctools-remote
+            recovery-wifi/rctools-remote-dispatch
+            recovery-wifi/rctools-sftp-gate
+            recovery-wifi/dropbear-localoptions.h
             scripts/disable-twrp-service.py
             recovery-wifi/hostapd.config
             recovery-wifi/wifi-udhcpc.script
