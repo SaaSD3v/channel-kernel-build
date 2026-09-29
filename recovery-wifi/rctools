@@ -10,6 +10,7 @@ export PATH TMPDIR TMP TEMP
 
 BB=/sbin/busybox.ds
 NET=/sbin/rctools-net
+REMOTE=/sbin/rctools-remote
 DSCHECK=/sbin/ds-recovery-check
 TIMESYNC=/sbin/recovery-time-sync
 BYNAME=/dev/block/bootdevice/by-name
@@ -340,6 +341,18 @@ help_main() {
         '  rctools hotspot clients' \
         '  rctools hotspot stop' \
         '' \
+        'Remote access:' \
+        '  rctools remote                              # interactive menu' \
+        '  rctools remote start|stop|status|info' \
+        '  rctools remote start-hotspot' \
+        '  rctools remote service ssh|sftp|both' \
+        '  rctools remote auth temporary|key|open' \
+        '  rctools remote auth password PASSWORD' \
+        '  rctools remote auth twofactor PASSWORD' \
+        '  rctools remote key add FILE' \
+        '  rctools ssh start|stop|status|info' \
+        '  rctools sftp start|stop|status|info' \
+        '' \
         'DroidSpaces / time:' \
         '  rctools droidspaces check' \
         '  rctools time status' \
@@ -429,6 +442,30 @@ case "$cmd" in
     hotspot)
         [ -x "$NET" ] || { err "network backend missing: $NET"; exit 1; }
         exec "$NET" hotspot "$@"
+        ;;
+    remote)
+        [ -x "$REMOTE" ] || { err "remote backend missing: $REMOTE"; exit 1; }
+        exec "$REMOTE" "$@"
+        ;;
+    ssh)
+        [ -x "$REMOTE" ] || { err "remote backend missing: $REMOTE"; exit 1; }
+        sub="${1:-status}"
+        [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            start) "$REMOTE" service ssh >/dev/null || exit $?; exec "$REMOTE" start ;;
+            stop|status|info|connection|connection-info) exec "$REMOTE" "$sub" "$@" ;;
+            *) err "usage: rctools ssh {start|stop|status|info}"; exit 2 ;;
+        esac
+        ;;
+    sftp)
+        [ -x "$REMOTE" ] || { err "remote backend missing: $REMOTE"; exit 1; }
+        sub="${1:-status}"
+        [ "$#" -gt 0 ] && shift || true
+        case "$sub" in
+            start) "$REMOTE" service sftp >/dev/null || exit $?; exec "$REMOTE" start ;;
+            stop|status|info|connection|connection-info) exec "$REMOTE" "$sub" "$@" ;;
+            *) err "usage: rctools sftp {start|stop|status|info}"; exit 2 ;;
+        esac
         ;;
     droidspaces|ds)
         sub="${1:-check}"
