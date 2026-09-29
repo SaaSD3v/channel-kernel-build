@@ -92,11 +92,13 @@ service_cmd(){
   *) err "usage: rctools remote service {ssh|sftp|both}"; return 2;; esac
 }
 port_cmd(){
+  running && { err "stop remote access before changing the port"; return 1; }
   case "$1" in ''|*[!0-9]*) err "port must be 1..65535"; return 2;; esac
   [ "$1" -ge 1 ] && [ "$1" -le 65535 ] || return 2
   echo "$1" >"$PORT"; say "port: $1"
 }
 auth_cmd(){
+  running && { err "stop remote access before changing authentication"; return 1; }
   mode="${1:-}"; [ "$#" -gt 0 ] && shift || true
   case "$mode" in
     temporary)
