@@ -1,6 +1,6 @@
 name: Build Channel Remote Access
 
-run-name: Channel Remote Access • SSH + SFTP
+run-name: Channel Remote Access • SSH + SFTP + MTP
 
 on:
   workflow_dispatch:
@@ -21,7 +21,7 @@ env:
 
 jobs:
   build:
-    name: Channel RCTools remote access recovery
+    name: Channel RCTools remote access + MTP recovery
     runs-on: ubuntu-22.04
 
     steps:
@@ -38,7 +38,11 @@ jobs:
           /bin/sh -n recovery-wifi/rctools-remote
           /bin/sh -n recovery-wifi/rctools-remote-dispatch
           /bin/sh -n recovery-wifi/rctools-sftp-gate
+          /bin/sh -n recovery-wifi/rctools-mtp
+          bash -n scripts/build-mtp-launcher.sh
           grep -Fq 'REMOTE=/sbin/rctools-remote' recovery-wifi/rctools
+          grep -Fq 'MTP=/sbin/rctools-mtp' recovery-wifi/rctools
+          grep -Fq 'rctools mtp start|stop|status' recovery-wifi/rctools
           grep -Fq 'rctools remote start-hotspot' recovery-wifi/rctools
           grep -Fq 'rctools remote auth twofactor PASSWORD' recovery-wifi/rctools
           grep -Fq 'DROPBEAR_SFTPSERVER 1' recovery-wifi/dropbear-localoptions.h
@@ -231,6 +235,9 @@ jobs:
           grep -qx 'CONFIG_RD_LZO=y' official-twrp.config
           grep -qx 'CONFIG_CMA_AREAS=7' official-twrp.config
           grep -qx 'CONFIG_USB_ANDROID_USBNET=y' official-twrp.config
+          grep -qx 'CONFIG_USB_F_MTP=y' official-twrp.config
+          grep -qx 'CONFIG_USB_CONFIGFS=y' official-twrp.config
+          grep -qx 'CONFIG_USB_CONFIGFS_F_MTP=y' official-twrp.config
 
       - name: Apply DroidSpaces cgroup noprefix fix
         run: |
@@ -289,8 +296,17 @@ jobs:
           sh -n recovery-wifi/rctools-remote
           sh -n recovery-wifi/rctools-remote-dispatch
           sh -n recovery-wifi/rctools-sftp-gate
+          sh -n recovery-wifi/rctools-mtp
           chmod +x recovery-wifi/build-userspace.sh
           DEVICE="$DEVICE" recovery-wifi/build-userspace.sh
+
+          chmod +x scripts/build-mtp-launcher.sh
+          scripts/build-mtp-launcher.sh twrp-base.img recovery-wifi/out/rctools-mtpd
+          test -x recovery-wifi/out/rctools-mtpd
+          file recovery-wifi/out/rctools-mtpd | tee rctools-mtpd-file.txt
+          grep -q 'ARM aarch64' rctools-mtpd-file.txt
+          readelf -d recovery-wifi/out/rctools-mtpd | grep -Fq 'Shared library: [libtwrpmtp-ffs.so]'
+          sha256sum recovery-wifi/out/rctools-mtpd >> recovery-wifi/out/SHA256SUMS
 
           test -x recovery-wifi/out/iptables.ds
           test -x recovery-wifi/out/dropbear.ds
@@ -371,6 +387,8 @@ jobs:
           install -m 0755 recovery-wifi/out/rctools-sftp-gate "$ROOT/sbin/rctools-sftp-gate"
           install -m 0755 recovery-wifi/out/dropbear.ds "$ROOT/sbin/dropbear.ds"
           install -m 0755 recovery-wifi/out/sftp-server.ds "$ROOT/sbin/sftp-server.ds"
+          install -m 0755 recovery-wifi/rctools-mtp "$ROOT/sbin/rctools-mtp"
+          install -m 0755 recovery-wifi/out/rctools-mtpd "$ROOT/sbin/rctools-mtpd"
           test ! -e "$ROOT/sbin/wifi"
           install -m 0755 recovery-wifi/rctools "$ROOT/sbin/rctools"
           install -m 0755 recovery-wifi/out/busybox.ds "$ROOT/sbin/busybox.ds"
@@ -737,7 +755,8 @@ jobs:
           fi
           for path in \
             sbin/rctools sbin/rctools-net sbin/rctools-remote sbin/rctools-remote-dispatch sbin/rctools-sftp-gate \
-            sbin/dropbear.ds sbin/sftp-server.ds sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
+            sbin/dropbear.ds sbin/sftp-server.ds sbin/rctools-mtp sbin/rctools-mtpd \
+            sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
             sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery sbin/recovery-time-sync \
             sbin/ds-recovery-check lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
@@ -962,6 +981,7 @@ jobs:
             echo "- /system/bin/recovery: retained for manual compatibility"
             echo "- RCTools: /sbin/rctools with A/B mounts, Wi-Fi, hotspot, SSH/SFTP remote access, DroidSpaces and time tools"
             echo "- Remote access: static Dropbear server + static OpenSSH sftp-server, root filesystem exposed from /"
+            echo "- USB MTP: isolated RCTools controller using official TWRP libtwrpmtp-ffs; default storage /"
             echo
             echo "SHA-256:"
             cat twrp-droidspaces.sha256
@@ -992,7 +1012,11 @@ jobs:
             recovery-wifi/rctools-remote
             recovery-wifi/rctools-remote-dispatch
             recovery-wifi/rctools-sftp-gate
+            recovery-wifi/rctools-mtp
+            recovery-wifi/rctools-mtpd.cpp
+            recovery-wifi/out/rctools-mtpd
             recovery-wifi/dropbear-localoptions.h
+            scripts/build-mtp-launcher.sh
             scripts/disable-twrp-service.py
             recovery-wifi/hostapd.config
             recovery-wifi/wifi-udhcpc.script
@@ -1032,6 +1056,9 @@ jobs:
             "recovery-wifi/out/SHA256SUMS"
             "recovery-wifi/rctools"
             "recovery-wifi/rctools-net"
+            "recovery-wifi/rctools-mtp"
+            "recovery-wifi/out/rctools-mtpd"
+            "scripts/build-mtp-launcher.sh"
             "scripts/disable-twrp-service.py"
             "recovery-wifi/hostapd.config"
             "recovery-wifi/wifi-udhcpc.script"
