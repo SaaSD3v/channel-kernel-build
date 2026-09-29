@@ -1,0 +1,217 @@
+#!/sbin/sh
+PATH=/sbin:/system/bin:/vendor/bin
+export PATH
+BB=/sbin/busybox.ds
+DROPBEAR=/sbin/dropbear.ds
+NET=/sbin/rctools-net
+STATE=/tmp/rctools-remote
+AUTHDIR=$STATE/auth
+PIDFILE=$STATE/dropbear.pid
+SERVICE=$STATE/service
+AUTH=$STATE/auth
+PORT=$STATE/port
+HASH=$STATE/hash
+TEMP=$STATE/temp-password
+BACKUP=$STATE/etc-backup
+
+say(){ printf '%s\n' "$*"; }
+err(){ printf 'rctools remote: %s\n' "$*" >&2; }
+init(){
+  "$BB" mkdir -p "$STATE" "$AUTHDIR"
+  "$BB" chmod 0700 "$STATE" "$AUTHDIR" 2>/dev/null || true
+  [ -s "$SERVICE" ] || echo both >"$SERVICE"
+  [ -s "$AUTH" ] || echo temporary >"$AUTH"
+  [ -s "$PORT" ] || echo 2222 >"$PORT"
+}
+get(){ cat "$1" 2>/dev/null || true; }
+running(){ [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }
+
+backup_file(){
+  src="$1"; name="$2"; "$BB" mkdir -p "$BACKUP"
+  if [ -e "$src" ]; then "$BB" cp -p "$src" "$BACKUP/$name"; : >"$BACKUP/$name.present"
+  else : >"$BACKUP/$name.absent"; fi
+}
+backup_etc(){
+  [ -e "$BACKUP/.ready" ] && return 0
+  "$BB" mkdir -p /etc "$BACKUP"
+  backup_file /etc/passwd passwd || return 1
+  backup_file /etc/shadow shadow || return 1
+  backup_file /etc/group group || return 1
+  : >"$BACKUP/.ready"
+}
+restore_file(){
+  dst="$1"; name="$2"
+  if [ -e "$BACKUP/$name.present" ]; then "$BB" cp -p "$BACKUP/$name" "$dst"
+  elif [ -e "$BACKUP/$name.absent" ]; then "$BB" rm -f "$dst"; fi
+}
+restore_etc(){
+  [ -e "$BACKUP/.ready" ] || return 0
+  restore_file /etc/passwd passwd
+  restore_file /etc/shadow shadow
+  restore_file /etc/group group
+  "$BB" rm -rf "$BACKUP"
+}
+root_passwd(){
+  t="$STATE/passwd.$$"
+  if [ -f /etc/passwd ]; then
+    "$BB" awk -F: 'BEGIN{OFS=":";d=0} $1=="root"{print "root","x","0","0","root","/","/sbin/sh";d=1;next}{print} END{if(!d)print "root","x","0","0","root","/","/sbin/sh"}' /etc/passwd >"$t"
+  else echo 'root:x:0:0:root:/:/sbin/sh' >"$t"; fi
+  "$BB" mv "$t" /etc/passwd; "$BB" chmod 0644 /etc/passwd
+}
+root_group(){
+  t="$STATE/group.$$"
+  if [ -f /etc/group ]; then
+    "$BB" awk -F: 'BEGIN{OFS=":";d=0} $1=="root"{print "root","x","0","";d=1;next}{print} END{if(!d)print "root","x","0",""}' /etc/group >"$t"
+  else echo 'root:x:0:' >"$t"; fi
+  "$BB" mv "$t" /etc/group; "$BB" chmod 0644 /etc/group
+}
+root_shadow(){
+  h="$1"; t="$STATE/shadow.$$"
+  if [ -f /etc/shadow ]; then
+    "$BB" awk -F: -v h="$h" 'BEGIN{OFS=":";d=0} $1=="root"{print "root",h,"0","0","99999","7","","","";d=1;next}{print} END{if(!d)print "root",h,"0","0","99999","7","","",""}' /etc/shadow >"$t"
+  else printf 'root:%s:0:0:99999:7:::\n' "$h" >"$t"; fi
+  "$BB" mv "$t" /etc/shadow; "$BB" chmod 0600 /etc/shadow
+}
+mkhash(){ printf '%s\n' "$1" | "$BB" mkpasswd -m sha512 2>/dev/null; }
+random_pass(){ "$BB" dd if=/dev/urandom bs=1 count=32 2>/dev/null | "$BB" sha256sum | "$BB" awk '{print substr($1,1,12)}'; }
+
+prepare_account(){
+  mode="$(get "$AUTH")"
+  backup_etc || return 1
+  root_passwd || return 1; root_group || return 1
+  case "$mode" in
+    key) root_shadow '!' ;;
+    open) root_shadow '' ;;
+    password|temporary|twofactor) [ -s "$HASH" ] || { err "password is not configured"; return 1; }; root_shadow "$(cat "$HASH")" ;;
+    *) err "bad auth mode: $mode"; return 1 ;;
+  esac
+}
+
+service_cmd(){
+  case "$1" in ssh|sftp|both) echo "$1" >"$SERVICE"; say "service: $1" ;;
+  *) err "usage: rctools remote service {ssh|sftp|both}"; return 2;; esac
+}
+port_cmd(){
+  case "$1" in ''|*[!0-9]*) err "port must be 1..65535"; return 2;; esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ] || return 2
+  echo "$1" >"$PORT"; say "port: $1"
+}
+auth_cmd(){
+  mode="${1:-}"; [ "$#" -gt 0 ] && shift || true
+  case "$mode" in
+    temporary)
+      p="$(random_pass)" || return 1; h="$(mkhash "$p")" || return 1
+      echo "$h" >"$HASH"; echo "$p" >"$TEMP"; chmod 0600 "$HASH" "$TEMP"; echo temporary >"$AUTH"
+      say "authentication: temporary password"; say "password: $p"
+      ;;
+    password|twofactor)
+      [ "$#" -ge 1 ] || { err "usage: rctools remote auth $mode PASSWORD"; return 2; }
+      [ -n "$1" ] || { err "empty password: use auth open"; return 2; }
+      h="$(mkhash "$1")" || return 1; echo "$h" >"$HASH"; chmod 0600 "$HASH"; rm -f "$TEMP"; echo "$mode" >"$AUTH"
+      say "authentication: $mode"
+      ;;
+    key)
+      [ -s "$AUTHDIR/authorized_keys" ] || { err "add a public key first"; return 1; }
+      rm -f "$TEMP"; echo key >"$AUTH"; say "authentication: public key"
+      ;;
+    open|none)
+      rm -f "$HASH" "$TEMP"; echo open >"$AUTH"; say "authentication: OPEN / blank password"
+      say "warning: anyone who reaches the port can log in as root"
+      ;;
+    *) err "usage: rctools remote auth {temporary|password PASSWORD|key|twofactor PASSWORD|open}"; return 2;;
+  esac
+}
+key_cmd(){
+  sub="${1:-list}"; [ "$#" -gt 0 ] && shift || true
+  case "$sub" in
+    add)
+      [ "$#" -ge 1 ] && [ -r "$1" ] || { err "usage: rctools remote key add FILE"; return 2; }
+      kind="$("$BB" awk 'NF{print $1;exit}' "$1")"
+      case "$kind" in ssh-rsa|ssh-ed25519|ecdsa-sha2-*) ;; *) err "unsupported public key"; return 1;; esac
+      cat "$1" >>"$AUTHDIR/authorized_keys"; echo >>"$AUTHDIR/authorized_keys"; chmod 0600 "$AUTHDIR/authorized_keys"; say "key added: $kind"
+      ;;
+    add-line)
+      [ "$#" -ge 1 ] || { err "usage: rctools remote key add-line KEY"; return 2; }
+      line="$*"; case "$line" in ssh-rsa\ *|ssh-ed25519\ *|ecdsa-sha2-*\ *) ;; *) err "unsupported public key"; return 1;; esac
+      printf '%s\n' "$line" >>"$AUTHDIR/authorized_keys"; chmod 0600 "$AUTHDIR/authorized_keys"; say "key added"
+      ;;
+    list) [ -s "$AUTHDIR/authorized_keys" ] && "$BB" awk 'NF{print NR,$1,$NF}' "$AUTHDIR/authorized_keys" || say "no authorized keys" ;;
+    clear) rm -f "$AUTHDIR/authorized_keys"; say "authorized keys cleared" ;;
+    *) err "usage: rctools remote key {add FILE|add-line KEY|list|clear}"; return 2;;
+  esac
+}
+addresses(){ "$BB" ip -4 addr show 2>/dev/null | "$BB" awk '/inet /{sub(/\/.*/,"",$2);if($2 !~ /^127\./)print $2}'; }
+info(){
+  svc="$(get "$SERVICE")"; mode="$(get "$AUTH")"; port="$(get "$PORT")"
+  say "service : $svc"; say "auth    : $mode"; say "port    : $port"; say "user    : root"; say "root    : /"
+  ips="$(addresses)"; [ -n "$ips" ] || say "address : none"
+  printf '%s\n' "$ips" | while read ip; do [ -n "$ip" ] || continue; say "address : $ip"
+    case "$svc" in ssh|both) say "SSH  : ssh root@$ip -p $port";; esac
+    case "$svc" in sftp|both) say "SFTP : sftp -P $port root@$ip";; esac
+  done
+  [ "$mode" = temporary ] && [ -s "$TEMP" ] && say "temporary password: $(cat "$TEMP")"
+  [ "$mode" = open ] && say "warning : open root login"
+}
+status(){ running && say "remote access: running (pid $(cat "$PIDFILE"))" || say "remote access: stopped"; info; }
+
+start(){
+  [ -x "$DROPBEAR" ] || { err "missing $DROPBEAR"; return 1; }
+  running && { say "already running"; info; return 0; }
+  mode="$(get "$AUTH")"
+  [ "$mode" != key ] && [ "$mode" != twofactor ] || [ -s "$AUTHDIR/authorized_keys" ] || { err "authorized key required"; return 1; }
+  [ "$mode" != temporary ] || [ -s "$HASH" ] || auth_cmd temporary || return 1
+  prepare_account || { restore_etc; return 1; }
+  "$BB" mkdir -p /etc/dropbear
+  set -- -R -m -j -k -P "$PIDFILE" -p "$(get "$PORT")" -D "$AUTHDIR" -c /sbin/rctools-remote-dispatch
+  case "$mode" in key) set -- "$@" -s;; open) set -- "$@" -B;; twofactor) set -- "$@" -t;; esac
+  "$DROPBEAR" "$@" || { rc=$?; restore_etc; err "dropbear failed rc=$rc"; return "$rc"; }
+  i=0; while [ "$i" -lt 20 ]; do running && break; "$BB" sleep 0.1; i=$((i+1)); done
+  running || { restore_etc; err "dropbear did not stay running"; return 1; }
+  say "remote access started"; info
+}
+stop(){
+  if running; then pid="$(cat "$PIDFILE")"; kill "$pid" 2>/dev/null || true
+    i=0; while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 30 ]; do "$BB" sleep 0.1; i=$((i+1)); done
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PIDFILE"; restore_etc; say "remote access stopped"
+}
+start_hotspot(){ [ -x "$NET" ] || { err "network backend missing"; return 1; }; "$NET" hotspot start || return $?; start; }
+menu(){
+  while :; do
+    echo; say "========================================"; say "        RCTools - Remote Access"; say "========================================"
+    running && run=running || run=stopped
+    say " Status  : $run"; say " Service : $(get "$SERVICE")"; say " Auth    : $(get "$AUTH")"; say " Port    : $(get "$PORT")"
+    echo; say " [1] Start"; say " [2] Stop"; say " [3] SSH only"; say " [4] SFTP only"; say " [5] SSH + SFTP"
+    say " [6] Temporary password"; say " [7] Public key only"; say " [8] Open / no password"; say " [9] Connection info"
+    say " [10] Start using configured hotspot"; say " [0] Back"; printf 'Select: '; read c || return 0
+    case "$c" in 1) start;;2) stop;;3) service_cmd ssh;;4) service_cmd sftp;;5) service_cmd both;;6) auth_cmd temporary;;
+      7) auth_cmd key;;8) auth_cmd open;;9) info;;10) start_hotspot;;0) return 0;;*) err "invalid selection";; esac
+  done
+}
+help(){
+  cat <<'EOF'
+RCTools remote access
+  rctools remote                         interactive menu
+  rctools remote start|stop|status|info
+  rctools remote start-hotspot
+  rctools remote service ssh|sftp|both
+  rctools remote auth temporary
+  rctools remote auth password PASSWORD
+  rctools remote auth key
+  rctools remote auth twofactor PASSWORD
+  rctools remote auth open
+  rctools remote key add FILE
+  rctools remote key add-line KEY
+  rctools remote key list|clear
+  rctools remote port PORT
+EOF
+}
+init
+cmd="${1:-menu}"; [ "$#" -gt 0 ] && shift || true
+case "$cmd" in
+  menu) menu;; start) start;; start-hotspot|hotspot) start_hotspot;; stop) stop;; restart) stop;start;;
+  status) status;; info|connection|connection-info) info;; service) service_cmd "$@";; auth) auth_cmd "$@";;
+  key) key_cmd "$@";; port) port_cmd "${1:-}";; help|-h|--help) help;;
+  *) err "unknown remote command: $cmd"; help; exit 2;;
+esac
