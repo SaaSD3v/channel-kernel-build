@@ -66,18 +66,35 @@ restore_etc(){
   restore_file /etc/shadow shadow
   restore_file /etc/group group
   restore_file /etc/shells shells
+  if [ -e "$STATE/bin-sh-created" ]; then
+    "$BB" rm -f /bin/sh
+    "$BB" rm -f "$STATE/bin-sh-created"
+  fi
+  if [ -e "$STATE/bin-dir-created" ]; then
+    "$BB" rmdir /bin 2>/dev/null || true
+    "$BB" rm -f "$STATE/bin-dir-created"
+  fi
   "$BB" rm -rf "$BACKUP"
 }
 root_passwd(){
   cred="$1"
   t="$STATE/passwd.$"
   if [ -f /etc/passwd ]; then
-    "$BB" awk -F: -v p="$cred" 'BEGIN{OFS=":";d=0} $1=="root"{print "root",p,"0","0","root","/","/sbin/sh";d=1;next}{print} END{if(!d)print "root",p,"0","0","root","/","/sbin/sh"}' /etc/passwd >"$t"
-  else printf 'root:%s:0:0:root:/:/sbin/sh\n' "$cred" >"$t"; fi
+    "$BB" awk -F: -v p="$cred" 'BEGIN{OFS=":";d=0} $1=="root"{print "root",p,"0","0","root","/","/bin/sh";d=1;next}{print} END{if(!d)print "root",p,"0","0","root","/","/bin/sh"}' /etc/passwd >"$t"
+  else printf 'root:%s:0:0:root:/:/bin/sh\n' "$cred" >"$t"; fi
   "$BB" mv "$t" /etc/passwd; "$BB" chmod 0644 /etc/passwd
 }
 ensure_shells(){
+  if [ ! -d /bin ]; then
+    "$BB" mkdir -p /bin || return 1
+    : >"$STATE/bin-dir-created"
+  fi
+  if [ ! -e /bin/sh ]; then
+    "$BB" ln -s /sbin/sh /bin/sh || return 1
+    : >"$STATE/bin-sh-created"
+  fi
   [ -f /etc/shells ] || : >/etc/shells
+  "$BB" grep -qx '/bin/sh' /etc/shells 2>/dev/null || echo '/bin/sh' >>/etc/shells
   "$BB" grep -qx '/sbin/sh' /etc/shells 2>/dev/null || echo '/sbin/sh' >>/etc/shells
   "$BB" chmod 0644 /etc/shells
 }
