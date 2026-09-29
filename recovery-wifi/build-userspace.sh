@@ -32,6 +32,8 @@ WPA_TAG=hostap_2_9
 WPA_COMMIT=ca8c2bd28ad53f431d6ee60ef754e98cfdb4c17b
 OPENSSL_TAG=OpenSSL_1_1_1w
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
+DROPBEAR_COMMIT=59870ad43153fe8d4f1c96f5d5752116c94f31ff
+OPENSSH_COMMIT=86bdd3853f4d32c85e295e6216a2fe0953ad93f0 # OpenSSH 9.7p1
 IPTABLES_COMMIT=c16bdec15137b241586310d0e61bc88cc3726004 # iptables 1.6.2 legacy
 LIBNL_TAG=libnl3_2_25
 IW_COMMIT=8934cc42695817d63b00507c20eaefa98174e0a9 # iw v5.9
@@ -177,7 +179,7 @@ fi
 
 # Recovery time repair uses a one-shot BusyBox NTP client after DHCP. Keep the
 # date/timeout applets explicit so a future BusyBox defconfig cannot remove it.
-for symbol in CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT CONFIG_NSLOOKUP CONFIG_UMOUNT; do
+for symbol in CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT CONFIG_NSLOOKUP CONFIG_UMOUNT CONFIG_CRYPTPW CONFIG_MKPASSWD CONFIG_DD; do
   if grep -q "^# $symbol is not set$" .config; then
     sed -i "s/^# $symbol is not set$/$symbol=y/" .config
   elif ! grep -q "^$symbol=y$" .config; then
@@ -196,7 +198,8 @@ for symbol in \
   CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
   CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
   CONFIG_CHMOD CONFIG_MKDIR CONFIG_AWK CONFIG_CP CONFIG_MV CONFIG_RM CONFIG_CHOWN \
-  CONFIG_SHA256SUM CONFIG_SYNC CONFIG_READLINK CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT CONFIG_NSLOOKUP CONFIG_UMOUNT
+  CONFIG_SHA256SUM CONFIG_SYNC CONFIG_READLINK CONFIG_DATE CONFIG_NTPD CONFIG_TIMEOUT CONFIG_NSLOOKUP CONFIG_UMOUNT \
+  CONFIG_CRYPTPW CONFIG_MKPASSWD CONFIG_DD
 do
   grep -qx "$symbol=y" .config || {
     echo "Missing required BusyBox setting: $symbol=y" >&2
@@ -205,6 +208,46 @@ do
 done
 cp .config "$OUT/busybox.config"
 cp busybox "$OUT/busybox.ds"
+popd >/dev/null
+
+# Minimal static Dropbear server. No client/scp binary is shipped; one daemon
+# serves SSH and, through an external subsystem helper, SFTP.
+git init "$SRC/dropbear"
+git -C "$SRC/dropbear" remote add origin https://github.com/mkj/dropbear.git
+git -C "$SRC/dropbear" fetch --depth=1 origin "$DROPBEAR_COMMIT"
+git -C "$SRC/dropbear" checkout --detach FETCH_HEAD
+cp "$ROOT/recovery-wifi/dropbear-localoptions.h" "$SRC/dropbear/localoptions.h"
+pushd "$SRC/dropbear" >/dev/null
+CC="$CC" CFLAGS='-Os -ffunction-sections -fdata-sections' LDFLAGS='-Wl,--gc-sections' \
+  ./configure --host="$HOST_TRIPLE" --enable-static --disable-zlib --disable-syslog \
+    --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp --disable-wtmpx
+make -j"$(nproc)" PROGRAMS="dropbear"
+cp dropbear "$OUT/dropbear.ds"
+popd >/dev/null
+
+# Standard SFTP subsystem server. Build only sftp-server from OpenSSH portable,
+# statically linked so recovery does not need Bionic/glibc shared libraries.
+git init "$SRC/openssh"
+git -C "$SRC/openssh" remote add origin https://github.com/openssh/openssh-portable.git
+git -C "$SRC/openssh" fetch --depth=1 origin "$OPENSSH_COMMIT"
+git -C "$SRC/openssh" checkout --detach FETCH_HEAD
+pushd "$SRC/openssh" >/dev/null
+CC="$CC" \
+CPPFLAGS="-I$SRC/openssl/include" \
+LDFLAGS="-static -Wl,--gc-sections -L$SRC/openssl" \
+LIBS="-lcrypto -ldl -lpthread" \
+./configure --host="$HOST_TRIPLE" \
+  --with-ssl-dir="$SRC/openssl" \
+  --without-zlib \
+  --without-pam \
+  --without-selinux \
+  --without-kerberos5 \
+  --without-libedit \
+  --without-openssl-header-check \
+  --without-stackprotect \
+  --without-hardening
+make -j"$(nproc)" sftp-server
+cp sftp-server "$OUT/sftp-server.ds"
 popd >/dev/null
 
 # Static legacy iptables 1.6.2 for DroidSpaces port-forwarding in recovery.
@@ -249,18 +292,22 @@ popd >/dev/null
   -o "$OUT/wcnss-recovery"
 
 cp "$ROOT/recovery-wifi/rctools-net" "$OUT/rctools-net"
+cp "$ROOT/recovery-wifi/rctools-remote" "$OUT/rctools-remote"
+cp "$ROOT/recovery-wifi/rctools-remote-dispatch" "$OUT/rctools-remote-dispatch"
+cp "$ROOT/recovery-wifi/rctools-sftp-gate" "$OUT/rctools-sftp-gate"
 cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
 cp "$ROOT/recovery-wifi/recovery-time-sync" "$OUT/recovery-time-sync"
 cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
 
 chmod 0755 \
-  "$OUT/rctools-net" "$OUT/wifi-udhcpc.script" "$OUT/recovery-time-sync" \
+  "$OUT/rctools-net" "$OUT/rctools-remote" "$OUT/rctools-remote-dispatch" "$OUT/rctools-sftp-gate" \
+  "$OUT/wifi-udhcpc.script" "$OUT/recovery-time-sync" \
   "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"
+  "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/dropbear.ds" "$OUT/sftp-server.ds" "$OUT/wcnss-recovery"
 chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"
 
 for f in "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
-         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"; do
+         "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/dropbear.ds" "$OUT/sftp-server.ds" "$OUT/wcnss-recovery"; do
   "$STRIP" --strip-all "$f"
   file "$f"
   file "$f" | grep -q 'statically linked'
