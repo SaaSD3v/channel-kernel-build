@@ -33,6 +33,7 @@ WPA_COMMIT=ca8c2bd28ad53f431d6ee60ef754e98cfdb4c17b
 OPENSSL_TAG=OpenSSL_1_1_1w
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
 DROPBEAR_COMMIT=59870ad43153fe8d4f1c96f5d5752116c94f31ff
+LIBXCRYPT_COMMIT=55ea777e8d567e5e86ffac917c28815ac54cc341 # libxcrypt v4.4.38
 OPENSSH_COMMIT=86bdd3853f4d32c85e295e6216a2fe0953ad93f0 # OpenSSH 9.7p1
 IPTABLES_COMMIT=c16bdec15137b241586310d0e61bc88cc3726004 # iptables 1.6.2 legacy
 LIBNL_TAG=libnl3_2_25
@@ -210,6 +211,25 @@ cp .config "$OUT/busybox.config"
 cp busybox "$OUT/busybox.ds"
 popd >/dev/null
 
+# Static libxcrypt supplies crypt(3) for Dropbear password authentication.
+# The ARM64 cross libc on the runner does not ship a usable static libcrypt.
+git init "$SRC/libxcrypt"
+git -C "$SRC/libxcrypt" remote add origin https://github.com/besser82/libxcrypt.git
+git -C "$SRC/libxcrypt" fetch --depth=1 origin "$LIBXCRYPT_COMMIT"
+git -C "$SRC/libxcrypt" checkout --detach FETCH_HEAD
+pushd "$SRC/libxcrypt" >/dev/null
+autoreconf -fi
+./configure \
+  --host="$HOST_TRIPLE" \
+  --prefix="$PREFIX" \
+  --enable-static \
+  --disable-shared \
+  CC="$CC" \
+  CFLAGS='-Os -ffunction-sections -fdata-sections'
+make -j"$(nproc)"
+make install
+popd >/dev/null
+
 # Minimal static Dropbear server. No client/scp binary is shipped; one daemon
 # serves SSH and, through an external subsystem helper, SFTP.
 git init "$SRC/dropbear"
@@ -218,7 +238,11 @@ git -C "$SRC/dropbear" fetch --depth=1 origin "$DROPBEAR_COMMIT"
 git -C "$SRC/dropbear" checkout --detach FETCH_HEAD
 cp "$ROOT/recovery-wifi/dropbear-localoptions.h" "$SRC/dropbear/localoptions.h"
 pushd "$SRC/dropbear" >/dev/null
-CC="$CC" CFLAGS='-Os -ffunction-sections -fdata-sections' LDFLAGS='-Wl,--gc-sections' \
+CC="$CC" \
+CPPFLAGS="-I$PREFIX/include" \
+CFLAGS='-Os -ffunction-sections -fdata-sections' \
+LDFLAGS="-L$PREFIX/lib -Wl,--gc-sections" \
+LIBS='-lcrypt' \
   ./configure --host="$HOST_TRIPLE" --enable-static --disable-zlib --disable-syslog \
     --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp --disable-wtmpx
 make -j"$(nproc)" PROGRAMS="dropbear"
