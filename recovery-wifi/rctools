@@ -12,6 +12,7 @@ BB=/sbin/busybox.ds
 NET=/sbin/rctools-net
 DSCHECK=/sbin/ds-recovery-check
 TIMESYNC=/sbin/recovery-time-sync
+GPU=/sbin/rctools-gpu
 BYNAME=/dev/block/bootdevice/by-name
 MOUNT_TIMEOUT=${RCTOOLS_MOUNT_TIMEOUT:-8}
 
@@ -340,6 +341,15 @@ help_main() {
         '  rctools hotspot clients' \
         '  rctools hotspot stop' \
         '' \
+        'GPU:' \
+        '  rctools gpu status' \
+        '  rctools gpu prepare' \
+        '  rctools gpu load' \
+        '  rctools gpu probe' \
+        '  rctools gpu libs' \
+        '  rctools gpu firmware' \
+        '  rctools gpu logs' \
+        '' \
         'DroidSpaces / time:' \
         '  rctools droidspaces check' \
         '  rctools time status' \
@@ -429,6 +439,10 @@ case "$cmd" in
     hotspot)
         [ -x "$NET" ] || { err "network backend missing: $NET"; exit 1; }
         exec "$NET" hotspot "$@"
+        ;;
+    gpu)
+        [ -x "$GPU" ] || { err "GPU backend missing: $GPU"; exit 1; }
+        exec "$GPU" "$@"
         ;;
     droidspaces|ds)
         sub="${1:-check}"
