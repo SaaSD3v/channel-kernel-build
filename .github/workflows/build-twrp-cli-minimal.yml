@@ -301,12 +301,16 @@ jobs:
           test -r recovery-wifi/out/rctools-gpu-probe.so
           test -r recovery-wifi/out/rctools-opencl-probe.so
           test -r recovery-wifi/out/rctools-gralloc-probe.so
+          test -r recovery-wifi/out/android.hardware.graphics.common@1.0.so
+          test -r recovery-wifi/out/android.hardware.graphics.common@1.1.so
           aarch64-linux-gnu-readelf -Ws recovery-wifi/out/libsync.so | grep -Eq '[[:space:]]sync_wait$'
           aarch64-linux-gnu-readelf -Ws recovery-wifi/out/libsync.so | grep -Eq '[[:space:]]sync_merge$'
           aarch64-linux-gnu-readelf -d recovery-wifi/out/rctools-gpu-probe.so | grep -Fq 'Shared library: [libEGL_adreno.so]'
           aarch64-linux-gnu-readelf -d recovery-wifi/out/rctools-gpu-probe.so | grep -Fq 'Shared library: [libGLESv2_adreno.so]'
           aarch64-linux-gnu-readelf -d recovery-wifi/out/rctools-opencl-probe.so | grep -Fq 'Shared library: [libOpenCL.so]'
           aarch64-linux-gnu-readelf -d recovery-wifi/out/rctools-gralloc-probe.so | grep -Fq 'Shared library: [libhardware.so]'
+          file recovery-wifi/out/android.hardware.graphics.common@1.0.so | grep -q 'ARM aarch64'
+          file recovery-wifi/out/android.hardware.graphics.common@1.1.so | grep -q 'ARM aarch64'
           file recovery-wifi/out/iptables.ds | tee iptables-file.txt
           grep -q 'ARM aarch64' iptables-file.txt
           grep -q 'statically linked' iptables-file.txt
@@ -391,6 +395,8 @@ jobs:
           install -m 0644 recovery-wifi/out/rctools-gpu-probe.so "$ROOT/sbin/rctools-gpu-probe.so"
           install -m 0644 recovery-wifi/out/rctools-opencl-probe.so "$ROOT/sbin/rctools-opencl-probe.so"
           install -m 0644 recovery-wifi/out/rctools-gralloc-probe.so "$ROOT/sbin/rctools-gralloc-probe.so"
+          install -m 0644 recovery-wifi/out/android.hardware.graphics.common@1.0.so "$ROOT/sbin/android.hardware.graphics.common@1.0.so"
+          install -m 0644 recovery-wifi/out/android.hardware.graphics.common@1.1.so "$ROOT/sbin/android.hardware.graphics.common@1.1.so"
           install -m 0755 recovery-wifi/ds-recovery-check "$ROOT/sbin/ds-recovery-check"
           install -m 0644 recovery-wifi/out/WCNSS_qcom_cfg.ini \
             "$ROOT/lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini"
@@ -747,6 +753,7 @@ jobs:
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery sbin/recovery-time-sync \
             sbin/rctools-gpu sbin/libsync.so sbin/rctools-gpu-probe.so \
             sbin/rctools-opencl-probe.so sbin/rctools-gralloc-probe.so \
+            sbin/android.hardware.graphics.common@1.0.so sbin/android.hardware.graphics.common@1.1.so \
             sbin/ds-recovery-check lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
           do
             grep -Fxq "$path" kernel-initramfs-files.txt || {
@@ -1008,6 +1015,8 @@ jobs:
             recovery-wifi/out/rctools-gpu-probe.so
             recovery-wifi/out/rctools-opencl-probe.so
             recovery-wifi/out/rctools-gralloc-probe.so
+            recovery-wifi/out/android.hardware.graphics.common@1.0.so
+            recovery-wifi/out/android.hardware.graphics.common@1.1.so
             scripts/disable-twrp-service.py
             recovery-wifi/hostapd.config
             recovery-wifi/wifi-udhcpc.script
@@ -1058,6 +1067,8 @@ jobs:
             "recovery-wifi/out/rctools-gpu-probe.so"
             "recovery-wifi/out/rctools-opencl-probe.so"
             "recovery-wifi/out/rctools-gralloc-probe.so"
+            "recovery-wifi/out/android.hardware.graphics.common@1.0.so"
+            "recovery-wifi/out/android.hardware.graphics.common@1.1.so"
             "scripts/disable-twrp-service.py"
             "recovery-wifi/hostapd.config"
             "recovery-wifi/wifi-udhcpc.script"
