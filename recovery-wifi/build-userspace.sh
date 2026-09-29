@@ -33,6 +33,7 @@ WPA_COMMIT=ca8c2bd28ad53f431d6ee60ef754e98cfdb4c17b
 OPENSSL_TAG=OpenSSL_1_1_1w
 BUSYBOX_COMMIT=1a64f6a20aaf6ea4dbba68bbfa8cc1ab7e5c57c4
 DROPBEAR_COMMIT=59870ad43153fe8d4f1c96f5d5752116c94f31ff
+LIBXCRYPT_COMMIT=55ea777e8d567e5e86ffac917c28815ac54cc341 # libxcrypt 4.4.38
 LIBXCRYPT_COMMIT=55ea777e8d567e5e86ffac917c28815ac54cc341 # libxcrypt v4.4.38
 OPENSSH_COMMIT=86bdd3853f4d32c85e295e6216a2fe0953ad93f0 # OpenSSH 9.7p1
 IPTABLES_COMMIT=c16bdec15137b241586310d0e61bc88cc3726004 # iptables 1.6.2 legacy
@@ -228,6 +229,29 @@ autoreconf -fi
   CFLAGS='-Os -ffunction-sections -fdata-sections'
 make -j"$(nproc)"
 make install
+popd >/dev/null
+
+# Dropbear password authentication needs crypt(3). Ubuntu's cross sysroot no
+# longer ships a target libcrypt, so provide a pinned static libxcrypt.
+git init "$SRC/libxcrypt"
+git -C "$SRC/libxcrypt" remote add origin https://github.com/besser82/libxcrypt.git
+git -C "$SRC/libxcrypt" fetch --depth=1 origin "$LIBXCRYPT_COMMIT"
+git -C "$SRC/libxcrypt" checkout --detach FETCH_HEAD
+pushd "$SRC/libxcrypt" >/dev/null
+./autogen.sh
+./configure \
+  --host="$HOST_TRIPLE" \
+  --prefix="$PREFIX/xcrypt" \
+  --enable-static \
+  --disable-shared \
+  --disable-obsolete-api \
+  --enable-hashes=strong \
+  CC="$CC" \
+  CFLAGS='-Os -ffunction-sections -fdata-sections'
+make -j"$(nproc)"
+make install
+test -s "$PREFIX/xcrypt/lib/libcrypt.a"
+test -s "$PREFIX/xcrypt/include/crypt.h"
 popd >/dev/null
 
 # Minimal static Dropbear server. No client/scp binary is shipped; one daemon
