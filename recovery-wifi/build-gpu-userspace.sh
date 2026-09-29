@@ -42,6 +42,24 @@ COMMON_LDFLAGS=(
 echo "Building Channel headless GPU support from source"
 echo "  compiler=$CC"
 
+# Stock Android 10 Channel gralloc depends on graphics.common VNDK-SP from
+# the system side. This recovery intentionally has no Android system_b, so
+# carry only the two exact arm64 VNDK 29 bridge libraries required by gralloc.
+VNDK29_REPO="https://raw.githubusercontent.com/msft-mirror-aosp/platform.prebuilts.vndk.v29"
+VNDK29_COMMIT="65adb5d7b1fe1bc99eba07a6288ec33ec6e5a781"
+VNDK29_DIR="arm64/arch-arm64-armv8-a/shared/vndk-sp"
+
+for name in \
+  android.hardware.graphics.common@1.0.so \
+  android.hardware.graphics.common@1.1.so
+do
+  echo "Fetching pinned AOSP VNDK 29: $name"
+  curl -fsSL --retry 5 --retry-delay 2 \
+    "$VNDK29_REPO/$VNDK29_COMMIT/$VNDK29_DIR/$name" \
+    -o "$OUT/$name"
+  test -s "$OUT/$name"
+done
+
 "$CC" "${COMMON_CFLAGS[@]}"   -shared "${COMMON_LDFLAGS[@]}"   -Wl,-soname,libsync.so   "$GPU_SRC/libsync_min.c"   -o "$OUT/libsync.so"
 
 "$CC" "${COMMON_CFLAGS[@]}" -DBUILD_EGL_STUB   -shared "${COMMON_LDFLAGS[@]}"   -Wl,-soname,libEGL_adreno.so   "$GPU_SRC/link_stubs.c"   -o "$STUB/libEGL_adreno.so"
@@ -88,7 +106,25 @@ echo "=== gralloc probe dependencies ==="
 "$READELF" -d "$OUT/rctools-gralloc-probe.so" | tee "$BUILD/gralloc.dynamic"
 grep -Fq 'Shared library: [libhardware.so]' "$BUILD/gralloc.dynamic"
 
-for f in   "$OUT/libsync.so"   "$OUT/rctools-gpu-probe.so"   "$OUT/rctools-opencl-probe.so"   "$OUT/rctools-gralloc-probe.so"
+
+echo "=== graphics.common VNDK-SP payload ==="
+for name in \
+  android.hardware.graphics.common@1.0.so \
+  android.hardware.graphics.common@1.1.so
+do
+  file "$OUT/$name" | tee "$BUILD/$name.file"
+  grep -q 'ARM aarch64' "$BUILD/$name.file"
+  "$READELF" -d "$OUT/$name" | tee "$BUILD/$name.dynamic"
+  grep -Fq '(SONAME)' "$BUILD/$name.dynamic"
+done
+
+for f in \
+  "$OUT/libsync.so" \
+  "$OUT/rctools-gpu-probe.so" \
+  "$OUT/rctools-opencl-probe.so" \
+  "$OUT/rctools-gralloc-probe.so" \
+  "$OUT/android.hardware.graphics.common@1.0.so" \
+  "$OUT/android.hardware.graphics.common@1.1.so"
 do
   file "$f"
   file "$f" | grep -q 'ARM aarch64'
@@ -97,4 +133,10 @@ done
 rm -f "$OUT/SHA256SUMS"
 sha256sum "$OUT"/* | tee "$OUT/SHA256SUMS"
 
-du -h   "$OUT/libsync.so"   "$OUT/rctools-gpu-probe.so"   "$OUT/rctools-opencl-probe.so"   "$OUT/rctools-gralloc-probe.so"
+du -h \
+  "$OUT/libsync.so" \
+  "$OUT/rctools-gpu-probe.so" \
+  "$OUT/rctools-opencl-probe.so" \
+  "$OUT/rctools-gralloc-probe.so" \
+  "$OUT/android.hardware.graphics.common@1.0.so" \
+  "$OUT/android.hardware.graphics.common@1.1.so"
