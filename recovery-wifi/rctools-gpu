@@ -40,6 +40,42 @@ required_file() {
     }
 }
 
+stage_gpu_firmware() {
+    "$BB" mkdir -p /lib/firmware 2>/dev/null || return 1
+
+    for name in a530_pm4.fw a530_pfp.fw; do
+        src="$VENDOR/firmware/$name"
+        dst="/lib/firmware/$name"
+        required_file "$src" || return 1
+
+        if [ ! -s "$dst" ]; then
+            "$BB" cat "$src" > "$dst" 2>/dev/null || {
+                err "could not stage GPU firmware: $name"
+                return 1
+            }
+        fi
+    done
+
+    # RCTools Wi-Fi already standardizes the firmware loader on /lib/firmware.
+    # Use the same root so GPU and PRONTO never fight over firmware_class.path.
+    pathnode=/sys/module/firmware_class/parameters/path
+    if [ -w "$pathnode" ]; then
+        current="$(cat "$pathnode" 2>/dev/null)"
+        case "$current" in
+            ""|/lib/firmware)
+                echo /lib/firmware > "$pathnode" 2>/dev/null || true
+                ;;
+            *)
+                err "firmware_class.path is already set to: $current"
+                err "not overriding an unrelated firmware owner"
+                return 1
+                ;;
+        esac
+    fi
+
+    return 0
+}
+
 prepare_gpu() {
     [ "$(id -u 2>/dev/null)" = "0" ] || {
         err "run from a root recovery shell"
@@ -67,6 +103,7 @@ prepare_gpu() {
         required_file "$f" || return 1
     done
 
+    stage_gpu_firmware || return 1
     return 0
 }
 
