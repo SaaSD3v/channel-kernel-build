@@ -237,7 +237,18 @@ show_logs() {
 }
 
 help_gpu() {
-    printf '%s\n'         'RCTools GPU - headless Qualcomm Adreno backend'         ''         '  rctools gpu status      # KGSL/ION/model/clocks and payload state'         '  rctools gpu prepare     # mount active vendor RO and validate stack'         '  rctools gpu load        # prove libgsl + embedded libsync can link'         '  rctools gpu probe       # EGL pbuffer + GLES2 render/readback test'         '  rctools gpu libs        # show Qualcomm userspace components'         '  rctools gpu firmware    # show Adreno firmware/path state'         '  rctools gpu logs        # recent KGSL/Adreno/IOMMU diagnostics'
+    printf '%s\n' \
+        'RCTools GPU - headless Qualcomm Adreno backend' \
+        '' \
+        '  rctools gpu status      # KGSL/ION/model/clocks and payload state' \
+        '  rctools gpu prepare     # mount vendor, stage firmware and graphics HAL' \
+        '  rctools gpu load        # prove libgsl + embedded libsync can link' \
+        '  rctools gpu gralloc     # hw_get_module(gralloc) discovery test' \
+        '  rctools gpu probe       # EGL pbuffer + GLES2 render/readback test' \
+        '  rctools gpu opencl      # real OpenCL vector-add GPU test' \
+        '  rctools gpu libs        # show Qualcomm userspace components' \
+        '  rctools gpu firmware    # show Adreno firmware/path state' \
+        '  rctools gpu logs        # recent KGSL/Adreno/IOMMU diagnostics'
 }
 
 [ -x "$BB" ] || { err "missing BusyBox backend: $BB"; exit 1; }
