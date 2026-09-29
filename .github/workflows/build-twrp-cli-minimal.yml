@@ -183,10 +183,6 @@ jobs:
               fi
             fi
           done
-          if grep -Fxq 'sbin/wifi' kernel-initramfs-files.txt; then
-            echo "Legacy /sbin/wifi unexpectedly remains in kernel internal initramfs"
-            exit 1
-          fi
 
           [ "$ok" -eq 1 ]
           echo "$TWRP_BASE_SHA256  twrp-base.img" | sha256sum -c -
@@ -725,6 +721,10 @@ jobs:
               exit 1
             }
           done
+          if grep -Fxq 'sbin/wifi' kernel-initramfs-files.txt; then
+            echo "Legacy /sbin/wifi unexpectedly remains in kernel internal initramfs"
+            exit 1
+          fi
 
       - name: Replace only kernel in TWRP base image
         run: |
