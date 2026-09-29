@@ -238,13 +238,13 @@ cmd_test() {
     [ -x "$TINYBEEP" ] || { err "missing $TINYBEEP"; return 1; }
 
     route_speaker || return 1
-    trap '"$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 0 >/dev/null 2>&1 || true' EXIT HUP INT TERM
+    trap '"$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 0 0 >/dev/null 2>&1 || true' EXIT HUP INT TERM
 
     say "Playing low-level 1 kHz test tone for 250 ms..."
     rc=0
     "$BB" timeout 3 "$TINYBEEP" -D "$CARD" -d "$PCM_DEVICE" || rc=$?
 
-    "$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 0 >/dev/null 2>&1 || true
+    "$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 0 0 >/dev/null 2>&1 || true
     trap - EXIT HUP INT TERM
 
     [ "$rc" -eq 0 ] || {
@@ -256,7 +256,7 @@ cmd_test() {
 
 cmd_stop() {
     if [ -x "$TINYMIX" ] && [ -c /dev/snd/controlC0 ]; then
-        "$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 0 >/dev/null 2>&1 || true
+        "$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 0 0 >/dev/null 2>&1 || true
     fi
     say "speaker route disabled; ADSP left online"
 }
