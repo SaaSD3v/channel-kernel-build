@@ -88,10 +88,9 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    signal(SIGTERM, on_signal);
-    signal(SIGINT, on_signal);
-    signal(SIGHUP, on_signal);
-
+    // Keep default signal dispositions while forkserver() creates the MTP
+    // child. Only the supervising parent installs handlers afterwards, so a
+    // SIGTERM sent to the child really terminates the server.
     twrpMtp mtp(0);
     g_child = mtp.forkserver(pipefd);
     if (g_child <= 0) {
@@ -100,6 +99,10 @@ int main(int argc, char** argv) {
         close(pipefd[1]);
         return 1;
     }
+
+    signal(SIGTERM, on_signal);
+    signal(SIGINT, on_signal);
+    signal(SIGHUP, on_signal);
 
     close(pipefd[0]);
 
