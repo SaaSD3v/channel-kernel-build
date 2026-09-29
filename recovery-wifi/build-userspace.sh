@@ -231,29 +231,6 @@ make -j"$(nproc)"
 make install
 popd >/dev/null
 
-# Dropbear password authentication needs crypt(3). Ubuntu's cross sysroot no
-# longer ships a target libcrypt, so provide a pinned static libxcrypt.
-git init "$SRC/libxcrypt"
-git -C "$SRC/libxcrypt" remote add origin https://github.com/besser82/libxcrypt.git
-git -C "$SRC/libxcrypt" fetch --depth=1 origin "$LIBXCRYPT_COMMIT"
-git -C "$SRC/libxcrypt" checkout --detach FETCH_HEAD
-pushd "$SRC/libxcrypt" >/dev/null
-./autogen.sh
-./configure \
-  --host="$HOST_TRIPLE" \
-  --prefix="$PREFIX/xcrypt" \
-  --enable-static \
-  --disable-shared \
-  --disable-obsolete-api \
-  --enable-hashes=strong \
-  CC="$CC" \
-  CFLAGS='-Os -ffunction-sections -fdata-sections'
-make -j"$(nproc)"
-make install
-test -s "$PREFIX/xcrypt/lib/libcrypt.a"
-test -s "$PREFIX/xcrypt/include/crypt.h"
-popd >/dev/null
-
 # Minimal static Dropbear server. No client/scp binary is shipped; one daemon
 # serves SSH and, through an external subsystem helper, SFTP.
 git init "$SRC/dropbear"
