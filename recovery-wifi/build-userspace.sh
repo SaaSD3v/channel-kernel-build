@@ -183,6 +183,10 @@ for tool in tinyplay tinycap tinymix tinypcminfo; do
   "$CC" -Os -ffunction-sections -fdata-sections \
     -I"$SRC/tinyalsa/include" \
     -Dmain="${tool}_main" \
+    -Doptparse_init="${tool}_optparse_init" \
+    -Doptparse="${tool}_optparse" \
+    -Doptparse_long="${tool}_optparse_long" \
+    -Doptparse_arg="${tool}_optparse_arg" \
     -c "$SRC/tinyalsa/utils/${tool}.c" \
     -o "$TINYOBJ/${tool}.o"
 done
