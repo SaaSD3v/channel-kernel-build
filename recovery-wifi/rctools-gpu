@@ -58,8 +58,44 @@ stage_gpu_firmware() {
         fi
     done
 
-    # RCTools Wi-Fi already standardizes the firmware loader on /lib/firmware.
-    # Use the same root so GPU and PRONTO never fight over firmware_class.path.
+    if [ ! -s /lib/firmware/a506_zap.mdt ]; then
+        if ! "$RCTOOLS" mount modem active ro >/dev/null 2>&1; then
+            err "could not mount active modem partition for a506_zap firmware"
+            return 1
+        fi
+
+        zapdir=
+        for dir in /mnt/modem/image /mnt/modem; do
+            if [ -s "$dir/a506_zap.mdt" ]; then
+                zapdir="$dir"
+                break
+            fi
+        done
+
+        [ -n "$zapdir" ] || {
+            err "a506_zap.mdt not found in active modem partition"
+            return 1
+        }
+
+        found=0
+        for src in "$zapdir"/a506_zap.*; do
+            [ -f "$src" ] || continue
+            name=${src##*/}
+            "$BB" cat "$src" > "/lib/firmware/$name" 2>/dev/null || {
+                err "could not stage GPU ZAP firmware: $name"
+                return 1
+            }
+            found=1
+        done
+
+        [ "$found" -eq 1 ] || {
+            err "no a506_zap firmware segments were staged"
+            return 1
+        }
+    fi
+
+    required_file /lib/firmware/a506_zap.mdt || return 1
+
     pathnode=/sys/module/firmware_class/parameters/path
     if [ -w "$pathnode" ]; then
         current="$(cat "$pathnode" 2>/dev/null)"
@@ -77,7 +113,6 @@ stage_gpu_firmware() {
 
     return 0
 }
-
 stage_graphics_hal() {
     "$BB" mkdir -p /vendor/lib64/hw 2>/dev/null || return 1
 
@@ -193,8 +228,10 @@ show_firmware() {
             say "missing: $VENDOR/firmware/$f"
         fi
     done
+    for f in /lib/firmware/a506_zap.*; do
+        [ -f "$f" ] && "$BB" ls -l "$f"
+    done
 }
-
 load_test() {
     prepare_gpu || return 1
     say 'stage=linker loading libgsl'
@@ -223,15 +260,28 @@ run_opencl_probe() {
 run_gralloc_probe() {
     prepare_gpu || return 1
 
+    say 'stage=gralloc direct linker probe'
+    required_file "$VENDOR/lib64/hw/gralloc.msm8953.so" || return 1
+    LD_LIBRARY_PATH="$GPU_LIBPATH" \
+    LD_PRELOAD="$VENDOR/lib64/hw/gralloc.msm8953.so" \
+        /system/bin/sh -c ':'
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        err "gralloc.msm8953.so failed direct linker load (rc=$rc)"
+        return "$rc"
+    fi
+    say 'PASS GRALLOC_LINKER_OK'
+
     say 'stage=gralloc HAL discovery probe'
     say "ro.hardware=$(getprop ro.hardware 2>/dev/null)"
     say "ro.product.board=$(getprop ro.product.board 2>/dev/null)"
     say "ro.board.platform=$(getprop ro.board.platform 2>/dev/null)"
     "$BB" ls -l /vendor/lib64/hw/gralloc*.so 2>/dev/null || true
 
-    LD_LIBRARY_PATH="$GPU_LIBPATH"     LD_PRELOAD="$GRALLOC_PROBE"         /system/bin/sh -c ':'
+    LD_LIBRARY_PATH="$GPU_LIBPATH" \
+    LD_PRELOAD="$GRALLOC_PROBE" \
+        /system/bin/sh -c ':'
 }
-
 show_logs() {
     dmesg | "$BB" grep -iE         'kgsl|adreno|a506|a530|gpu|iommu|firmware|zap|egl|gsl|fault|error'         | "$BB" tail -n 250
 }
