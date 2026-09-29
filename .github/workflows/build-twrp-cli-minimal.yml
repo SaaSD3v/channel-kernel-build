@@ -40,10 +40,16 @@ jobs:
           bash -n recovery-wifi/build-gpu-userspace.sh
           test -f recovery-wifi/gpu/libsync_min.c
           test -f recovery-wifi/gpu/egl_probe.c
+          test -f recovery-wifi/gpu/opencl_probe.c
+          test -f recovery-wifi/gpu/gralloc_probe.c
           test -f recovery-wifi/gpu/link_stubs.c
           grep -Fq 'GPU=/sbin/rctools-gpu' recovery-wifi/rctools
           grep -Fq 'rctools gpu probe' recovery-wifi/rctools
           grep -Fq 'PASS GPU_RENDER_OK' recovery-wifi/gpu/egl_probe.c
+          grep -Fq 'PASS GPU_OPENCL_OK' recovery-wifi/gpu/opencl_probe.c
+          grep -Fq 'PASS GRALLOC_HAL_OK' recovery-wifi/gpu/gralloc_probe.c
+          grep -Fq 'rctools gpu opencl' recovery-wifi/rctools-gpu
+          grep -Fq 'rctools gpu gralloc' recovery-wifi/rctools-gpu
           python3 -m py_compile scripts/disable-twrp-service.py
           grep -Fq 'rctools mount a system|vendor|oem|all' recovery-wifi/rctools
           grep -Fq 'rctools mount b system|vendor|oem|all' recovery-wifi/rctools
@@ -293,10 +299,14 @@ jobs:
           test -x recovery-wifi/out/iptables.ds
           test -r recovery-wifi/out/libsync.so
           test -r recovery-wifi/out/rctools-gpu-probe.so
+          test -r recovery-wifi/out/rctools-opencl-probe.so
+          test -r recovery-wifi/out/rctools-gralloc-probe.so
           aarch64-linux-gnu-readelf -Ws recovery-wifi/out/libsync.so | grep -Eq '[[:space:]]sync_wait$'
           aarch64-linux-gnu-readelf -Ws recovery-wifi/out/libsync.so | grep -Eq '[[:space:]]sync_merge$'
           aarch64-linux-gnu-readelf -d recovery-wifi/out/rctools-gpu-probe.so | grep -Fq 'Shared library: [libEGL_adreno.so]'
           aarch64-linux-gnu-readelf -d recovery-wifi/out/rctools-gpu-probe.so | grep -Fq 'Shared library: [libGLESv2_adreno.so]'
+          aarch64-linux-gnu-readelf -d recovery-wifi/out/rctools-opencl-probe.so | grep -Fq 'Shared library: [libOpenCL.so]'
+          aarch64-linux-gnu-readelf -d recovery-wifi/out/rctools-gralloc-probe.so | grep -Fq 'Shared library: [libhardware.so]'
           file recovery-wifi/out/iptables.ds | tee iptables-file.txt
           grep -q 'ARM aarch64' iptables-file.txt
           grep -q 'statically linked' iptables-file.txt
@@ -379,6 +389,8 @@ jobs:
           install -m 0755 recovery-wifi/rctools-gpu "$ROOT/sbin/rctools-gpu"
           install -m 0644 recovery-wifi/out/libsync.so "$ROOT/sbin/libsync.so"
           install -m 0644 recovery-wifi/out/rctools-gpu-probe.so "$ROOT/sbin/rctools-gpu-probe.so"
+          install -m 0644 recovery-wifi/out/rctools-opencl-probe.so "$ROOT/sbin/rctools-opencl-probe.so"
+          install -m 0644 recovery-wifi/out/rctools-gralloc-probe.so "$ROOT/sbin/rctools-gralloc-probe.so"
           install -m 0755 recovery-wifi/ds-recovery-check "$ROOT/sbin/ds-recovery-check"
           install -m 0644 recovery-wifi/out/WCNSS_qcom_cfg.ini \
             "$ROOT/lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini"
@@ -734,6 +746,7 @@ jobs:
             sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery sbin/recovery-time-sync \
             sbin/rctools-gpu sbin/libsync.so sbin/rctools-gpu-probe.so \
+            sbin/rctools-opencl-probe.so sbin/rctools-gralloc-probe.so \
             sbin/ds-recovery-check lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
           do
             grep -Fxq "$path" kernel-initramfs-files.txt || {
@@ -988,9 +1001,13 @@ jobs:
             recovery-wifi/build-gpu-userspace.sh
             recovery-wifi/gpu/libsync_min.c
             recovery-wifi/gpu/egl_probe.c
+            recovery-wifi/gpu/opencl_probe.c
+            recovery-wifi/gpu/gralloc_probe.c
             recovery-wifi/gpu/link_stubs.c
             recovery-wifi/out/libsync.so
             recovery-wifi/out/rctools-gpu-probe.so
+            recovery-wifi/out/rctools-opencl-probe.so
+            recovery-wifi/out/rctools-gralloc-probe.so
             scripts/disable-twrp-service.py
             recovery-wifi/hostapd.config
             recovery-wifi/wifi-udhcpc.script
@@ -1034,9 +1051,13 @@ jobs:
             "recovery-wifi/build-gpu-userspace.sh"
             "recovery-wifi/gpu/libsync_min.c"
             "recovery-wifi/gpu/egl_probe.c"
+            "recovery-wifi/gpu/opencl_probe.c"
+            "recovery-wifi/gpu/gralloc_probe.c"
             "recovery-wifi/gpu/link_stubs.c"
             "recovery-wifi/out/libsync.so"
             "recovery-wifi/out/rctools-gpu-probe.so"
+            "recovery-wifi/out/rctools-opencl-probe.so"
+            "recovery-wifi/out/rctools-gralloc-probe.so"
             "scripts/disable-twrp-service.py"
             "recovery-wifi/hostapd.config"
             "recovery-wifi/wifi-udhcpc.script"
