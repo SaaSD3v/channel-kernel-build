@@ -16,6 +16,15 @@ LIBSYNC=/sbin/libsync.so
 VENDOR=/mnt/vendor
 KGSL=/sys/class/kgsl/kgsl-3d0
 GPU_LIBPATH=/sbin:/system/lib64:/mnt/vendor/lib64:/mnt/vendor/lib64/egl:/mnt/vendor/lib64/hw
+VIRGL_ROOT=/sbin/virgl
+VIRGL_SERVER=$VIRGL_ROOT/virgl_test_server
+VIRGL_LIBDIR=$VIRGL_ROOT/lib
+VIRGL_SHIM=$VIRGL_LIBDIR/librctools-memfd-compat.so
+VIRGL_PIDFILE=/tmp/rctools-virgl.pid
+VIRGL_STATE=/tmp/rctools-virgl.socket
+VIRGL_LOG=/tmp/rctools-virgl.log
+VIRGL_RENDER_LOG=/tmp/rctools-virgl-renderer.log
+VIRGL_DEFAULT_SOCKET=/data/local/Droidspaces/virgl/.virgl_test
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'rctools gpu: %s\n' "$*" >&2; }
@@ -174,6 +183,189 @@ prepare_gpu() {
     return 0
 }
 
+
+virgl_saved_socket() {
+    [ -r "$VIRGL_STATE" ] && "$BB" cat "$VIRGL_STATE" 2>/dev/null
+}
+
+virgl_find_pid() {
+    if [ -r "$VIRGL_PIDFILE" ]; then
+        p="$("$BB" cat "$VIRGL_PIDFILE" 2>/dev/null)"
+        case "$p" in
+            ''|*[!0-9]*) ;;
+            *)
+                exe="$("$BB" readlink "/proc/$p/exe" 2>/dev/null)"
+                if [ "$exe" = "$VIRGL_SERVER" ]; then
+                    printf '%s\n' "$p"
+                    return 0
+                fi
+                ;;
+        esac
+    fi
+
+    for pdir in /proc/[0-9]*; do
+        [ -d "$pdir" ] || continue
+        exe="$("$BB" readlink "$pdir/exe" 2>/dev/null)"
+        [ "$exe" = "$VIRGL_SERVER" ] || continue
+        printf '%s\n' "${pdir##*/}"
+        return 0
+    done
+    return 1
+}
+
+virgl_runtime_ready() {
+    [ -x "$VIRGL_SERVER" ] || {
+        err "missing VirGL server: $VIRGL_SERVER"
+        return 1
+    }
+    required_file "$VIRGL_SHIM" || return 1
+    required_file "$VIRGL_LIBDIR/libvirglrenderer.so.1" || return 1
+    required_file "$VIRGL_LIBDIR/libepoxy.so.0" || return 1
+    required_file "$VIRGL_LIBDIR/libEGL.so.1" || return 1
+    required_file "$VIRGL_LIBDIR/libGLESv2.so.2" || return 1
+    return 0
+}
+
+show_virgl_status() {
+    say '--- VirGL service ---'
+    [ -x "$VIRGL_SERVER" ] && say 'runtime: embedded' || say 'runtime: missing'
+
+    pid="$(virgl_find_pid 2>/dev/null)"
+    sock="$(virgl_saved_socket)"
+
+    if [ -n "$pid" ]; then
+        say "virgl: running"
+        say "pid=$pid"
+    else
+        say "virgl: stopped"
+    fi
+
+    if [ -n "$sock" ]; then
+        say "socket=$sock"
+        [ -S "$sock" ] && say 'socket_state=ready' || say 'socket_state=missing'
+    else
+        say "socket: none"
+    fi
+}
+
+start_virgl() {
+    prepare_gpu || return 1
+    virgl_runtime_ready || return 1
+
+    sock="${1:-${VIRGL_SOCKET:-$VIRGL_DEFAULT_SOCKET}}"
+    case "$sock" in
+        /*) ;;
+        *)
+            err "VirGL socket path must be absolute: $sock"
+            return 2
+            ;;
+    esac
+
+    pid="$(virgl_find_pid 2>/dev/null)"
+    if [ -n "$pid" ]; then
+        oldsock="$(virgl_saved_socket)"
+        if [ "$oldsock" = "$sock" ] && [ -S "$sock" ]; then
+            say "VirGL already running"
+            say "pid=$pid"
+            say "socket=$sock"
+            return 0
+        fi
+        err "VirGL is already running (pid=$pid)"
+        [ -n "$oldsock" ] && err "current socket: $oldsock"
+        err "run 'rctools gpu stop' before changing the socket"
+        return 1
+    fi
+
+    "$BB" rm -f "$VIRGL_PIDFILE" "$VIRGL_STATE" 2>/dev/null || true
+
+    parent="${sock%/*}"
+    [ -n "$parent" ] || parent=/
+    "$BB" mkdir -p "$parent" 2>/dev/null || {
+        err "could not create VirGL socket directory: $parent"
+        return 1
+    }
+
+    if [ -e "$sock" ] || [ -S "$sock" ]; then
+        if [ -S "$sock" ]; then
+            "$BB" rm -f "$sock" || return 1
+        else
+            err "refusing to replace non-socket path: $sock"
+            return 1
+        fi
+    fi
+
+    "$BB" rm -f "$VIRGL_LOG" "$VIRGL_RENDER_LOG" 2>/dev/null || true
+    virgl_libpath="$VIRGL_LIBDIR:$GPU_LIBPATH"
+
+    VIRGL_DISABLE_MT=1 \
+    VIRGL_LOG_LEVEL=debug \
+    VIRGL_LOG_FILE="$VIRGL_RENDER_LOG" \
+    LD_LIBRARY_PATH="$virgl_libpath" \
+    LD_PRELOAD="$VIRGL_SHIM" \
+    "$VIRGL_SERVER" \
+        --no-fork \
+        --multi-clients \
+        --use-egl-surfaceless \
+        --use-gles \
+        --socket-path="$sock" \
+        >"$VIRGL_LOG" 2>&1 &
+
+    pid=$!
+    printf '%s\n' "$pid" > "$VIRGL_PIDFILE"
+    printf '%s\n' "$sock" > "$VIRGL_STATE"
+
+    i=0
+    while [ "$i" -lt 5 ]; do
+        if kill -0 "$pid" 2>/dev/null && [ -S "$sock" ]; then
+            say 'VirGL started'
+            say "pid=$pid"
+            say "socket=$sock"
+            say 'mode=multi-client EGL-surfaceless GLES'
+            return 0
+        fi
+        if ! kill -0 "$pid" 2>/dev/null; then
+            break
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+
+    err "VirGL server failed to become ready"
+    [ -s "$VIRGL_LOG" ] && "$BB" tail -n 80 "$VIRGL_LOG" >&2
+    kill "$pid" 2>/dev/null || true
+    [ -S "$sock" ] && "$BB" rm -f "$sock" 2>/dev/null || true
+    "$BB" rm -f "$VIRGL_PIDFILE" "$VIRGL_STATE" 2>/dev/null || true
+    return 1
+}
+
+stop_virgl() {
+    pid="$(virgl_find_pid 2>/dev/null)"
+    sock="$(virgl_saved_socket)"
+
+    if [ -n "$pid" ]; then
+        kill "$pid" 2>/dev/null || true
+        i=0
+        while kill -0 "$pid" 2>/dev/null && [ "$i" -lt 5 ]; do
+            sleep 1
+            i=$((i + 1))
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true
+        fi
+    fi
+
+    if [ -n "$sock" ] && [ -S "$sock" ]; then
+        "$BB" rm -f "$sock" 2>/dev/null || true
+    fi
+    "$BB" rm -f "$VIRGL_PIDFILE" "$VIRGL_STATE" 2>/dev/null || true
+
+    if [ -n "$pid" ]; then
+        say "VirGL stopped (pid=$pid)"
+    else
+        say 'VirGL already stopped'
+    fi
+}
+
 show_status() {
     say '--- Channel headless GPU ---'
     if [ -c /dev/kgsl-3d0 ]; then
@@ -205,6 +397,7 @@ show_status() {
     [ -r "$GPU_PROBE" ] && say 'egl probe: embedded' || say 'egl probe: missing'
     [ -r "$OPENCL_PROBE" ] && say 'opencl probe: embedded' || say 'opencl probe: missing'
     [ -r "$GRALLOC_PROBE" ] && say 'gralloc probe: embedded' || say 'gralloc probe: missing'
+    show_virgl_status
 }
 
 show_libs() {
@@ -285,13 +478,23 @@ run_gralloc_probe() {
 }
 show_logs() {
     dmesg | "$BB" grep -iE         'kgsl|adreno|a506|a530|gpu|iommu|firmware|zap|egl|gsl|fault|error'         | "$BB" tail -n 250
+    if [ -s "$VIRGL_LOG" ]; then
+        say '--- VirGL server log ---'
+        "$BB" tail -n 120 "$VIRGL_LOG"
+    fi
+    if [ -s "$VIRGL_RENDER_LOG" ]; then
+        say '--- VirGL renderer log ---'
+        "$BB" tail -n 120 "$VIRGL_RENDER_LOG"
+    fi
 }
 
 help_gpu() {
     printf '%s\n' \
         'RCTools GPU - headless Qualcomm Adreno backend' \
         '' \
-        '  rctools gpu status      # KGSL/ION/model/clocks and payload state' \
+        '  rctools gpu status      # KGSL/ION/model/clocks plus VirGL service state' \
+        '  rctools gpu start [SOCKET] # prepare GPU + start multi-client VirGL server' \
+        '  rctools gpu stop        # stop only the VirGL server and remove its socket' \
         '  rctools gpu prepare     # mount vendor, stage firmware and graphics HAL' \
         '  rctools gpu load        # prove libgsl + embedded libsync can link' \
         '  rctools gpu gralloc     # hw_get_module(gralloc) discovery test' \
@@ -309,6 +512,8 @@ cmd="${1:-status}"
 
 case "$cmd" in
     status) show_status ;;
+    start) start_virgl "$@" ;;
+    stop) stop_virgl ;;
     prepare)
         prepare_gpu && {
             say 'GPU headless runtime ready'
