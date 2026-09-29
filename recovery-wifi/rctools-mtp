@@ -191,7 +191,7 @@ start_cmd(){
   usb_set sys.usb.config "$mode"
   "$BB" sleep 0.2
 
-  "$MTPD" "$path" "$name" "$CHILDPID" >>"$LOG" 2>&1 &
+  LD_LIBRARY_PATH=/system/lib64:/vendor/lib64 "$MTPD" "$path" "$name" "$CHILDPID" >>"$LOG" 2>&1 &
   launcher=$!
   printf '%s\n' "$launcher" >"$PIDFILE"
 
