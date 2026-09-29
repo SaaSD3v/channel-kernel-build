@@ -3,10 +3,13 @@
 # No dependency on the TWRP recovery service.
 
 PATH=/sbin:/system/bin:/vendor/bin
-export PATH
+TMPDIR=/tmp
+TMP=/tmp
+TEMP=/tmp
+export PATH TMPDIR TMP TEMP
 
 BB=/sbin/busybox.ds
-WIFI=/sbin/wifi
+NET=/sbin/rctools-net
 DSCHECK=/sbin/ds-recovery-check
 TIMESYNC=/sbin/recovery-time-sync
 BYNAME=/dev/block/bootdevice/by-name
@@ -275,131 +278,79 @@ show_info() {
     echo
     show_mounts
     echo
-    if [ -x "$WIFI" ]; then
-        "$WIFI" status 2>/dev/null || true
+    if [ -x "$NET" ]; then
+        "$NET" status 2>/dev/null || true
     else
-        say "Wi-Fi backend: missing"
+        say "RCTools network backend: missing"
     fi
 }
 
 help_main() {
-cat <<'EOF'
-RCTools - Motorola Channel CLI recovery
-
-rctools help
-
-  Show this complete command reference.
-
-rctools info
-
-  Show active slot, useful mounts and current Wi-Fi state.
-
-rctools slot
-
-  Show the current A/B slot reported by the bootloader.
-
-rctools partitions
-
-  List every /dev/block/.../by-name partition and symlink.
-
-rctools block NAME [a|b|active|none]
-
-  Resolve a raw block device without mounting it.
-  Use this for boot, dtbo, vbmeta and other non-filesystem partitions.
-
-rctools mount a system|vendor|oem|all [rw|ro]
-
-  Mount only slot A. "all" means system_a + vendor_a + oem_a.
-
-rctools mount b system|vendor|oem|all [rw|ro]
-
-  Mount only slot B. "all" means system_b + vendor_b + oem_b.
-
-rctools mount active system|vendor|oem|all [rw|ro]
-
-  Mount the currently active slot without needing to know whether it is A or B.
-
-rctools mount data [rw|ro]
-rctools mount persist [rw|ro]
-rctools mount persist2 [rw|ro]
-
-  Mount non-A/B partitions independently.
-
-rctools mount common [rw|ro]
-
-  Mount data + persist + persist2. It does not mount either A/B slot.
-
-rctools umount a|b|active system|vendor|oem
-rctools umount data|persist|persist2
-
-  Unmount one RCTools mountpoint. Slots remain independent.
-
-rctools mounts
-
-  Show partitions currently mounted by the recovery/RCTools paths.
-
-rctools wifi up
-
-  Initialize PRONTO/WCNSS, load saved wlan profiles and reconnect.
-
-rctools wifi scan
-
-  Scan Wi-Fi networks using the recovery Wi-Fi backend.
-
-rctools wifi connect "SSID" "PASSWORD"
-
-  Connect WPA/WPA2 and save the profile only after association + DHCP succeed.
-
-rctools wifi networks
-
-  List persistent wlan profiles under /data/local/wifi/wlan/networks.
-
-rctools wifi forget "SSID"
-
-  Remove one persistent wlan profile.
-
-rctools hotspot create "SSID" "PASSWORD" [CHANNEL]
-
-  Create/update the persistent ap0 hotspot profile.
-
-rctools hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]
-
-  Start AP+STA+NAT and automatically follow the upstream Wi-Fi band/channel.
-
-rctools hotspot repeater-2g ["SSID" "PASSWORD" [CHANNEL]]
-
-  Require a 2.4 GHz upstream and expose ap0 on that same PRONTO channel.
-
-rctools hotspot repeater-5g ["SSID" "PASSWORD" [CHANNEL]]
-
-  Require a 5 GHz upstream and expose ap0 on that same PRONTO channel.
-
-rctools hotspot status
-
-  Show AP mode, DHCP and NAT state.
-
-rctools hotspot stop
-
-  Stop the hotspot/repeater and remove only the private RCTools Wi-Fi NAT state.
-
-rctools droidspaces check
-
-  Run the recovery-side DroidSpaces capability preflight.
-
-rctools time status
-
-  Show recovery UTC/last-good time state.
-
-rctools time sync
-
-  Run bounded one-shot NTP recovery time synchronization.
-
-Compatibility backends remain available as /sbin/wifi and /sbin/ds-recovery-check,
-but RCTools is the intended user-facing CLI.
-EOF
+    printf '%s\n' \
+        'RCTools - Motorola Channel CLI recovery' \
+        '' \
+        'Core:' \
+        '  rctools info' \
+        '  rctools slot' \
+        '  rctools partitions' \
+        '  rctools block NAME [a|b|active|none]' \
+        '  rctools mounts' \
+        '' \
+        'Mounts:' \
+        '  rctools mount a system|vendor|oem|all [rw|ro]' \
+        '  rctools mount b system|vendor|oem|all [rw|ro]' \
+        '  rctools mount active system|vendor|oem|all [rw|ro]' \
+        '  rctools mount data|persist|persist2 [rw|ro]' \
+        '  rctools mount common [rw|ro]' \
+        '  rctools umount a|b|active system|vendor|oem' \
+        '  rctools umount data|persist|persist2' \
+        '' \
+        'Wi-Fi:' \
+        '  rctools wifi prepare' \
+        '  rctools wifi up' \
+        '  rctools wifi start                         # alias for up' \
+        '  rctools wifi scan' \
+        '  rctools wifi connect "SSID" "PASSWORD"       # WPA/WPA2 PSK' \
+        '  rctools wifi connect-sae "SSID" "PASSWORD"   # WPA3 SAE' \
+        '  rctools wifi connect-open "SSID"' \
+        '  rctools wifi networks' \
+        '  rctools wifi forget "SSID"' \
+        '  rctools wifi forget-all' \
+        '  rctools wifi dhcp' \
+        '  rctools wifi status' \
+        '  rctools wifi ping HOST' \
+        '  rctools wifi disconnect' \
+        '  rctools wifi down' \
+        '  rctools wifi stop                          # alias for down' \
+        '  rctools wifi logs' \
+        '  rctools wifi test' \
+        '' \
+        'Hotspot / repeater:' \
+        '  rctools hotspot create "SSID" "PASSWORD" [CHANNEL]' \
+        '  rctools hotspot config' \
+        '  rctools hotspot config ssid|password|channel VALUE' \
+        '  rctools hotspot delete' \
+        '  rctools hotspot start' \
+        '  rctools hotspot probe-vif' \
+        '  rctools hotspot start-vif ["SSID" "PASSWORD" [CHANNEL]]' \
+        '  rctools hotspot repeater ["SSID" "PASSWORD" [CHANNEL]]' \
+        '  rctools hotspot repeater-2g ["SSID" "PASSWORD" [CHANNEL]]' \
+        '  rctools hotspot repeater-5g ["SSID" "PASSWORD" [CHANNEL]]' \
+        '  rctools hotspot status' \
+        '  rctools hotspot clients' \
+        '  rctools hotspot stop' \
+        '' \
+        'DroidSpaces / time:' \
+        '  rctools droidspaces check' \
+        '  rctools time status' \
+        '  rctools time sync' \
+        '  rctools time restore' \
+        '' \
+        'RCTools is the single user-facing recovery CLI.'
 }
 
 [ -x "$BB" ] || { err "missing BusyBox backend: $BB"; exit 1; }
+[ -d /tmp ] || "$BB" mkdir -p /tmp 2>/dev/null || true
 
 cmd="${1:-help}"
 [ "$#" -gt 0 ] && shift || true
@@ -472,12 +423,12 @@ case "$cmd" in
         show_mounts
         ;;
     wifi)
-        [ -x "$WIFI" ] || { err "Wi-Fi backend missing: $WIFI"; exit 1; }
-        exec "$WIFI" "$@"
+        [ -x "$NET" ] || { err "network backend missing: $NET"; exit 1; }
+        exec "$NET" "$@"
         ;;
     hotspot)
-        [ -x "$WIFI" ] || { err "Wi-Fi backend missing: $WIFI"; exit 1; }
-        exec "$WIFI" hotspot "$@"
+        [ -x "$NET" ] || { err "network backend missing: $NET"; exit 1; }
+        exec "$NET" hotspot "$@"
         ;;
     droidspaces|ds)
         sub="${1:-check}"

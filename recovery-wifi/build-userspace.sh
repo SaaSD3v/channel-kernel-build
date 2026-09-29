@@ -191,7 +191,7 @@ make ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS" silentoldconfig >/dev/null
 make -j"$(nproc)" ARCH="$TARGET_ARCH" CROSS_COMPILE="$CROSS"
 
 # Cross-built ARM64 binaries cannot be executed on the x86 GitHub runner.
-# Validate every applet used by /sbin/wifi from the resolved BusyBox config.
+# Validate every applet used by RCTools networking from the resolved BusyBox config.
 for symbol in \
   CONFIG_UDHCPC CONFIG_UDHCPD CONFIG_IP CONFIG_IFCONFIG CONFIG_PING CONFIG_GREP CONFIG_SED \
   CONFIG_TAIL CONFIG_PKILL CONFIG_MOUNT CONFIG_TEE CONFIG_SLEEP CONFIG_CAT \
@@ -248,13 +248,13 @@ popd >/dev/null
   "$ROOT/recovery-wifi/wcnss-recovery.c" \
   -o "$OUT/wcnss-recovery"
 
-cp "$ROOT/recovery-wifi/wifi" "$OUT/wifi"
+cp "$ROOT/recovery-wifi/rctools-net" "$OUT/rctools-net"
 cp "$ROOT/recovery-wifi/wifi-udhcpc.script" "$OUT/wifi-udhcpc.script"
 cp "$ROOT/recovery-wifi/recovery-time-sync" "$OUT/recovery-time-sync"
 cp "$ROOT/recovery-wifi/WCNSS_qcom_cfg.ini" "$OUT/WCNSS_qcom_cfg.ini"
 
 chmod 0755 \
-  "$OUT/wifi" "$OUT/wifi-udhcpc.script" "$OUT/recovery-time-sync" \
+  "$OUT/rctools-net" "$OUT/wifi-udhcpc.script" "$OUT/recovery-time-sync" \
   "$OUT/wpa_supplicant.ds" "$OUT/wpa_cli.ds" "$OUT/wpa_passphrase.ds" \
   "$OUT/hostapd.ds" "$OUT/iw.ds" "$OUT/busybox.ds" "$OUT/iptables.ds" "$OUT/wcnss-recovery"
 chmod 0644 "$OUT/WCNSS_qcom_cfg.ini"

@@ -30,10 +30,10 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Validate recovery Wi-Fi hotspot sources
+      - name: Validate RCTools networking sources
         run: |
           set -euo pipefail
-          /bin/sh -n recovery-wifi/wifi
+          /bin/sh -n recovery-wifi/rctools-net
           /bin/sh -n recovery-wifi/rctools
           bash -n recovery-wifi/build-userspace.sh
           python3 -m py_compile scripts/disable-twrp-service.py
@@ -42,7 +42,15 @@ jobs:
           ! grep -Fq 'all-slots' recovery-wifi/rctools
           grep -Fq 'rctools hotspot repeater-5g' recovery-wifi/rctools
           grep -Fq 'rctools block NAME' recovery-wifi/rctools
-          grep -Fq '/sbin/rctools mount data none rw' recovery-wifi/wifi
+          grep -Fq 'NET=/sbin/rctools-net' recovery-wifi/rctools
+          ! grep -Fq 'WIFI=/sbin/wifi' recovery-wifi/rctools
+          ! grep -Fq "cat <<'EOF'" recovery-wifi/rctools
+          grep -Fq '/sbin/rctools mount data rw' recovery-wifi/rctools-net
+          ! grep -Fq '/sbin/rctools mount data none rw' recovery-wifi/rctools-net
+          ! grep -Fq "'  wifi " recovery-wifi/rctools-net
+          ! grep -Fq 'usage: wifi ' recovery-wifi/rctools-net
+          ! grep -Fq 'Use: wifi ' recovery-wifi/rctools-net
+          ! grep -Fq 'Run: wifi ' recovery-wifi/rctools-net
           test -f "recovery-wifi/devices/$DEVICE/device.conf"
           test -f recovery-cli-minimal.fragment
           test -f scripts/apply-cli-minimal-kernel.sh
@@ -55,59 +63,59 @@ jobs:
           grep -q 'xtables-multi' recovery-wifi/build-userspace.sh
           grep -q 'CONFIG_NTPD' recovery-wifi/build-userspace.sh
           grep -q 'CONFIG_TIMEOUT' recovery-wifi/build-userspace.sh
-          grep -q 'recovery-time-sync' recovery-wifi/wifi
+          grep -q 'recovery-time-sync' recovery-wifi/rctools-net
           grep -q 'one-shot NTP sync' recovery-wifi/recovery-time-sync
-          grep -q '^cmd_hotspot_create()' recovery-wifi/wifi
-          grep -q '^cmd_hotspot_config()' recovery-wifi/wifi
-          grep -q '^cmd_hotspot_start()' recovery-wifi/wifi
-          grep -q '^cmd_hotspot_stop()' recovery-wifi/wifi
-          grep -q '^cmd_hotspot_delete()' recovery-wifi/wifi
-          grep -q '^cmd_hotspot_repeater()' recovery-wifi/wifi
-          grep -q '^cmd_hotspot_repeater_2g()' recovery-wifi/wifi
-          grep -q '^cmd_hotspot_repeater_5g()' recovery-wifi/wifi
-          grep -Fq 'up|start) cmd_up ;;' recovery-wifi/wifi
-          grep -Fq 'down|stop) cmd_down ;;' recovery-wifi/wifi
-          grep -Fq 'repeater) cmd_hotspot_repeater "$@" ;;' recovery-wifi/wifi
-          grep -Fq 'repeater-2g) cmd_hotspot_repeater_2g "$@" ;;' recovery-wifi/wifi
-          grep -Fq 'repeater-5g) cmd_hotspot_repeater_5g "$@" ;;' recovery-wifi/wifi
-          grep -Fq '"$BB" timeout 12 "$WPA"' recovery-wifi/wifi
-          grep -Fq 'lease.env' recovery-wifi/wifi
-          grep -Fq 'stop_child_bounded "$dhcp_pid"' recovery-wifi/wifi
-          grep -Fq '"$BB" timeout "$SYNC_TIMEOUT" "$BB" sync' recovery-wifi/wifi
-          grep -Fq 'WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}' recovery-wifi/wifi
-          grep -Fq 'DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}' recovery-wifi/wifi
-          grep -Fq 'MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}' recovery-wifi/wifi
-          grep -Fq 'stage=persistence checking saved wlan profiles' recovery-wifi/wifi
-          grep -Fq 'stage=supplicant starting' recovery-wifi/wifi
-          grep -Fq 'stage=association waiting up to 25s' recovery-wifi/wifi
-          grep -Fq 'stage=dhcp acquiring lease' recovery-wifi/wifi
-          grep -Fq 'if [ "$#" -eq 0 ]; then' recovery-wifi/wifi
-          if grep -Fq '"$WPACLI" -p' recovery-wifi/wifi; then
+          grep -q '^cmd_hotspot_create()' recovery-wifi/rctools-net
+          grep -q '^cmd_hotspot_config()' recovery-wifi/rctools-net
+          grep -q '^cmd_hotspot_start()' recovery-wifi/rctools-net
+          grep -q '^cmd_hotspot_stop()' recovery-wifi/rctools-net
+          grep -q '^cmd_hotspot_delete()' recovery-wifi/rctools-net
+          grep -q '^cmd_hotspot_repeater()' recovery-wifi/rctools-net
+          grep -q '^cmd_hotspot_repeater_2g()' recovery-wifi/rctools-net
+          grep -q '^cmd_hotspot_repeater_5g()' recovery-wifi/rctools-net
+          grep -Fq 'up|start) cmd_up ;;' recovery-wifi/rctools-net
+          grep -Fq 'down|stop) cmd_down ;;' recovery-wifi/rctools-net
+          grep -Fq 'repeater) cmd_hotspot_repeater "$@" ;;' recovery-wifi/rctools-net
+          grep -Fq 'repeater-2g) cmd_hotspot_repeater_2g "$@" ;;' recovery-wifi/rctools-net
+          grep -Fq 'repeater-5g) cmd_hotspot_repeater_5g "$@" ;;' recovery-wifi/rctools-net
+          grep -Fq '"$BB" timeout 12 "$WPA"' recovery-wifi/rctools-net
+          grep -Fq 'lease.env' recovery-wifi/rctools-net
+          grep -Fq 'stop_child_bounded "$dhcp_pid"' recovery-wifi/rctools-net
+          grep -Fq '"$BB" timeout "$SYNC_TIMEOUT" "$BB" sync' recovery-wifi/rctools-net
+          grep -Fq 'WPA_CLI_TIMEOUT=${WIFI_WPA_CLI_TIMEOUT:-2}' recovery-wifi/rctools-net
+          grep -Fq 'DATA_MOUNT_TIMEOUT=${WIFI_DATA_MOUNT_TIMEOUT:-8}' recovery-wifi/rctools-net
+          grep -Fq 'MOUNT_TIMEOUT=${WIFI_MOUNT_TIMEOUT:-5}' recovery-wifi/rctools-net
+          grep -Fq 'stage=persistence checking saved wlan profiles' recovery-wifi/rctools-net
+          grep -Fq 'stage=supplicant starting' recovery-wifi/rctools-net
+          grep -Fq 'stage=association waiting up to 25s' recovery-wifi/rctools-net
+          grep -Fq 'stage=dhcp acquiring lease' recovery-wifi/rctools-net
+          grep -Fq 'if [ "$#" -eq 0 ]; then' recovery-wifi/rctools-net
+          if grep -Fq '"$WPACLI" -p' recovery-wifi/rctools-net; then
             echo "Direct unbounded wpa_cli invocation remains"
             exit 1
           fi
-          if grep -Fq '"$IPTABLES" -' recovery-wifi/wifi; then
+          if grep -Fq '"$IPTABLES" -' recovery-wifi/rctools-net; then
             echo "Direct unbounded iptables invocation remains"
             exit 1
           fi
-          if grep -Fq 'twrp mount data' recovery-wifi/wifi; then
+          if grep -Fq 'twrp mount data' recovery-wifi/rctools-net; then
             echo "Unbounded twrp mount data invocation remains"
             exit 1
           fi
-          grep -q '^cmd_ping()' recovery-wifi/wifi
-          grep -Fq 'Static resolver fallback:' recovery-wifi/wifi
+          grep -q '^cmd_ping()' recovery-wifi/rctools-net
+          grep -Fq 'Static resolver fallback:' recovery-wifi/rctools-net
           grep -q 'CONFIG_NSLOOKUP' recovery-wifi/build-userspace.sh
-          grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/wifi
-          grep -Fq 'PERSIST_NETWORKS=$PERSIST_WLAN_DIR/networks' recovery-wifi/wifi
-          grep -Fq 'PERSIST_HOTSPOT=$PERSIST_AP_DIR/hotspot.conf' recovery-wifi/wifi
-          grep -Fq 'tmp="$PERSIST_AP_DIR/.hotspot.$$"' recovery-wifi/wifi
-          grep -Fq 'Internet sharing/NAT is disabled in start-vif mode' recovery-wifi/wifi
-          grep -Fq "hotspot_dns=" recovery-wifi/wifi
+          grep -qx 'IPTABLES=/sbin/iptables' recovery-wifi/rctools-net
+          grep -Fq 'PERSIST_NETWORKS=$PERSIST_WLAN_DIR/networks' recovery-wifi/rctools-net
+          grep -Fq 'PERSIST_HOTSPOT=$PERSIST_AP_DIR/hotspot.conf' recovery-wifi/rctools-net
+          grep -Fq 'tmp="$PERSIST_AP_DIR/.hotspot.$$"' recovery-wifi/rctools-net
+          grep -Fq 'Internet sharing/NAT is disabled in start-vif mode' recovery-wifi/rctools-net
+          grep -Fq "hotspot_dns=" recovery-wifi/rctools-net
           grep -Fq "xtables state match" recovery-wifi/ds-recovery-check
           grep -Fq 'kernel xt match: $match' recovery-wifi/ds-recovery-check
-          grep -Fq 'HOTSPOT_FORWARD_CHAIN=CHANNEL_HOTSPOT_FWD' recovery-wifi/wifi
-          grep -Fq 'HOTSPOT_NAT_CHAIN=CHANNEL_HOTSPOT_NAT' recovery-wifi/wifi
-          grep -q '192\.168\.43\.1/24' recovery-wifi/wifi
+          grep -Fq 'HOTSPOT_FORWARD_CHAIN=CHANNEL_HOTSPOT_FWD' recovery-wifi/rctools-net
+          grep -Fq 'HOTSPOT_NAT_CHAIN=CHANNEL_HOTSPOT_NAT' recovery-wifi/rctools-net
+          grep -q '192\.168\.43\.1/24' recovery-wifi/rctools-net
 
       - name: Install dependencies
         run: |
@@ -265,7 +273,7 @@ jobs:
         run: |
           set -euo pipefail
           bash -n recovery-wifi/build-userspace.sh
-          sh -n recovery-wifi/wifi
+          sh -n recovery-wifi/rctools-net
           sh -n recovery-wifi/wifi-udhcpc.script
           sh -n recovery-wifi/recovery-time-sync
           sh -n recovery-wifi/ds-recovery-check
@@ -328,7 +336,7 @@ jobs:
             }
           done
 
-      - name: Stage Wi-Fi in kernel internal initramfs
+      - name: Stage RCTools networking in kernel internal initramfs
         run: |
           set -euo pipefail
 
@@ -336,7 +344,8 @@ jobs:
           rm -rf "$ROOT"
           mkdir -p "$ROOT/sbin" "$ROOT/lib/firmware/wlan/prima"
 
-          install -m 0755 recovery-wifi/out/wifi "$ROOT/sbin/wifi"
+          install -m 0755 recovery-wifi/out/rctools-net "$ROOT/sbin/rctools-net"
+          test ! -e "$ROOT/sbin/wifi"
           install -m 0755 recovery-wifi/rctools "$ROOT/sbin/rctools"
           install -m 0755 recovery-wifi/out/busybox.ds "$ROOT/sbin/busybox.ds"
           install -m 0755 recovery-wifi/out/iptables.ds "$ROOT/sbin/iptables.ds"
@@ -348,7 +357,7 @@ jobs:
           install -m 0755 recovery-wifi/out/iw.ds "$ROOT/sbin/iw.ds"
           install -m 0755 recovery-wifi/out/wpa_cli.ds "$ROOT/sbin/wpa_cli.ds"
           install -m 0755 recovery-wifi/out/wpa_passphrase.ds "$ROOT/sbin/wpa_passphrase.ds"
-          install -m 0755 recovery-wifi/out/wifi-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
+          install -m 0755 recovery-wifi/out/rctools-net-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
           install -m 0755 recovery-wifi/out/wcnss-recovery "$ROOT/sbin/wcnss-recovery"
           install -m 0755 recovery-wifi/out/recovery-time-sync "$ROOT/sbin/recovery-time-sync"
           install -m 0755 recovery-wifi/ds-recovery-check "$ROOT/sbin/ds-recovery-check"
@@ -947,7 +956,7 @@ jobs:
             twrp-droidspaces.sha256
             recovery-wifi/out/SHA256SUMS
             recovery-wifi/rctools
-            recovery-wifi/wifi
+            recovery-wifi/rctools-net
             scripts/disable-twrp-service.py
             recovery-wifi/hostapd.config
             recovery-wifi/wifi-udhcpc.script
@@ -986,7 +995,7 @@ jobs:
             "twrp-droidspaces.sha256"
             "recovery-wifi/out/SHA256SUMS"
             "recovery-wifi/rctools"
-            "recovery-wifi/wifi"
+            "recovery-wifi/rctools-net"
             "scripts/disable-twrp-service.py"
             "recovery-wifi/hostapd.config"
             "recovery-wifi/wifi-udhcpc.script"
