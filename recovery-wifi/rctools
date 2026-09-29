@@ -345,7 +345,9 @@ help_main() {
         '  rctools gpu status' \
         '  rctools gpu prepare' \
         '  rctools gpu load' \
+        '  rctools gpu gralloc' \
         '  rctools gpu probe' \
+        '  rctools gpu opencl' \
         '  rctools gpu libs' \
         '  rctools gpu firmware' \
         '  rctools gpu logs' \
