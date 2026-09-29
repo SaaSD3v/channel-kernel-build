@@ -52,6 +52,7 @@ backup_etc(){
   backup_file /etc/passwd passwd || return 1
   backup_file /etc/shadow shadow || return 1
   backup_file /etc/group group || return 1
+  backup_file /etc/shells shells || return 1
   : >"$BACKUP/.ready"
 }
 restore_file(){
@@ -64,14 +65,21 @@ restore_etc(){
   restore_file /etc/passwd passwd
   restore_file /etc/shadow shadow
   restore_file /etc/group group
+  restore_file /etc/shells shells
   "$BB" rm -rf "$BACKUP"
 }
 root_passwd(){
-  t="$STATE/passwd.$$"
+  cred="$1"
+  t="$STATE/passwd.$"
   if [ -f /etc/passwd ]; then
-    "$BB" awk -F: 'BEGIN{OFS=":";d=0} $1=="root"{print "root","x","0","0","root","/","/sbin/sh";d=1;next}{print} END{if(!d)print "root","x","0","0","root","/","/sbin/sh"}' /etc/passwd >"$t"
-  else echo 'root:x:0:0:root:/:/sbin/sh' >"$t"; fi
+    "$BB" awk -F: -v p="$cred" 'BEGIN{OFS=":";d=0} $1=="root"{print "root",p,"0","0","root","/","/sbin/sh";d=1;next}{print} END{if(!d)print "root",p,"0","0","root","/","/sbin/sh"}' /etc/passwd >"$t"
+  else printf 'root:%s:0:0:root:/:/sbin/sh\n' "$cred" >"$t"; fi
   "$BB" mv "$t" /etc/passwd; "$BB" chmod 0644 /etc/passwd
+}
+ensure_shells(){
+  [ -f /etc/shells ] || : >/etc/shells
+  "$BB" grep -qx '/sbin/sh' /etc/shells 2>/dev/null || echo '/sbin/sh' >>/etc/shells
+  "$BB" chmod 0644 /etc/shells
 }
 root_group(){
   t="$STATE/group.$$"
@@ -93,11 +101,23 @@ random_pass(){ "$BB" dd if=/dev/urandom bs=1 count=32 2>/dev/null | "$BB" sha256
 prepare_account(){
   mode="$(get "$AUTH")"
   backup_etc || return 1
-  root_passwd || return 1; root_group || return 1
+  root_group || return 1
+  ensure_shells || return 1
   case "$mode" in
-    key) root_shadow '!' ;;
-    open) root_shadow '' ;;
-    password|temporary|twofactor) [ -s "$HASH" ] || { err "password is not configured"; return 1; }; root_shadow "$(cat "$HASH")" ;;
+    key)
+      root_passwd '!' || return 1
+      root_shadow '!' || return 1
+      ;;
+    open)
+      root_passwd '' || return 1
+      root_shadow '' || return 1
+      ;;
+    password|temporary|twofactor)
+      [ -s "$HASH" ] || { err "password is not configured"; return 1; }
+      hash="$(cat "$HASH")"
+      root_passwd "$hash" || return 1
+      root_shadow "$hash" || return 1
+      ;;
     *) err "bad auth mode: $mode"; return 1 ;;
   esac
 }
