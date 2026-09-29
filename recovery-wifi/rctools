@@ -11,6 +11,7 @@ export PATH TMPDIR TMP TEMP
 BB=/sbin/busybox.ds
 NET=/sbin/rctools-net
 REMOTE=/sbin/rctools-remote
+MTP=/sbin/rctools-mtp
 DSCHECK=/sbin/ds-recovery-check
 TIMESYNC=/sbin/recovery-time-sync
 BYNAME=/dev/block/bootdevice/by-name
@@ -353,6 +354,14 @@ help_main() {
         '  rctools ssh start|stop|status|info' \
         '  rctools sftp start|stop|status|info' \
         '' \
+        'USB MTP:' \
+        '  rctools mtp                                 # interactive menu' \
+        '  rctools mtp start|stop|status' \
+        '  rctools mtp config' \
+        '  rctools mtp config path /' \
+        '  rctools mtp config name "Channel Root"' \
+        '  rctools mtp config mode mtp,adb|mtp' \
+        '' \
         'DroidSpaces / time:' \
         '  rctools droidspaces check' \
         '  rctools time status' \
@@ -466,6 +475,10 @@ case "$cmd" in
             stop|status|info|connection|connection-info) exec "$REMOTE" "$sub" "$@" ;;
             *) err "usage: rctools sftp {start|stop|status|info}"; exit 2 ;;
         esac
+        ;;
+    mtp)
+        [ -x "$MTP" ] || { err "MTP backend missing: $MTP"; exit 1; }
+        exec "$MTP" "$@"
         ;;
     droidspaces|ds)
         sub="${1:-check}"
