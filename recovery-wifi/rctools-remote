@@ -185,7 +185,17 @@ stop(){
   fi
   rm -f "$PIDFILE"; restore_etc; say "remote access stopped"
 }
-start_hotspot(){ [ -x "$NET" ] || { err "network backend missing"; return 1; }; "$NET" hotspot start || return $?; start; }
+start_hotspot(){
+  [ -x "$NET" ] || { err "network backend missing"; return 1; }
+  if [ "$#" -ge 2 ]; then
+    "$NET" hotspot create "$@" || return $?
+  elif [ "$#" -ne 0 ]; then
+    err "usage: rctools remote start-hotspot [SSID PASSWORD [CHANNEL]]"
+    return 2
+  fi
+  "$NET" hotspot start || return $?
+  start
+}
 menu(){
   while :; do
     echo; say "========================================"; say "        RCTools - Remote Access"; say "========================================"
@@ -204,6 +214,7 @@ RCTools remote access
   rctools remote                         interactive menu
   rctools remote start|stop|status|info
   rctools remote start-hotspot
+  rctools remote start-hotspot "SSID" "PASSWORD" [CHANNEL]
   rctools remote service ssh|sftp|both
   rctools remote auth temporary
   rctools remote auth password PASSWORD
@@ -219,7 +230,7 @@ EOF
 init
 cmd="${1:-menu}"; [ "$#" -gt 0 ] && shift || true
 case "$cmd" in
-  menu) menu;; start) start;; start-hotspot|hotspot) start_hotspot;; stop) stop;; restart) stop;start;;
+  menu) menu;; start) start;; start-hotspot|hotspot) start_hotspot "$@";; stop) stop;; restart) stop;start;;
   status) status;; info|connection|connection-info) info;; service) service_cmd "$@";; auth) auth_cmd "$@";;
   key) key_cmd "$@";; port) port_cmd "${1:-}";; help|-h|--help) help;;
   *) err "unknown remote command: $cmd"; help; exit 2;;
