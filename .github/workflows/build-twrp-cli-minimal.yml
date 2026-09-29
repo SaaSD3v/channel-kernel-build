@@ -43,6 +43,7 @@ jobs:
           grep -Fq 'rctools hotspot repeater-5g' recovery-wifi/rctools
           grep -Fq 'rctools block NAME' recovery-wifi/rctools
           grep -Fq 'NET=/sbin/rctools-net' recovery-wifi/rctools
+          ! grep -Fq 'rctools-net-udhcpc.script' .github/workflows/build-twrp-cli-minimal.yml
           ! grep -Fq 'WIFI=/sbin/wifi' recovery-wifi/rctools
           ! grep -Fq "cat <<'EOF'" recovery-wifi/rctools
           grep -Fq '/sbin/rctools mount data rw' recovery-wifi/rctools-net
@@ -357,7 +358,7 @@ jobs:
           install -m 0755 recovery-wifi/out/iw.ds "$ROOT/sbin/iw.ds"
           install -m 0755 recovery-wifi/out/wpa_cli.ds "$ROOT/sbin/wpa_cli.ds"
           install -m 0755 recovery-wifi/out/wpa_passphrase.ds "$ROOT/sbin/wpa_passphrase.ds"
-          install -m 0755 recovery-wifi/out/rctools-net-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
+          install -m 0755 recovery-wifi/out/wifi-udhcpc.script "$ROOT/sbin/wifi-udhcpc.script"
           install -m 0755 recovery-wifi/out/wcnss-recovery "$ROOT/sbin/wcnss-recovery"
           install -m 0755 recovery-wifi/out/recovery-time-sync "$ROOT/sbin/recovery-time-sync"
           install -m 0755 recovery-wifi/ds-recovery-check "$ROOT/sbin/ds-recovery-check"
