@@ -10,6 +10,8 @@ export PATH TMPDIR TMP TEMP
 BB=/sbin/busybox.ds
 RCTOOLS=/sbin/rctools
 GPU_PROBE=/sbin/rctools-gpu-probe.so
+OPENCL_PROBE=/sbin/rctools-opencl-probe.so
+GRALLOC_PROBE=/sbin/rctools-gralloc-probe.so
 LIBSYNC=/sbin/libsync.so
 VENDOR=/mnt/vendor
 KGSL=/sys/class/kgsl/kgsl-3d0
@@ -76,6 +78,32 @@ stage_gpu_firmware() {
     return 0
 }
 
+stage_graphics_hal() {
+    "$BB" mkdir -p /vendor/lib64/hw 2>/dev/null || return 1
+
+    for name in gralloc.msm8953.so gralloc.default.so; do
+        src="$VENDOR/lib64/hw/$name"
+        dst="/vendor/lib64/hw/$name"
+        [ -r "$src" ] || continue
+
+        if [ -e "$dst" ] || [ -L "$dst" ]; then
+            "$BB" rm -f "$dst" 2>/dev/null || true
+        fi
+
+        "$BB" ln -s "$src" "$dst" 2>/dev/null || {
+            err "could not expose graphics HAL: $name"
+            return 1
+        }
+    done
+
+    [ -r /vendor/lib64/hw/gralloc.msm8953.so ] || {
+        err "gralloc.msm8953.so was not exposed under /vendor/lib64/hw"
+        return 1
+    }
+
+    return 0
+}
+
 prepare_gpu() {
     [ "$(id -u 2>/dev/null)" = "0" ] || {
         err "run from a root recovery shell"
@@ -93,6 +121,8 @@ prepare_gpu() {
 
     required_file "$LIBSYNC" || return 1
     required_file "$GPU_PROBE" || return 1
+    required_file "$OPENCL_PROBE" || return 1
+    required_file "$GRALLOC_PROBE" || return 1
     required_file /system/bin/linker64 || return 1
     required_file /system/bin/sh || return 1
 
@@ -104,6 +134,7 @@ prepare_gpu() {
     done
 
     stage_gpu_firmware || return 1
+    stage_graphics_hal || return 1
     return 0
 }
 
@@ -136,6 +167,8 @@ show_status() {
 
     [ -r "$LIBSYNC" ] && say 'libsync: embedded' || say 'libsync: missing'
     [ -r "$GPU_PROBE" ] && say 'egl probe: embedded' || say 'egl probe: missing'
+    [ -r "$OPENCL_PROBE" ] && say 'opencl probe: embedded' || say 'opencl probe: missing'
+    [ -r "$GRALLOC_PROBE" ] && say 'gralloc probe: embedded' || say 'gralloc probe: missing'
 }
 
 show_libs() {
@@ -178,6 +211,27 @@ run_probe() {
     LD_LIBRARY_PATH="$GPU_LIBPATH"     LD_PRELOAD="$GPU_PROBE"         /system/bin/sh -c ':'
 }
 
+run_opencl_probe() {
+    prepare_gpu || return 1
+    required_file "$VENDOR/lib64/libOpenCL.so" || return 1
+    required_file "$VENDOR/lib64/libCB.so" || return 1
+
+    say 'stage=OpenCL compute probe'
+    LD_LIBRARY_PATH="$GPU_LIBPATH"     LD_PRELOAD="$OPENCL_PROBE"         /system/bin/sh -c ':'
+}
+
+run_gralloc_probe() {
+    prepare_gpu || return 1
+
+    say 'stage=gralloc HAL discovery probe'
+    say "ro.hardware=$(getprop ro.hardware 2>/dev/null)"
+    say "ro.product.board=$(getprop ro.product.board 2>/dev/null)"
+    say "ro.board.platform=$(getprop ro.board.platform 2>/dev/null)"
+    "$BB" ls -l /vendor/lib64/hw/gralloc*.so 2>/dev/null || true
+
+    LD_LIBRARY_PATH="$GPU_LIBPATH"     LD_PRELOAD="$GRALLOC_PROBE"         /system/bin/sh -c ':'
+}
+
 show_logs() {
     dmesg | "$BB" grep -iE         'kgsl|adreno|a506|a530|gpu|iommu|firmware|zap|egl|gsl|fault|error'         | "$BB" tail -n 250
 }
@@ -201,6 +255,8 @@ case "$cmd" in
         ;;
     load|linker) load_test ;;
     probe|test) run_probe ;;
+    gralloc|hal) run_gralloc_probe ;;
+    opencl|compute) run_opencl_probe ;;
     libs) show_libs ;;
     firmware|fw) show_firmware ;;
     logs|log) show_logs ;;
