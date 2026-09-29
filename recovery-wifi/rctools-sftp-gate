@@ -1,0 +1,7 @@
+#!/sbin/sh
+STATE=/tmp/rctools-remote
+service=$(cat "$STATE/service" 2>/dev/null || printf '%s' both)
+case "$service" in
+  sftp|both) exec /sbin/sftp-server.ds;;
+  *) echo "SFTP is disabled by RCTools." >&2; exit 126;;
+esac
