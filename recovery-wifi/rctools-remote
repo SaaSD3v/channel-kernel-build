@@ -15,6 +15,7 @@ PORT=$STATE/port
 HASH=$STATE/hash
 TEMP=$STATE/temp-password
 BACKUP=$STATE/etc-backup
+PERSIST_HOSTKEY_DIR=/data/local/RCTools/dropbear-hostkeys
 
 say(){ printf '%s\n' "$*"; }
 err(){ printf 'rctools remote: %s\n' "$*" >&2; }
@@ -40,6 +41,35 @@ init(){
 }
 get(){ cat "$1" 2>/dev/null || true; }
 running(){ [ -s "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; }
+
+data_rw_mounted(){
+  "$BB" awk '$2=="/data" && $4 ~ /(^|,)rw(,|$)/ {found=1} END{exit found?0:1}' /proc/mounts 2>/dev/null
+}
+
+prepare_hostkeys(){
+  "$BB" rm -rf /etc/dropbear
+  if data_rw_mounted; then
+    "$BB" mkdir -p "$PERSIST_HOSTKEY_DIR" || return 1
+    "$BB" chmod 0700 "$PERSIST_HOSTKEY_DIR" 2>/dev/null || true
+    "$BB" ln -s "$PERSIST_HOSTKEY_DIR" /etc/dropbear || return 1
+    HOSTKEY_MODE=persistent
+    HOSTKEY_PATH="$PERSIST_HOSTKEY_DIR"
+  else
+    "$BB" mkdir -p /etc/dropbear || return 1
+    HOSTKEY_MODE=temporary
+    HOSTKEY_PATH=/etc/dropbear
+  fi
+}
+
+hostkey_info(){
+  if [ -L /etc/dropbear ]; then
+    say "host key: persistent ($(readlink /etc/dropbear 2>/dev/null || true))"
+  elif [ -d /etc/dropbear ]; then
+    say "host key: temporary (changes after reboot)"
+  else
+    say "host key: not initialized"
+  fi
+}
 
 backup_file(){
   src="$1"; name="$2"; "$BB" mkdir -p "$BACKUP"
@@ -221,7 +251,7 @@ start(){
   [ "$mode" != key ] && [ "$mode" != twofactor ] || [ -s "$AUTHDIR/authorized_keys" ] || { err "authorized key required"; return 1; }
   [ "$mode" != temporary ] || [ -s "$HASH" ] || auth_cmd temporary || return 1
   prepare_account || { restore_etc; return 1; }
-  "$BB" mkdir -p /etc/dropbear
+  prepare_hostkeys || { restore_etc; err "could not prepare Dropbear host-key directory"; return 1; }
   case "$mode" in
     key|twofactor) keydir="$AUTHDIR" ;;
     password|temporary|open) keydir="$EMPTYKEYDIR" ;;
@@ -234,6 +264,11 @@ start(){
   running || { restore_etc; err "dropbear did not stay running"; return 1; }
   say "remote access started"
   info
+  if [ "$HOSTKEY_MODE" = temporary ]; then
+    echo
+    say "warning : /data is not mounted rw; SSH host key is temporary"
+    say "          the PC will see a different fingerprint after reboot"
+  fi
   if [ -z "$(addresses)" ]; then
     echo
     say "Server is running, but it is not reachable yet."
