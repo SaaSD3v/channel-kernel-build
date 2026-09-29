@@ -183,6 +183,10 @@ jobs:
               fi
             fi
           done
+          if grep -Fxq 'sbin/wifi' kernel-initramfs-files.txt; then
+            echo "Legacy /sbin/wifi unexpectedly remains in kernel internal initramfs"
+            exit 1
+          fi
 
           [ "$ok" -eq 1 ]
           echo "$TWRP_BASE_SHA256  twrp-base.img" | sha256sum -c -
@@ -711,7 +715,7 @@ jobs:
             exit 1
           fi
           for path in \
-            sbin/rctools sbin/wifi sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
+            sbin/rctools sbin/rctools-net sbin/busybox.ds sbin/iptables.ds sbin/iptables sbin/iptables-save sbin/iptables-restore \
             sbin/wpa_supplicant.ds sbin/hostapd.ds sbin/iw.ds sbin/wpa_cli.ds \
             sbin/wpa_passphrase.ds sbin/wifi-udhcpc.script sbin/wcnss-recovery sbin/recovery-time-sync \
             sbin/ds-recovery-check lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
