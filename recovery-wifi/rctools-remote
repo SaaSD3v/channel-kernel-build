@@ -161,7 +161,13 @@ addresses(){ "$BB" ip -4 addr show 2>/dev/null | "$BB" awk '/inet /{sub(/\/.*/,"
 info(){
   svc="$(get "$SERVICE")"; mode="$(get "$AUTH")"; port="$(get "$PORT")"
   say "service : $svc"; say "auth    : $mode"; say "port    : $port"; say "user    : root"; say "root    : /"
-  ips="$(addresses)"; [ -n "$ips" ] || say "address : none"
+  ips="$(addresses)"
+  if [ -n "$ips" ]; then
+    say "network : ready"
+  else
+    say "network : no IPv4 address"
+    say "address : none"
+  fi
   printf '%s\n' "$ips" | while read ip; do [ -n "$ip" ] || continue; say "address : $ip"
     case "$svc" in ssh|both) say "SSH  : ssh root@$ip -p $port";; esac
     case "$svc" in sftp|both) say "SFTP : sftp -P $port root@$ip";; esac
@@ -189,7 +195,13 @@ start(){
   "$DROPBEAR" "$@" || { rc=$?; restore_etc; err "dropbear failed rc=$rc"; return "$rc"; }
   i=0; while [ "$i" -lt 20 ]; do running && break; "$BB" sleep 0.1; i=$((i+1)); done
   running || { restore_etc; err "dropbear did not stay running"; return 1; }
-  say "remote access started"; info
+  say "remote access started"
+  info
+  if [ -z "$(addresses)" ]; then
+    echo
+    say "Server is running, but it is not reachable yet."
+    say "Connect Wi-Fi or start a hotspot, then run: rctools remote info"
+  fi
 }
 stop(){
   if running; then pid="$(cat "$PIDFILE")"; kill "$pid" 2>/dev/null || true
@@ -200,12 +212,23 @@ stop(){
 }
 start_hotspot(){
   [ -x "$NET" ] || { err "network backend missing"; return 1; }
-  if [ "$#" -ge 2 ]; then
-    "$NET" hotspot create "$@" || return $?
-  elif [ "$#" -ne 0 ]; then
-    err "usage: rctools remote start-hotspot [SSID PASSWORD [CHANNEL]]"
-    return 2
-  fi
+  case "$#" in
+    0) ;;
+    2|3)
+      ssid="$1"
+      pass="$2"
+      channel="${3:-6}"
+      if "$NET" hotspot config >/dev/null 2>&1; then
+        "$NET" hotspot config ssid "$ssid" password "$pass" channel "$channel" || return $?
+      else
+        "$NET" hotspot create "$ssid" "$pass" "$channel" || return $?
+      fi
+      ;;
+    *)
+      err "usage: rctools remote start-hotspot [SSID PASSWORD [CHANNEL]]"
+      return 2
+      ;;
+  esac
   "$NET" hotspot start || return $?
   start
 }
