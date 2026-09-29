@@ -50,6 +50,8 @@ jobs:
           grep -Fq 'PASS GRALLOC_HAL_OK' recovery-wifi/gpu/gralloc_probe.c
           grep -Fq 'rctools gpu opencl' recovery-wifi/rctools-gpu
           grep -Fq 'rctools gpu gralloc' recovery-wifi/rctools-gpu
+          grep -Fq 'rctools gpu start' recovery-wifi/rctools-gpu
+          grep -Fq 'rctools gpu stop' recovery-wifi/rctools-gpu
           python3 -m py_compile scripts/disable-twrp-service.py
           grep -Fq 'rctools mount a system|vendor|oem|all' recovery-wifi/rctools
           grep -Fq 'rctools mount b system|vendor|oem|all' recovery-wifi/rctools
@@ -296,6 +298,67 @@ jobs:
           DEVICE="$DEVICE" recovery-wifi/build-userspace.sh
           bash recovery-wifi/build-gpu-userspace.sh
 
+          # Stage the exact Android/Bionic VirGL runtime validated on Channel.
+          # Only classic VirGL/vtest pieces are kept; virgl_render_server/Venus
+          # are intentionally excluded to save initramfs space.
+          VIRGL_TAG="1.3.0-8148de0"
+          VIRGL_URL="https://github.com/Container-On-Android/virglrenderer/releases/download/$VIRGL_TAG/android-aarch64-api30-virglrenderer.tar.gz"
+          VIRGL_ARCHIVE="$RUNNER_TEMP/virglrenderer-android.tar.gz"
+          VIRGL_EXTRACT="$RUNNER_TEMP/virglrenderer-android"
+          VIRGL_OUT="$GITHUB_WORKSPACE/recovery-wifi/out/virgl"
+          rm -rf "$VIRGL_EXTRACT" "$VIRGL_OUT"
+          mkdir -p "$VIRGL_EXTRACT" "$VIRGL_OUT/bin" "$VIRGL_OUT/lib"
+
+          curl -fL --retry 5 --retry-delay 2 "$VIRGL_URL" -o "$VIRGL_ARCHIVE"
+          tar -xzf "$VIRGL_ARCHIVE" -C "$VIRGL_EXTRACT"
+
+          virgl_server="$(find "$VIRGL_EXTRACT" -type f -name virgl_test_server -print -quit)"
+          virgl_lib="$(find "$VIRGL_EXTRACT" -type f -name 'libvirglrenderer.so.*' -print | sort -V | tail -n1)"
+          epoxy_lib="$(find "$VIRGL_EXTRACT" -type f -name 'libepoxy.so.*' -print | sort -V | tail -n1)"
+          test -n "$virgl_server"
+          test -n "$virgl_lib"
+          test -n "$epoxy_lib"
+
+          install -m 0755 "$virgl_server" "$VIRGL_OUT/bin/virgl_test_server"
+          virgl_name="${virgl_lib##*/}"
+          epoxy_name="${epoxy_lib##*/}"
+          install -m 0644 "$virgl_lib" "$VIRGL_OUT/lib/$virgl_name"
+          install -m 0644 "$epoxy_lib" "$VIRGL_OUT/lib/$epoxy_name"
+          ln -s "$virgl_name" "$VIRGL_OUT/lib/libvirglrenderer.so.1"
+          ln -s "$virgl_name" "$VIRGL_OUT/lib/libvirglrenderer.so"
+          ln -s "$epoxy_name" "$VIRGL_OUT/lib/libepoxy.so.0"
+          ln -s "$epoxy_name" "$VIRGL_OUT/lib/libepoxy.so"
+
+          # Old recovery Bionic has syscall(2) but no libc memfd_create symbol.
+          # Keep the shim freestanding and resolve syscall from loaded Bionic libc.
+          cat > "$RUNNER_TEMP/rctools-memfd-compat.c" <<'EOF'
+          extern long syscall(long number, ...);
+          __attribute__((visibility("default")))
+          int memfd_create(const char *name, unsigned int flags)
+          {
+              return (int) syscall(279L, name, flags);
+          }
+          EOF
+          aarch64-linux-gnu-gcc -Os -fPIC -fno-stack-protector \
+            -shared -nostdlib -Wl,--hash-style=both \
+            -Wl,-soname,librctools-memfd-compat.so \
+            "$RUNNER_TEMP/rctools-memfd-compat.c" \
+            -o "$VIRGL_OUT/lib/librctools-memfd-compat.so"
+
+          aarch64-linux-gnu-strip --strip-unneeded "$VIRGL_OUT/bin/virgl_test_server"
+          aarch64-linux-gnu-strip --strip-unneeded "$VIRGL_OUT/lib/$virgl_name"
+          aarch64-linux-gnu-strip --strip-unneeded "$VIRGL_OUT/lib/$epoxy_name"
+          aarch64-linux-gnu-strip --strip-unneeded "$VIRGL_OUT/lib/librctools-memfd-compat.so"
+
+          file "$VIRGL_OUT/bin/virgl_test_server" | grep -q 'ARM aarch64'
+          aarch64-linux-gnu-readelf -l "$VIRGL_OUT/bin/virgl_test_server" | grep -Fq '/system/bin/linker64'
+          aarch64-linux-gnu-readelf -d "$VIRGL_OUT/bin/virgl_test_server" | grep -Fq 'Shared library: [libvirglrenderer.so.1]'
+          aarch64-linux-gnu-readelf -d "$VIRGL_OUT/lib/$virgl_name" | grep -Fq 'Shared library: [libepoxy.so.0]'
+          aarch64-linux-gnu-readelf -Ws "$VIRGL_OUT/lib/$virgl_name" | grep -Eq 'UND[[:space:]]+memfd_create$'
+          aarch64-linux-gnu-readelf -Ws "$VIRGL_OUT/lib/librctools-memfd-compat.so" | grep -Eq '[[:space:]]memfd_create$'
+          aarch64-linux-gnu-readelf -Ws "$VIRGL_OUT/lib/librctools-memfd-compat.so" | grep -Eq 'UND[[:space:]]+syscall$'
+          du -h "$VIRGL_OUT/bin/virgl_test_server" "$VIRGL_OUT/lib/$virgl_name" "$VIRGL_OUT/lib/$epoxy_name" "$VIRGL_OUT/lib/librctools-memfd-compat.so"
+
           test -x recovery-wifi/out/iptables.ds
           test -r recovery-wifi/out/libsync.so
           test -r recovery-wifi/out/rctools-gpu-probe.so
@@ -372,7 +435,7 @@ jobs:
 
           ROOT="$GITHUB_WORKSPACE/kernel/recovery-initramfs"
           rm -rf "$ROOT"
-          mkdir -p "$ROOT/sbin" "$ROOT/lib/firmware/wlan/prima"
+          mkdir -p "$ROOT/sbin" "$ROOT/sbin/virgl/lib" "$ROOT/lib/firmware/wlan/prima"
 
           install -m 0755 recovery-wifi/out/rctools-net "$ROOT/sbin/rctools-net"
           test ! -e "$ROOT/sbin/wifi"
@@ -397,6 +460,13 @@ jobs:
           install -m 0644 recovery-wifi/out/rctools-gralloc-probe.so "$ROOT/sbin/rctools-gralloc-probe.so"
           install -m 0644 recovery-wifi/out/android.hardware.graphics.common@1.0.so "$ROOT/sbin/android.hardware.graphics.common@1.0.so"
           install -m 0644 recovery-wifi/out/android.hardware.graphics.common@1.1.so "$ROOT/sbin/android.hardware.graphics.common@1.1.so"
+          install -m 0755 recovery-wifi/out/virgl/bin/virgl_test_server "$ROOT/sbin/virgl/virgl_test_server"
+          cp -a recovery-wifi/out/virgl/lib/. "$ROOT/sbin/virgl/lib/"
+          find "$ROOT/sbin/virgl/lib" -type f -exec chmod 0644 {} +
+          ln -sf /mnt/vendor/lib64/egl/libEGL_adreno.so "$ROOT/sbin/virgl/lib/libEGL.so"
+          ln -sf /mnt/vendor/lib64/egl/libEGL_adreno.so "$ROOT/sbin/virgl/lib/libEGL.so.1"
+          ln -sf /mnt/vendor/lib64/egl/libGLESv2_adreno.so "$ROOT/sbin/virgl/lib/libGLESv2.so"
+          ln -sf /mnt/vendor/lib64/egl/libGLESv2_adreno.so "$ROOT/sbin/virgl/lib/libGLESv2.so.2"
           install -m 0755 recovery-wifi/ds-recovery-check "$ROOT/sbin/ds-recovery-check"
           install -m 0644 recovery-wifi/out/WCNSS_qcom_cfg.ini \
             "$ROOT/lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini"
@@ -754,6 +824,10 @@ jobs:
             sbin/rctools-gpu sbin/libsync.so sbin/rctools-gpu-probe.so \
             sbin/rctools-opencl-probe.so sbin/rctools-gralloc-probe.so \
             sbin/android.hardware.graphics.common@1.0.so sbin/android.hardware.graphics.common@1.1.so \
+            sbin/virgl/virgl_test_server sbin/virgl/lib/librctools-memfd-compat.so \
+            sbin/virgl/lib/libvirglrenderer.so.1 sbin/virgl/lib/libepoxy.so.0 \
+            sbin/virgl/lib/libEGL.so sbin/virgl/lib/libEGL.so.1 \
+            sbin/virgl/lib/libGLESv2.so sbin/virgl/lib/libGLESv2.so.2 \
             sbin/ds-recovery-check lib/firmware/wlan/prima/WCNSS_qcom_cfg.ini
           do
             grep -Fxq "$path" kernel-initramfs-files.txt || {
