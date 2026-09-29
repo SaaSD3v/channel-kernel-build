@@ -114,6 +114,7 @@ boot_adsp() {
     fi
 
     FW_OLD_PATH=$("$BB" cat "$FW_PATH" 2>/dev/null || true)
+    trap 'cleanup_fw_bind' EXIT HUP INT TERM
     "$BB" mount -o bind /mnt/modem/image /lib/firmware || {
         err "could not bind modem firmware at /lib/firmware"
         return 1
@@ -141,6 +142,7 @@ boot_adsp() {
     # The ADSP firmware is resident after boot. Remove the temporary bind so
     # /lib/firmware/wlan/prima from the internal initramfs is visible again.
     cleanup_fw_bind
+    trap - EXIT HUP INT TERM
 
     state=$(adsp_state 2>/dev/null || true)
     if [ "$state" != "ONLINE" ]; then
@@ -186,8 +188,6 @@ cmd_prepare() {
         err "/dev/snd/pcmC0D0p is missing"
         return 1
     }
-
-    route_speaker || return 1
 
     if [ -r /mnt/vendor/lib/rfsa/adsp/capi_v2_smartAmp_TAS25xx.so.1 ]; then
         say "TAS25xx SmartAmp payload: present"
@@ -236,8 +236,22 @@ cmd_pcm() {
 cmd_test() {
     cmd_prepare || return 1
     [ -x "$TINYBEEP" ] || { err "missing $TINYBEEP"; return 1; }
+
+    route_speaker || return 1
+    trap '"$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 >/dev/null 2>&1 || true' EXIT HUP INT TERM
+
     say "Playing low-level 1 kHz test tone for 250 ms..."
-    "$TINYBEEP" -D "$CARD" -d "$PCM_DEVICE"
+    rc=0
+    "$TINYBEEP" -D "$CARD" -d "$PCM_DEVICE" || rc=$?
+
+    "$TINYMIX" -D "$CARD" set "$SPEAKER_ROUTE" 0 >/dev/null 2>&1 || true
+    trap - EXIT HUP INT TERM
+
+    [ "$rc" -eq 0 ] || {
+        err "test tone failed (rc=$rc); speaker route was disabled"
+        return "$rc"
+    }
+    say "test tone complete; speaker route disabled"
 }
 
 cmd_stop() {
