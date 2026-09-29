@@ -343,6 +343,8 @@ help_main() {
         '' \
         'GPU:' \
         '  rctools gpu status' \
+        '  rctools gpu start [SOCKET]' \
+        '  rctools gpu stop' \
         '  rctools gpu prepare' \
         '  rctools gpu load' \
         '  rctools gpu gralloc' \
