@@ -116,23 +116,24 @@ stage_gpu_firmware() {
 stage_graphics_hal() {
     "$BB" mkdir -p /vendor/lib64/hw 2>/dev/null || return 1
 
+    # libhardware's hw_module_exists() canonicalizes HAL paths with realpath()
+    # and rejects modules whose resolved path escapes /vendor/lib64/hw.
+    # Therefore these must be real files, not symlinks into /mnt/vendor.
     for name in gralloc.msm8953.so gralloc.default.so; do
         src="$VENDOR/lib64/hw/$name"
         dst="/vendor/lib64/hw/$name"
         [ -r "$src" ] || continue
 
-        if [ -e "$dst" ] || [ -L "$dst" ]; then
-            "$BB" rm -f "$dst" 2>/dev/null || true
-        fi
-
-        "$BB" ln -s "$src" "$dst" 2>/dev/null || {
-            err "could not expose graphics HAL: $name"
+        "$BB" rm -f "$dst" 2>/dev/null || true
+        "$BB" cat "$src" > "$dst" 2>/dev/null || {
+            err "could not copy graphics HAL into recovery vendor: $name"
             return 1
         }
+        "$BB" chmod 0644 "$dst" 2>/dev/null || true
     done
 
     [ -r /vendor/lib64/hw/gralloc.msm8953.so ] || {
-        err "gralloc.msm8953.so was not exposed under /vendor/lib64/hw"
+        err "gralloc.msm8953.so was not copied under /vendor/lib64/hw"
         return 1
     }
 
