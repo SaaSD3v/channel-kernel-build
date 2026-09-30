@@ -60,6 +60,7 @@ jobs:
           grep -Fq 'DIRECT_GPU_ENV_NOT_LOADED' recovery-wifi/rctools-gpu
           grep -Fq 'DIRECT_GPU_ENV_CONFLICT' recovery-wifi/rctools-gpu
           grep -Fq 'PASS KGSL_ZAP_READY' recovery-wifi/rctools-gpu
+          grep -Fq 'runtime GPU env file' recovery-wifi/rctools-gpu
           grep -Fq 'Mounting /data...' recovery-wifi/rctools-gpu
           grep -Fq "printf '\\033[2J\\033[H'" recovery-wifi/rctools-gpu
           grep -Fq 'Freedreno / KGSL' recovery-wifi/rctools-gpu
