@@ -606,6 +606,42 @@ ensure_env_file() {
     printf '%s\n' "$env"
 }
 
+sanitize_legacy_gpu_profile() {
+    cfg="$1"
+    root="$(container_rootfs "$cfg")"
+
+    [ -n "$root" ] && [ -d "$root" ] || return 0
+
+    file="$root/etc/profile.d/virgl.sh"
+    [ -e "$file" ] || return 0
+
+    tmp="/tmp/rctools-gpu-profile.$"
+    "$BB" awk '
+      {
+        probe=$0
+        sub(/^[[:space:]]*export[[:space:]]+/, "", probe)
+      }
+      probe ~ /^(GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE)=/ {next}
+      {print}
+    ' "$file" >"$tmp" || return 1
+
+    if "$BB" grep -q '[^[:space:]]' "$tmp" 2>/dev/null; then
+        "$BB" cat "$tmp" >"$file" || {
+            "$BB" rm -f "$tmp"
+            return 1
+        }
+    else
+        "$BB" rm -f "$file" || {
+            "$BB" rm -f "$tmp"
+            return 1
+        }
+    fi
+
+    "$BB" rm -f "$tmp"
+    say 'legacy_profile_sanitized=/etc/profile.d/virgl.sh'
+    return 0
+}
+
 strip_gpu_env() {
     file="$1"
     tmp=/tmp/rctools-gpu-env.clean
@@ -830,6 +866,12 @@ apply_virgl() {
 apply_backend() {
     cfg="$1"
     backend="$2"
+
+    sanitize_legacy_gpu_profile "$cfg" || {
+        err "could not sanitize legacy /etc/profile.d/virgl.sh"
+        return 1
+    }
+
     case "$backend" in
         llvmpipe) apply_llvmpipe "$cfg" ;;
         freedreno) apply_freedreno "$cfg" ;;
