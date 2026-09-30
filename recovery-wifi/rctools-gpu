@@ -608,13 +608,22 @@ ensure_env_file() {
 
 strip_gpu_env() {
     file="$1"
-    tmp="/tmp/rctools-gpu-env.$$"
+    tmp="/tmp/rctools-gpu-env.$"
     [ -e "$file" ] || : >"$file"
 
     "$BB" awk '
       $0=="# RCTOOLS_GPU_BEGIN" {skip=1; next}
       $0=="# RCTOOLS_GPU_END" {skip=0; next}
-      !skip {print}
+      skip {next}
+
+      {
+        line=$0
+        sub(/^[[:space:]]*export[[:space:]]+/, "", line)
+      }
+
+      line ~ /^(RCTOOLS_GPU_BACKEND|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|LIBGL_DEBUG|MESA_DEBUG)=/ {next}
+
+      {print}
     ' "$file" >"$tmp" || return 1
 
     "$BB" cat "$tmp" >"$file" || {
@@ -717,6 +726,40 @@ stop_virgl_for_cfg() {
     return 0
 }
 
+prime_direct_kgsl() {
+    prepare_gpu || return 1
+
+    log="/tmp/rctools-kgsl-prime.$"
+    tries=0
+
+    say 'stage=prime KGSL/ZAP'
+
+    while [ "$tries" -lt 20 ]; do
+        tries=$((tries + 1))
+        : >"$log"
+
+        if ( exec 9<>/dev/kgsl-3d0; exec 9>&- ) 2>"$log"; then
+            say "PASS KGSL_ZAP_READY attempts=$tries"
+            "$BB" rm -f "$log"
+            return 0
+        fi
+
+        if "$BB" grep -qi 'temporarily unavailable' "$log"; then
+            "$BB" usleep 100000 2>/dev/null || sleep 1
+            continue
+        fi
+
+        break
+    done
+
+    err "KGSL/ZAP prime failed after $tries attempt(s)"
+    [ -s "$log" ] && "$BB" cat "$log" >&2
+    err 'recent kernel GPU log:'
+    dmesg | "$BB" grep -iE 'kgsl|adreno|a506|zap|pil|subsystem|firmware|Runtime PM' | "$BB" tail -n 80 >&2
+    "$BB" rm -f "$log"
+    return 1
+}
+
 apply_llvmpipe() {
     cfg="$1"
     stop_virgl_for_cfg "$cfg"
@@ -733,6 +776,7 @@ apply_freedreno() {
     cfg="$1"
     direct_runtime "$cfg" || return 1
     stop_virgl_for_cfg "$cfg"
+    prime_direct_kgsl || return 1
 
     cfg_set "$cfg" enable_hw_access 0 || return 1
     cfg_set "$cfg" enable_gpu_mode 1 || return 1
@@ -870,9 +914,813 @@ test_profile() {
             "$BB" rm -f "$pre"
             return 1
         fi
-        if ! "$BB" grep -q '^KGSL_NODE=present$' "$pre" ||
-           ! "$BB" grep -q '^KGSL_OPEN=ok$' "$pre"; then
+        if ! "$BB" grep -q '^KGSL_NODE=present    fi
+
+    "$BB" rm -f "$pre"
+
+    "$DS_BIN" --name="$name" run sh -c '
+        command -v eglinfo >/dev/null 2>&1 || exit 127
+        eglinfo -B -p surfaceless 2>&1
+    ' >"$log" 2>&1
+    rc=$?
+
+    if [ "$rc" -eq 127 ]; then
+        err "eglinfo is not installed in the container"
+        "$BB" rm -f "$log"
+        return 1
+    fi
+    if [ "$rc" -ne 0 ]; then
+        err "eglinfo failed (rc=$rc)"
+        "$BB" tail -n 100 "$log" >&2
+        "$BB" rm -f "$log"
+        return 1
+    fi
+
+    case "$backend" in
+        freedreno)
+            "$BB" grep -q 'vendor: freedreno' "$log" &&
+            "$BB" grep -q 'renderer: FD506' "$log" || {
+                err "NOT_DIRECT_KGSL_RENDERER"
+                "$BB" tail -n 100 "$log" >&2
+                "$BB" rm -f "$log"
+                return 1
+            }
+            say 'PASS DIRECT_KGSL_FD506'
+            ;;
+        llvmpipe)
+            "$BB" grep -qi 'renderer: llvmpipe' "$log" || {
+                err "llvmpipe validation failed"
+                "$BB" tail -n 100 "$log" >&2
+                "$BB" rm -f "$log"
+                return 1
+            }
+            say 'PASS LLVMPIPE'
+            ;;
+        virgl)
+            "$BB" grep -qi 'renderer:.*virgl' "$log" || {
+                err "VirGL validation failed"
+                "$BB" tail -n 100 "$log" >&2
+                "$BB" rm -f "$log"
+                return 1
+            }
+            say 'PASS VIRGL'
+            ;;
+        *)
+            err "select a GPU backend first"
+            "$BB" rm -f "$log"
+            return 1
+            ;;
+    esac
+
+    "$BB" grep -Ei 'vendor:|renderer:|OpenGL ES profile version:' "$log" | "$BB" head -n 12
+    "$BB" rm -f "$log"
+}
+
+ensure_standard_root() {
+    if [ -d "$DS_DEFAULT_ROOT" ]; then
+        return 0
+    fi
+
+    say 'Mounting /data...'
+    "$RCTOOLS" mount data rw >/dev/null 2>&1 || \
+    "$RCTOOLS" mount data >/dev/null 2>&1 || true
+
+    [ -d "$DS_DEFAULT_ROOT" ] || {
+        err "DroidSpaces root not found after mounting /data: $DS_DEFAULT_ROOT"
+        return 1
+    }
+}
+
+scan_containers() {
+    base="$1"
+    list="/tmp/rctools-gpu-scan.$$"
+
+    [ -d "$base" ] || {
+        err "scan path does not exist: $base"
+        return 1
+    }
+
+    "$BB" find "$base" -type f -name container.config 2>/dev/null |
+        "$BB" sort >"$list"
+
+    count="$("$BB" wc -l <"$list" | "$BB" tr -d ' ')"
+    [ -n "$count" ] && [ "$count" -gt 0 ] || {
+        err "no container.config found under: $base"
+        "$BB" rm -f "$list"
+        return 1
+    }
+
+    ui_title 'RCTools GPU - Select Container'
+    printf '  Scan path: %s\n' "$base"
+    say '------------------------------------------------------------'
+
+    i=1
+    while IFS= read -r cfg; do
+        printf '  [%d] %s\n' "$i" "$(container_name "$cfg")"
+        i=$((i + 1))
+    done <"$list"
+
+    say ''
+    say '  [0] Back'
+    say '------------------------------------------------------------'
+    printf 'Select container > '
+    IFS= read -r pick || {
+        "$BB" rm -f "$list"
+        return 1
+    }
+
+    case "$pick" in
+        0)
+            "$BB" rm -f "$list"
+            return 2
+            ;;
+        ''|*[!0-9]*)
+            err "invalid selection"
+            "$BB" rm -f "$list"
+            return 1
+            ;;
+    esac
+
+    [ "$pick" -ge 1 ] && [ "$pick" -le "$count" ] || {
+        err "invalid selection"
+        "$BB" rm -f "$list"
+        return 1
+    }
+
+    SELECTED_CFG="$("$BB" sed -n "$pick"p "$list")"
+    "$BB" rm -f "$list"
+}
+
+choose_container() {
+    while true; do
+        ui_title 'RCTools GPU - Container Source'
+        say '  Choose where RCTools should scan for containers.'
+        say ''
+        say '  [1] DroidSpaces default'
+        say '      /data/local/Droidspaces'
+        say ''
+        say '  [2] Recovery temporary storage'
+        say '      /tmp'
+        say ''
+        say '  [3] Custom path'
+        say '      Enter an absolute path manually'
+        say ''
+        say '  [0] Back'
+        say '------------------------------------------------------------'
+        printf 'Select > '
+        IFS= read -r pick || return 1
+
+        case "$pick" in
+            1)
+                ensure_standard_root || {
+                    ui_pause
+                    continue
+                }
+                base="$DS_DEFAULT_ROOT"
+                ;;
+            2)
+                base=/tmp
+                ;;
+            3)
+                ui_clear
+                printf 'Custom scan path: '
+                IFS= read -r base || return 1
+                case "$base" in
+                    /*) ;;
+                    *)
+                        err "path must be absolute"
+                        ui_pause
+                        continue
+                        ;;
+                esac
+                ;;
+            0)
+                return 2
+                ;;
+            *)
+                err "invalid selection"
+                ui_pause
+                continue
+                ;;
+        esac
+
+        if scan_containers "$base"; then
+            return 0
+        fi
+        rc=$?
+        [ "$rc" -eq 2 ] || ui_pause
+    done
+}
+
+backend_action() {
+    backend="$1"
+    choose_container || return $?
+
+    cfg="$SELECTED_CFG"
+    ui_title 'RCTools GPU - Apply Backend'
+    say "  Container : $(container_name "$cfg")"
+    say "  Backend   : $backend"
+    say '------------------------------------------------------------'
+
+    save_backend "$cfg" "$backend" || {
+        ui_pause
+        return 1
+    }
+
+    if apply_backend "$cfg" "$backend"; then
+        say ''
+        say 'Configuration applied.'
+        say 'Restart a running container so DroidSpaces reloads config and env.'
+    else
+        say ''
+        err "backend saved but setup is incomplete"
+        err "use 'rctools gpu tools' -> Setup/Status/Test"
+    fi
+
+    ui_pause
+}
+
+tools_action() {
+    action="$1"
+    choose_container || return $?
+
+    cfg="$SELECTED_CFG"
+    backend="$(saved_backend "$cfg")"
+
+    ui_title "RCTools GPU Tools - $action"
+    say "  Container : $(container_name "$cfg")"
+    if [ -n "$backend" ]; then
+        say "  Backend   : $backend"
+    else
+        say '  Backend   : none'
+    fi
+    say '------------------------------------------------------------'
+
+    case "$action" in
+        Setup)
+            [ -n "$backend" ] || {
+                err "select a backend from 'rctools gpu' first"
+                ui_pause
+                return 1
+            }
+            apply_backend "$cfg" "$backend"
+            ;;
+        Status)
+            container_status "$cfg"
+            ;;
+        Enable)
+            [ -n "$backend" ] || {
+                err "no saved backend"
+                ui_pause
+                return 1
+            }
+            apply_backend "$cfg" "$backend"
+            ;;
+        Disable)
+            disable_profile "$cfg"
+            ;;
+        Test)
+            test_profile "$cfg"
+            ;;
+    esac
+
+    ui_pause
+}
+
+gpu_tools_menu() {
+    while true; do
+        ui_title 'RCTools GPU Tools'
+        ui_gpu_summary
+        say '  [1] Setup'
+        say '      Prepare the selected backend for a container'
+        say ''
+        say '  [2] Status'
+        say '      Show saved backend and DroidSpaces configuration'
+        say ''
+        say '  [3] Enable'
+        say '      Re-enable the saved backend'
+        say ''
+        say '  [4] Disable'
+        say '      Disable GPU profile without forgetting backend'
+        say ''
+        say '  [5] Test'
+        say '      Validate config, devices and real renderer'
+        say ''
+        say '  [0] Back'
+        say '------------------------------------------------------------'
+        printf 'Select > '
+        IFS= read -r pick || return 1
+
+        case "$pick" in
+            1) tools_action Setup ;;
+            2) tools_action Status ;;
+            3) tools_action Enable ;;
+            4) tools_action Disable ;;
+            5) tools_action Test ;;
+            0) return 0 ;;
+            *)
+                err "invalid selection"
+                ui_pause
+                ;;
+        esac
+    done
+}
+
+gpu_main_menu() {
+    while true; do
+        ui_title 'RCTools GPU'
+        ui_gpu_summary
+        say '  [1] llvmpipe'
+        say '      Software renderer - no direct GPU access'
+        say ''
+        say '  [2] Freedreno / KGSL'
+        say '      Direct Adreno access through /dev/kgsl-3d0'
+        say ''
+        say '  [3] VirGL'
+        say '      virpipe + vtest renderer managed by RCTools'
+        say ''
+        say '  [4] Tools'
+        say '      Setup, status, enable, disable and diagnostics'
+        say ''
+        say '  [0] Exit'
+        say '------------------------------------------------------------'
+        printf 'Select > '
+        IFS= read -r pick || return 1
+
+        case "$pick" in
+            1) backend_action llvmpipe ;;
+            2) backend_action freedreno ;;
+            3) backend_action virgl ;;
+            4) gpu_tools_menu ;;
+            0)
+                ui_clear
+                return 0
+                ;;
+            *)
+                err "invalid selection"
+                ui_pause
+                ;;
+        esac
+    done
+}
+
+help_gpu() {
+    printf '%s\n' \
+        'RCTools GPU - headless Qualcomm Adreno backend' \
+        '' \
+        '  rctools gpu             # interactive llvmpipe/Freedreno/VirGL container menu' \
+        '  rctools gpu tools       # setup/status/enable/disable/test container GPU menu' \
+        '  rctools gpu status      # KGSL/ION/model/clocks plus VirGL service state' \
+        '  rctools gpu start [SOCKET] # prepare GPU + start multi-client VirGL server' \
+        '  rctools gpu stop        # stop only the VirGL server and remove its socket' \
+        '  rctools gpu prepare     # mount vendor, stage firmware and graphics HAL' \
+        '  rctools gpu load        # prove libgsl + embedded libsync can link' \
+        '  rctools gpu gralloc     # hw_get_module(gralloc) discovery test' \
+        '  rctools gpu probe       # EGL pbuffer + GLES2 render/readback test' \
+        '  rctools gpu opencl      # real OpenCL vector-add GPU test' \
+        '  rctools gpu libs        # show Qualcomm userspace components' \
+        '  rctools gpu firmware    # show Adreno firmware/path state' \
+        '  rctools gpu logs        # recent KGSL/Adreno/IOMMU diagnostics'
+}
+
+[ -x "$BB" ] || { err "missing BusyBox backend: $BB"; exit 1; }
+
+cmd="${1:-menu}"
+[ "$#" -gt 0 ] && shift || true
+
+case "$cmd" in
+    menu) gpu_main_menu ;;
+    tools) gpu_tools_menu ;;
+    status) show_status ;;
+    start) start_virgl "$@" ;;
+    stop) stop_virgl ;;
+    prepare)
+        prepare_gpu && {
+            say 'GPU headless runtime ready'
+            say "LD_LIBRARY_PATH=$GPU_LIBPATH"
+        }
+        ;;
+    load|linker) load_test ;;
+    probe|test) run_probe ;;
+    gralloc|hal) run_gralloc_probe ;;
+    opencl|compute) run_opencl_probe ;;
+    libs) show_libs ;;
+    firmware|fw) show_firmware ;;
+    logs|log) show_logs ;;
+    help|h|-h|--help) help_gpu ;;
+    *)
+        err "unknown GPU command: $cmd"
+        echo
+        help_gpu
+        exit 2
+        ;;
+esac
+ "$pre" ||
+           ! "$BB" grep -q '^KGSL_OPEN=ok    fi
+
+    "$BB" rm -f "$pre"
+
+    "$DS_BIN" --name="$name" run sh -c '
+        command -v eglinfo >/dev/null 2>&1 || exit 127
+        eglinfo -B -p surfaceless 2>&1
+    ' >"$log" 2>&1
+    rc=$?
+
+    if [ "$rc" -eq 127 ]; then
+        err "eglinfo is not installed in the container"
+        "$BB" rm -f "$log"
+        return 1
+    fi
+    if [ "$rc" -ne 0 ]; then
+        err "eglinfo failed (rc=$rc)"
+        "$BB" tail -n 100 "$log" >&2
+        "$BB" rm -f "$log"
+        return 1
+    fi
+
+    case "$backend" in
+        freedreno)
+            "$BB" grep -q 'vendor: freedreno' "$log" &&
+            "$BB" grep -q 'renderer: FD506' "$log" || {
+                err "NOT_DIRECT_KGSL_RENDERER"
+                "$BB" tail -n 100 "$log" >&2
+                "$BB" rm -f "$log"
+                return 1
+            }
+            say 'PASS DIRECT_KGSL_FD506'
+            ;;
+        llvmpipe)
+            "$BB" grep -qi 'renderer: llvmpipe' "$log" || {
+                err "llvmpipe validation failed"
+                "$BB" tail -n 100 "$log" >&2
+                "$BB" rm -f "$log"
+                return 1
+            }
+            say 'PASS LLVMPIPE'
+            ;;
+        virgl)
+            "$BB" grep -qi 'renderer:.*virgl' "$log" || {
+                err "VirGL validation failed"
+                "$BB" tail -n 100 "$log" >&2
+                "$BB" rm -f "$log"
+                return 1
+            }
+            say 'PASS VIRGL'
+            ;;
+        *)
+            err "select a GPU backend first"
+            "$BB" rm -f "$log"
+            return 1
+            ;;
+    esac
+
+    "$BB" grep -Ei 'vendor:|renderer:|OpenGL ES profile version:' "$log" | "$BB" head -n 12
+    "$BB" rm -f "$log"
+}
+
+ensure_standard_root() {
+    if [ -d "$DS_DEFAULT_ROOT" ]; then
+        return 0
+    fi
+
+    say 'Mounting /data...'
+    "$RCTOOLS" mount data rw >/dev/null 2>&1 || \
+    "$RCTOOLS" mount data >/dev/null 2>&1 || true
+
+    [ -d "$DS_DEFAULT_ROOT" ] || {
+        err "DroidSpaces root not found after mounting /data: $DS_DEFAULT_ROOT"
+        return 1
+    }
+}
+
+scan_containers() {
+    base="$1"
+    list="/tmp/rctools-gpu-scan.$$"
+
+    [ -d "$base" ] || {
+        err "scan path does not exist: $base"
+        return 1
+    }
+
+    "$BB" find "$base" -type f -name container.config 2>/dev/null |
+        "$BB" sort >"$list"
+
+    count="$("$BB" wc -l <"$list" | "$BB" tr -d ' ')"
+    [ -n "$count" ] && [ "$count" -gt 0 ] || {
+        err "no container.config found under: $base"
+        "$BB" rm -f "$list"
+        return 1
+    }
+
+    ui_title 'RCTools GPU - Select Container'
+    printf '  Scan path: %s\n' "$base"
+    say '------------------------------------------------------------'
+
+    i=1
+    while IFS= read -r cfg; do
+        printf '  [%d] %s\n' "$i" "$(container_name "$cfg")"
+        i=$((i + 1))
+    done <"$list"
+
+    say ''
+    say '  [0] Back'
+    say '------------------------------------------------------------'
+    printf 'Select container > '
+    IFS= read -r pick || {
+        "$BB" rm -f "$list"
+        return 1
+    }
+
+    case "$pick" in
+        0)
+            "$BB" rm -f "$list"
+            return 2
+            ;;
+        ''|*[!0-9]*)
+            err "invalid selection"
+            "$BB" rm -f "$list"
+            return 1
+            ;;
+    esac
+
+    [ "$pick" -ge 1 ] && [ "$pick" -le "$count" ] || {
+        err "invalid selection"
+        "$BB" rm -f "$list"
+        return 1
+    }
+
+    SELECTED_CFG="$("$BB" sed -n "$pick"p "$list")"
+    "$BB" rm -f "$list"
+}
+
+choose_container() {
+    while true; do
+        ui_title 'RCTools GPU - Container Source'
+        say '  Choose where RCTools should scan for containers.'
+        say ''
+        say '  [1] DroidSpaces default'
+        say '      /data/local/Droidspaces'
+        say ''
+        say '  [2] Recovery temporary storage'
+        say '      /tmp'
+        say ''
+        say '  [3] Custom path'
+        say '      Enter an absolute path manually'
+        say ''
+        say '  [0] Back'
+        say '------------------------------------------------------------'
+        printf 'Select > '
+        IFS= read -r pick || return 1
+
+        case "$pick" in
+            1)
+                ensure_standard_root || {
+                    ui_pause
+                    continue
+                }
+                base="$DS_DEFAULT_ROOT"
+                ;;
+            2)
+                base=/tmp
+                ;;
+            3)
+                ui_clear
+                printf 'Custom scan path: '
+                IFS= read -r base || return 1
+                case "$base" in
+                    /*) ;;
+                    *)
+                        err "path must be absolute"
+                        ui_pause
+                        continue
+                        ;;
+                esac
+                ;;
+            0)
+                return 2
+                ;;
+            *)
+                err "invalid selection"
+                ui_pause
+                continue
+                ;;
+        esac
+
+        if scan_containers "$base"; then
+            return 0
+        fi
+        rc=$?
+        [ "$rc" -eq 2 ] || ui_pause
+    done
+}
+
+backend_action() {
+    backend="$1"
+    choose_container || return $?
+
+    cfg="$SELECTED_CFG"
+    ui_title 'RCTools GPU - Apply Backend'
+    say "  Container : $(container_name "$cfg")"
+    say "  Backend   : $backend"
+    say '------------------------------------------------------------'
+
+    save_backend "$cfg" "$backend" || {
+        ui_pause
+        return 1
+    }
+
+    if apply_backend "$cfg" "$backend"; then
+        say ''
+        say 'Configuration applied.'
+        say 'Restart a running container so DroidSpaces reloads config and env.'
+    else
+        say ''
+        err "backend saved but setup is incomplete"
+        err "use 'rctools gpu tools' -> Setup/Status/Test"
+    fi
+
+    ui_pause
+}
+
+tools_action() {
+    action="$1"
+    choose_container || return $?
+
+    cfg="$SELECTED_CFG"
+    backend="$(saved_backend "$cfg")"
+
+    ui_title "RCTools GPU Tools - $action"
+    say "  Container : $(container_name "$cfg")"
+    if [ -n "$backend" ]; then
+        say "  Backend   : $backend"
+    else
+        say '  Backend   : none'
+    fi
+    say '------------------------------------------------------------'
+
+    case "$action" in
+        Setup)
+            [ -n "$backend" ] || {
+                err "select a backend from 'rctools gpu' first"
+                ui_pause
+                return 1
+            }
+            apply_backend "$cfg" "$backend"
+            ;;
+        Status)
+            container_status "$cfg"
+            ;;
+        Enable)
+            [ -n "$backend" ] || {
+                err "no saved backend"
+                ui_pause
+                return 1
+            }
+            apply_backend "$cfg" "$backend"
+            ;;
+        Disable)
+            disable_profile "$cfg"
+            ;;
+        Test)
+            test_profile "$cfg"
+            ;;
+    esac
+
+    ui_pause
+}
+
+gpu_tools_menu() {
+    while true; do
+        ui_title 'RCTools GPU Tools'
+        ui_gpu_summary
+        say '  [1] Setup'
+        say '      Prepare the selected backend for a container'
+        say ''
+        say '  [2] Status'
+        say '      Show saved backend and DroidSpaces configuration'
+        say ''
+        say '  [3] Enable'
+        say '      Re-enable the saved backend'
+        say ''
+        say '  [4] Disable'
+        say '      Disable GPU profile without forgetting backend'
+        say ''
+        say '  [5] Test'
+        say '      Validate config, devices and real renderer'
+        say ''
+        say '  [0] Back'
+        say '------------------------------------------------------------'
+        printf 'Select > '
+        IFS= read -r pick || return 1
+
+        case "$pick" in
+            1) tools_action Setup ;;
+            2) tools_action Status ;;
+            3) tools_action Enable ;;
+            4) tools_action Disable ;;
+            5) tools_action Test ;;
+            0) return 0 ;;
+            *)
+                err "invalid selection"
+                ui_pause
+                ;;
+        esac
+    done
+}
+
+gpu_main_menu() {
+    while true; do
+        ui_title 'RCTools GPU'
+        ui_gpu_summary
+        say '  [1] llvmpipe'
+        say '      Software renderer - no direct GPU access'
+        say ''
+        say '  [2] Freedreno / KGSL'
+        say '      Direct Adreno access through /dev/kgsl-3d0'
+        say ''
+        say '  [3] VirGL'
+        say '      virpipe + vtest renderer managed by RCTools'
+        say ''
+        say '  [4] Tools'
+        say '      Setup, status, enable, disable and diagnostics'
+        say ''
+        say '  [0] Exit'
+        say '------------------------------------------------------------'
+        printf 'Select > '
+        IFS= read -r pick || return 1
+
+        case "$pick" in
+            1) backend_action llvmpipe ;;
+            2) backend_action freedreno ;;
+            3) backend_action virgl ;;
+            4) gpu_tools_menu ;;
+            0)
+                ui_clear
+                return 0
+                ;;
+            *)
+                err "invalid selection"
+                ui_pause
+                ;;
+        esac
+    done
+}
+
+help_gpu() {
+    printf '%s\n' \
+        'RCTools GPU - headless Qualcomm Adreno backend' \
+        '' \
+        '  rctools gpu             # interactive llvmpipe/Freedreno/VirGL container menu' \
+        '  rctools gpu tools       # setup/status/enable/disable/test container GPU menu' \
+        '  rctools gpu status      # KGSL/ION/model/clocks plus VirGL service state' \
+        '  rctools gpu start [SOCKET] # prepare GPU + start multi-client VirGL server' \
+        '  rctools gpu stop        # stop only the VirGL server and remove its socket' \
+        '  rctools gpu prepare     # mount vendor, stage firmware and graphics HAL' \
+        '  rctools gpu load        # prove libgsl + embedded libsync can link' \
+        '  rctools gpu gralloc     # hw_get_module(gralloc) discovery test' \
+        '  rctools gpu probe       # EGL pbuffer + GLES2 render/readback test' \
+        '  rctools gpu opencl      # real OpenCL vector-add GPU test' \
+        '  rctools gpu libs        # show Qualcomm userspace components' \
+        '  rctools gpu firmware    # show Adreno firmware/path state' \
+        '  rctools gpu logs        # recent KGSL/Adreno/IOMMU diagnostics'
+}
+
+[ -x "$BB" ] || { err "missing BusyBox backend: $BB"; exit 1; }
+
+cmd="${1:-menu}"
+[ "$#" -gt 0 ] && shift || true
+
+case "$cmd" in
+    menu) gpu_main_menu ;;
+    tools) gpu_tools_menu ;;
+    status) show_status ;;
+    start) start_virgl "$@" ;;
+    stop) stop_virgl ;;
+    prepare)
+        prepare_gpu && {
+            say 'GPU headless runtime ready'
+            say "LD_LIBRARY_PATH=$GPU_LIBPATH"
+        }
+        ;;
+    load|linker) load_test ;;
+    probe|test) run_probe ;;
+    gralloc|hal) run_gralloc_probe ;;
+    opencl|compute) run_opencl_probe ;;
+    libs) show_libs ;;
+    firmware|fw) show_firmware ;;
+    logs|log) show_logs ;;
+    help|h|-h|--help) help_gpu ;;
+    *)
+        err "unknown GPU command: $cmd"
+        echo
+        help_gpu
+        exit 2
+        ;;
+esac
+ "$pre"; then
             err "DIRECT_GPU_DEVICE_NOT_AVAILABLE"
+            err "recent host KGSL/ZAP log:"
+            dmesg | "$BB" grep -iE 'kgsl|adreno|a506|zap|pil|subsystem|firmware|Runtime PM' | "$BB" tail -n 80 >&2
             "$BB" rm -f "$pre"
             return 1
         fi

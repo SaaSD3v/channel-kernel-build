@@ -57,6 +57,8 @@ jobs:
           grep -Fq 'rctools gpu stop' recovery-wifi/rctools-gpu
           grep -Fq 'RCTools GPU Tools' recovery-wifi/rctools-gpu
           grep -Fq 'DIRECT_GPU_DEVICE_NOT_AVAILABLE' recovery-wifi/rctools-gpu
+          grep -Fq 'PASS KGSL_ZAP_READY' recovery-wifi/rctools-gpu
+          grep -Fq 'VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE' recovery-wifi/rctools-gpu
           grep -Fq 'Mounting /data...' recovery-wifi/rctools-gpu
           grep -Fq "printf '\\033[2J\\033[H'" recovery-wifi/rctools-gpu
           grep -Fq 'Freedreno / KGSL' recovery-wifi/rctools-gpu
