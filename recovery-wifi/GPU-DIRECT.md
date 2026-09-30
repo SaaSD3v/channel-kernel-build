@@ -91,6 +91,26 @@ export LIBGL_DRIVERS_PATH="$DRI"
 export MESA_LOADER_DRIVER_OVERRIDE=kgsl
 ```
 
+## Debian / GLVND note
+
+On Debian 13, setting only `LD_LIBRARY_PATH`, `LIBGL_DRIVERS_PATH`, and `MESA_LOADER_DRIVER_OVERRIDE=kgsl` is not sufficient when the system GLVND dispatcher still selects Debian's stock Mesa vendor library. In that case the test can render correctly with llvmpipe while never loading the custom KGSL Mesa.
+
+Force the custom EGL vendor JSON from the extracted tarball:
+
+```sh
+MESA_ROOT=/opt/mesa-kgsl-test/usr
+MESA_LIB="$MESA_ROOT/lib/aarch64-linux-gnu"
+DRI="$MESA_LIB/dri"
+EGL_VENDOR="$MESA_ROOT/share/glvnd/egl_vendor.d/50_mesa.json"
+
+export LD_LIBRARY_PATH="$MESA_LIB"
+export LIBGL_DRIVERS_PATH="$DRI"
+export MESA_LOADER_DRIVER_OVERRIDE=kgsl
+export __EGL_VENDOR_LIBRARY_FILENAMES="$EGL_VENDOR"
+```
+
+A valid direct test must report both `GL_VENDOR=freedreno` and `GL_RENDERER=FD506`. The repository render test enforces those values and fails with `NOT_DIRECT_KGSL_RENDERER` otherwise.
+
 ## Proven renderer
 
 `eglinfo -B -p surfaceless` returned Freedreno directly:

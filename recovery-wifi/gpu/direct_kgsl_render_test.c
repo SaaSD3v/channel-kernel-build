@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -91,9 +92,19 @@ int main(void)
         return 7;
     }
 
-    printf("GL_VENDOR=%s\n", glGetString(GL_VENDOR));
-    printf("GL_RENDERER=%s\n", glGetString(GL_RENDERER));
-    printf("GL_VERSION=%s\n", glGetString(GL_VERSION));
+    const char *vendor = (const char *)glGetString(GL_VENDOR);
+    const char *renderer = (const char *)glGetString(GL_RENDERER);
+    const char *version = (const char *)glGetString(GL_VERSION);
+
+    printf("GL_VENDOR=%s\n", vendor ? vendor : "(null)");
+    printf("GL_RENDERER=%s\n", renderer ? renderer : "(null)");
+    printf("GL_VERSION=%s\n", version ? version : "(null)");
+
+    if (!vendor || strcmp(vendor, "freedreno") != 0 ||
+        !renderer || strcmp(renderer, "FD506") != 0) {
+        fprintf(stderr, "NOT_DIRECT_KGSL_RENDERER\n");
+        return 10;
+    }
 
     glViewport(0, 0, 16, 16);
     glClearColor(0.25f, 0.50f, 0.75f, 1.0f);
