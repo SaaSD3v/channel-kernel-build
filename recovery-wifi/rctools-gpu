@@ -878,15 +878,22 @@ test_profile() {
     cfg="$1"
     name="$(container_name "$cfg")"
     backend="$(saved_backend "$cfg")"
-    pre="/tmp/rctools-gpu-pretest.$$"
-    log="/tmp/rctools-gpu-test.$$"
+    pre="/tmp/rctools-gpu-pretest.$"
+    log="/tmp/rctools-gpu-test.$"
+    env="$(cfg_get "$cfg" env_file 2>/dev/null)"
+    [ -n "$env" ] || env="$("$BB" dirname "$cfg")/.env"
+
+    [ -r "$env" ] || {
+        err "GPU environment file missing: $env"
+        return 1
+    }
 
     [ -x "$DS_BIN" ] || {
         err "DroidSpaces binary missing: $DS_BIN"
         return 1
     }
 
-    "$DS_BIN" --name="$name" run sh -c '
+    "$DS_BIN" --conf="$cfg" --env="$env" run sh -c '
         echo "=== loaded config ==="
         grep -E "^(enable_hw_access|enable_gpu_mode|enable_virgl)=" /run/droidspaces/container.config 2>/dev/null || true
         echo "=== device nodes ==="
@@ -927,7 +934,7 @@ test_profile() {
            ! "$BB" grep -Fq 'LIBGL_DRIVERS_PATH=' "$pre" ||
            ! "$BB" grep -Fq 'LD_LIBRARY_PATH=' "$pre"; then
             err "DIRECT_GPU_ENV_NOT_LOADED"
-            err "restart the container after selecting Freedreno"
+            err "DroidSpaces recovery run did not load the selected GPU environment"
             "$BB" rm -f "$pre"
             return 1
         fi
@@ -944,7 +951,7 @@ test_profile() {
 
     "$BB" rm -f "$pre"
 
-    "$DS_BIN" --name="$name" run sh -c '
+    "$DS_BIN" --conf="$cfg" --env="$env" run sh -c '
         command -v eglinfo >/dev/null 2>&1 || exit 127
         eglinfo -B -p surfaceless 2>&1
     ' >"$log" 2>&1
