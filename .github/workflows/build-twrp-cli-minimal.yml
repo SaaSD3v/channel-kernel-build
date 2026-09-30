@@ -7,6 +7,7 @@ on:
   push:
     branches:
       - twrp-cli-minimal-gpu-headless
+      - twrp-cli-minimal-gpu-direct
 
 permissions:
   contents: read
@@ -43,6 +44,8 @@ jobs:
           test -f recovery-wifi/gpu/opencl_probe.c
           test -f recovery-wifi/gpu/gralloc_probe.c
           test -f recovery-wifi/gpu/link_stubs.c
+          test -f recovery-wifi/gpu/direct_kgsl_render_test.c
+          grep -Fq 'DIRECT_KGSL_RENDER_OK' recovery-wifi/gpu/direct_kgsl_render_test.c
           grep -Fq 'GPU=/sbin/rctools-gpu' recovery-wifi/rctools
           grep -Fq 'rctools gpu probe' recovery-wifi/rctools
           grep -Fq 'PASS GPU_RENDER_OK' recovery-wifi/gpu/egl_probe.c
@@ -1047,6 +1050,7 @@ jobs:
             echo "- KGSL/Adreno + ION/sync_file + VIDC + ADB + Wi-Fi + DroidSpaces: preserved"
             echo "- Headless GPU userspace: source-built libsync + EGL/GLES2 pbuffer probe embedded"
             echo "- GPU runtime model: recovery Bionic + active vendor Qualcomm blobs; Android system partition not required"
+            echo "- Direct DroidSpaces GPU: real-device validated via GPU-only /dev + Mesa Freedreno KGSL (FD506); container Mesa/LLVM remain container-side"
             echo "- Recovery Wi-Fi payload: embedded in the kernel internal initramfs"
             echo "- External TeamWin ramdisk: patched only to remove the TWRP recovery service"
             echo "- /system/bin/recovery: retained for manual compatibility"
@@ -1085,6 +1089,8 @@ jobs:
             recovery-wifi/gpu/opencl_probe.c
             recovery-wifi/gpu/gralloc_probe.c
             recovery-wifi/gpu/link_stubs.c
+            recovery-wifi/gpu/direct_kgsl_render_test.c
+            recovery-wifi/GPU-DIRECT.md
             recovery-wifi/out/libsync.so
             recovery-wifi/out/rctools-gpu-probe.so
             recovery-wifi/out/rctools-opencl-probe.so

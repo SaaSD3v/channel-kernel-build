@@ -56,6 +56,33 @@ The branch carries the full Channel Wi-Fi client plus the Albus-style runtime fe
 
 See [recovery-wifi/README.md](recovery-wifi/README.md).
 
+## Direct DroidSpaces GPU (KGSL/Freedreno)
+
+Real-device validation on Channel (kernel 4.9.206-perf+, Adreno 506) proves a second GPU path independent of VirGL:
+
+```text
+DroidSpaces GPU-only /dev
+        -> /dev/kgsl-3d0 + /dev/ion
+        -> Mesa Freedreno KGSL
+        -> FD506
+        -> Adreno 506
+```
+
+Validated on-device:
+
+- `enable_hw_access=0`, `enable_gpu_mode=1` -> DroidSpaces reports `HW access: GPU`
+- no VirGL socket is required
+- Mesa KGSL reports `GL_VENDOR=freedreno`, `GL_RENDERER=FD506`
+- EGL/GLES render + readback returned `64,128,191,255` with `GL_ERROR=0x0`
+- four simultaneous clients passed
+- 50 sequential renders passed
+- 4 workers x 10 renders passed (40/40)
+- no KGSL/Adreno fault, hang, timeout or reset was observed after the stress run
+
+The Mesa/LLVM runtime remains a **container userspace responsibility**. It is not embedded in recovery, and RCTools does not inject distro-specific Mesa variables. VirGL remains a separate optional host service.
+
+See [recovery-wifi/GPU-DIRECT.md](recovery-wifi/GPU-DIRECT.md).
+
 ## Validation policy
 
 CI success proves compilation, image structure, static userspace and configuration contracts. It does **not** prove device boot.
