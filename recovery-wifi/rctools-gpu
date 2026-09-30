@@ -490,7 +490,7 @@ show_logs() {
 
 
 DS_BIN=/data/local/Droidspaces/bin/droidspaces
-DS_DEFAULT_CONTAINERS=/data/local/Droidspaces/Containers
+DS_DEFAULT_CONTAINERS=/data/local/Droidspaces
 GPU_ENV_BEGIN='# RCTOOLS_GPU_BEGIN'
 GPU_ENV_END='# RCTOOLS_GPU_END'
 
@@ -889,7 +889,7 @@ choose_container() {
     while true; do
         say ''
         say 'Container scan location:'
-        say '  1) /data/local/Droidspaces/Containers'
+        say '  1) /data/local/Droidspaces'
         say '  2) /tmp'
         say '  3) Custom path'
         say '  0) Back'
