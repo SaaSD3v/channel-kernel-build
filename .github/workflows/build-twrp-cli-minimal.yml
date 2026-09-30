@@ -354,8 +354,8 @@ jobs:
           aarch64-linux-gnu-readelf -l "$VIRGL_OUT/bin/virgl_test_server" | grep -Fq '/system/bin/linker64'
           aarch64-linux-gnu-readelf -d "$VIRGL_OUT/bin/virgl_test_server" | grep -Fq 'Shared library: [libvirglrenderer.so.1]'
           aarch64-linux-gnu-readelf -d "$VIRGL_OUT/lib/$virgl_name" | grep -Fq 'Shared library: [libepoxy.so.0]'
-          aarch64-linux-gnu-readelf -Ws "$VIRGL_OUT/lib/$virgl_name" | grep -Eq 'UND[[:space:]]+memfd_create$'
-          aarch64-linux-gnu-readelf -Ws "$VIRGL_OUT/lib/librctools-memfd-compat.so" | grep -Eq '[[:space:]]memfd_create$'
+          aarch64-linux-gnu-readelf -Ws "$VIRGL_OUT/lib/$virgl_name" | grep -Eq 'UND[[:space:]]+memfd_create(@[^[:space:]]+)?([[:space:]]|$)'
+          aarch64-linux-gnu-readelf -Ws "$VIRGL_OUT/lib/librctools-memfd-compat.so" | grep -Eq '[[:space:]]memfd_create(@[^[:space:]]+)?([[:space:]]|$)'
           aarch64-linux-gnu-readelf -Ws "$VIRGL_OUT/lib/librctools-memfd-compat.so" | grep -Eq 'UND[[:space:]]+syscall$'
           du -h "$VIRGL_OUT/bin/virgl_test_server" "$VIRGL_OUT/lib/$virgl_name" "$VIRGL_OUT/lib/$epoxy_name" "$VIRGL_OUT/lib/librctools-memfd-compat.so"
 
