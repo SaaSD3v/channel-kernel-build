@@ -186,8 +186,10 @@ Debian stability checks:
 
 - 4 simultaneous clients: 4/4
 - sequential loop: 50/50
+- concurrent stress: 4 workers x 10 = 40/40
 - every recorded renderer: `FD506`
 - every readback: expected pixel
+- post-stress kernel-log filter showed no KGSL/Adreno GPU fault, IOMMU fault, hang, timeout, recovery/reset, BUG or Oops
 
 This cross-distro result confirms that the direct path belongs to the DroidSpaces/KGSL/Freedreno stack rather than being an Alpine-specific effect.
 
