@@ -55,6 +55,10 @@ jobs:
           grep -Fq 'rctools gpu gralloc' recovery-wifi/rctools-gpu
           grep -Fq 'rctools gpu start' recovery-wifi/rctools-gpu
           grep -Fq 'rctools gpu stop' recovery-wifi/rctools-gpu
+          grep -Fq 'RCTools GPU Tools' recovery-wifi/rctools-gpu
+          grep -Fq 'Freedreno / KGSL (Direct GPU)' recovery-wifi/rctools-gpu
+          grep -Fq '/data/local/Droidspaces/Containers' recovery-wifi/rctools-gpu
+          grep -Fq 'rctools gpu tools' recovery-wifi/rctools-gpu
           python3 -m py_compile scripts/disable-twrp-service.py
           grep -Fq 'rctools mount a system|vendor|oem|all' recovery-wifi/rctools
           grep -Fq 'rctools mount b system|vendor|oem|all' recovery-wifi/rctools
