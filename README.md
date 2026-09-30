@@ -77,6 +77,7 @@ Validated on-device:
 - four simultaneous clients passed
 - 50 sequential renders passed
 - 4 workers x 10 renders passed (40/40)
+- Debian 13 (trixie) independently validated: 4 simultaneous clients passed and 50 sequential renders passed
 - no KGSL/Adreno fault, hang, timeout or reset was observed after the stress run
 
 The Mesa/LLVM runtime remains a **container userspace responsibility**. It is not embedded in recovery, and RCTools does not inject distro-specific Mesa variables. VirGL remains a separate optional host service.

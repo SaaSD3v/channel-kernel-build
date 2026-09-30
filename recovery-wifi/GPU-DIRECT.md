@@ -162,7 +162,7 @@ MESA_LOADER_DRIVER_OVERRIDE=kgsl \
 
 ## Stability results
 
-Real-device tests passed:
+Real-device tests passed on Alpine 3.23:
 
 - 4 simultaneous clients: 4/4
 - sequential loop: 50/50
@@ -170,6 +170,26 @@ Real-device tests passed:
 - every recorded renderer: `FD506`
 - every readback: expected pixel
 - no filtered KGSL/Adreno fault, hang, timeout, reset, IOMMU fault, BUG or Oops after the stress run
+
+The same direct path was then independently validated on Debian GNU/Linux 13 (trixie), aarch64, using the matching `debian_trixie_arm64` Mesa package and GLVND forced to the extracted custom Mesa vendor JSON:
+
+```text
+GPU: freedreno FD506
+GL_VENDOR=freedreno
+GL_RENDERER=FD506
+PIXEL=64,128,191,255
+GL_ERROR=0x0
+DIRECT_KGSL_RENDER_OK
+```
+
+Debian stability checks:
+
+- 4 simultaneous clients: 4/4
+- sequential loop: 50/50
+- every recorded renderer: `FD506`
+- every readback: expected pixel
+
+This cross-distro result confirms that the direct path belongs to the DroidSpaces/KGSL/Freedreno stack rather than being an Alpine-specific effect.
 
 Observed idle clock after the short tests was 320 MHz; sysfs max was 725 MHz. This validation is functional/stability validation, not a performance benchmark.
 
