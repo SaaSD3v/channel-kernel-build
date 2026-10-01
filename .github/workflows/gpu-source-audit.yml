@@ -80,6 +80,21 @@ jobs:
           set -euo pipefail
           PACK_INVERT=1 ASYNC_XSHM=1             recovery-wifi/build-virtualgl-kgsl.sh
 
+          FBX=/tmp/virtualgl-kgsl-src/util/fbx.c
+          grep -Fq 'int eventBase = XShmGetEventBase(fb->wh.dpy);' "$FBX"
+
+          predicate="$(
+            awk '
+              /^fbx_shm_completion\(/ {inside=1}
+              inside {print}
+              inside && /^}/ {exit}
+            ' "$FBX"
+          )"
+          if printf '%s\n' "$predicate" | grep -Fq 'XShmGetEventBase'; then
+            echo 'Xlib call found inside XIfEvent predicate'
+            exit 1
+          fi
+
       - name: Validate Mesa KGSL compatibility patch
         shell: bash
         run: |
