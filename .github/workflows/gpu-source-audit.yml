@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - twrp-cli-minimal-gpu-audit
+      - gpu-test-v1
     paths:
       - 'recovery-wifi/rctools-gpu'
       - 'recovery-wifi/install-gpu-runtime.sh'
