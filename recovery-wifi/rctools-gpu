@@ -357,8 +357,16 @@ stop_virgl() {
             sleep 1
             i=$((i + 1))
         done
+
         if kill -0 "$pid" 2>/dev/null; then
             kill -9 "$pid" 2>/dev/null || true
+            sleep 1
+        fi
+
+        if kill -0 "$pid" 2>/dev/null; then
+            err "VirGL process did not stop (pid=$pid)"
+            err 'state files preserved so the service can be diagnosed/retried'
+            return 1
         fi
     fi
 
@@ -372,6 +380,7 @@ stop_virgl() {
     else
         say 'VirGL already stopped'
     fi
+    return 0
 }
 
 show_status() {
@@ -992,14 +1001,58 @@ direct_runtime() {
     fi
 }
 
-stop_virgl_for_cfg() {
+VIRGL_DETACHED_RUNNING=0
+VIRGL_DETACHED_SOCKET=
+
+detach_virgl_for_cfg() {
     cfg="$1"
     root="$(container_rootfs "$cfg")"
     current="$(virgl_saved_socket)"
+
+    VIRGL_DETACHED_RUNNING=0
+    VIRGL_DETACHED_SOCKET=
+
     if [ -n "$root" ] && [ "$current" = "$root/root/.virgl_test" ]; then
-        stop_virgl
+        pid="$(virgl_find_pid 2>/dev/null)"
+        if [ -n "$pid" ]; then
+            VIRGL_DETACHED_RUNNING=1
+            VIRGL_DETACHED_SOCKET="$current"
+        fi
+
+        if ! stop_virgl; then
+            VIRGL_DETACHED_RUNNING=0
+            VIRGL_DETACHED_SOCKET=
+            return 1
+        fi
     fi
+
     return 0
+}
+
+restore_detached_virgl() {
+    if [ "$VIRGL_DETACHED_RUNNING" -eq 1 ] &&
+       [ -n "$VIRGL_DETACHED_SOCKET" ]; then
+        say 'restoring previous VirGL service after profile failure'
+        if ! start_virgl "$VIRGL_DETACHED_SOCKET"; then
+            err 'could not restore previous VirGL service'
+            return 1
+        fi
+    fi
+
+    VIRGL_DETACHED_RUNNING=0
+    VIRGL_DETACHED_SOCKET=
+    return 0
+}
+
+commit_detached_virgl() {
+    VIRGL_DETACHED_RUNNING=0
+    VIRGL_DETACHED_SOCKET=
+    return 0
+}
+
+stop_virgl_for_cfg() {
+    detach_virgl_for_cfg "$1" || return 1
+    commit_detached_virgl
 }
 
 prime_direct_kgsl() {
@@ -1039,11 +1092,16 @@ prime_direct_kgsl() {
 apply_llvmpipe() {
     cfg="$1"
 
-    apply_profile_files "$cfg" 0 0 0 llvmpipe \
-        'LIBGL_ALWAYS_SOFTWARE=1' \
-        'GALLIUM_DRIVER=llvmpipe' || return 1
+    detach_virgl_for_cfg "$cfg" || return 1
 
-    stop_virgl_for_cfg "$cfg"
+    if ! apply_profile_files "$cfg" 0 0 0 llvmpipe \
+        'LIBGL_ALWAYS_SOFTWARE=1' \
+        'GALLIUM_DRIVER=llvmpipe'; then
+        restore_detached_virgl || true
+        return 1
+    fi
+
+    commit_detached_virgl
     say 'backend=llvmpipe'
 }
 
@@ -1051,6 +1109,7 @@ apply_freedreno() {
     cfg="$1"
     direct_runtime "$cfg" || return 1
     prime_direct_kgsl || return 1
+    detach_virgl_for_cfg "$cfg" || return 1
 
     if [ "$direct_vgl" -eq 1 ]; then
         set -- \
@@ -1076,7 +1135,10 @@ apply_freedreno() {
             set -- "$@" 'VGL_KGSL_PBO_PIPELINE=1'
         fi
 
-        apply_profile_files "$cfg" 0 1 0 freedreno "$@" || return 1
+        if ! apply_profile_files "$cfg" 0 1 0 freedreno "$@"; then
+            restore_detached_virgl || true
+            return 1
+        fi
     elif [ -n "$direct_json" ]; then
         apply_profile_files "$cfg" 0 1 0 freedreno \
             'RCTOOLS_GPU_PRESENTATION=surfaceless' \
@@ -1084,17 +1146,23 @@ apply_freedreno() {
             "LD_LIBRARY_PATH=$direct_ld" \
             "LIBGL_DRIVERS_PATH=$direct_dri" \
             'MESA_LOADER_DRIVER_OVERRIDE=kgsl' \
-            "__EGL_VENDOR_LIBRARY_FILENAMES=$direct_json" || return 1
+            "__EGL_VENDOR_LIBRARY_FILENAMES=$direct_json"; then
+            restore_detached_virgl || true
+            return 1
+        fi
     else
         apply_profile_files "$cfg" 0 1 0 freedreno \
             'RCTOOLS_GPU_PRESENTATION=surfaceless' \
             'RCTOOLS_GPU_VIRTUALGL=0' \
             "LD_LIBRARY_PATH=$direct_ld" \
             "LIBGL_DRIVERS_PATH=$direct_dri" \
-            'MESA_LOADER_DRIVER_OVERRIDE=kgsl' || return 1
+            'MESA_LOADER_DRIVER_OVERRIDE=kgsl'; then
+            restore_detached_virgl || true
+            return 1
+        fi
     fi
 
-    stop_virgl_for_cfg "$cfg"
+    commit_detached_virgl
 
     say 'backend=freedreno'
     say 'mode=direct KGSL'
