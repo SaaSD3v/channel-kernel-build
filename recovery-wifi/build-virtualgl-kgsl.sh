@@ -6,11 +6,13 @@ VGL_COMMIT="${VGL_COMMIT:-2473cf39bdbe88ca41ecd58ac4007385c9682a9f}"
 PREFIX="${PREFIX:-/opt/VirtualGL-KGSL}"
 INSTALL="${INSTALL:-0}"
 PACK_INVERT="${PACK_INVERT:-0}"
+ASYNC_XSHM="${ASYNC_XSHM:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${GITHUB_WORKSPACE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 PATCH="$ROOT/recovery-wifi/patches/virtualgl-eglkgsl.patch"
 PACK_INVERT_PATCH="$ROOT/recovery-wifi/patches/virtualgl-kgsl-pack-invert.experimental.patch"
+ASYNC_XSHM_PATCH="$ROOT/recovery-wifi/patches/virtualgl-kgsl-async-xshm.experimental.patch"
 SRC="${VGL_SRC:-/tmp/virtualgl-kgsl-src}"
 BUILD="${VGL_BUILD:-/tmp/virtualgl-kgsl-build}"
 
@@ -36,6 +38,12 @@ if [[ "$PACK_INVERT" == 1 ]]; then
   test -r "$PACK_INVERT_PATCH"
   git -C "$SRC" apply --check "$PACK_INVERT_PATCH"
   git -C "$SRC" apply "$PACK_INVERT_PATCH"
+fi
+
+if [[ "$ASYNC_XSHM" == 1 ]]; then
+  test -r "$ASYNC_XSHM_PATCH"
+  git -C "$SRC" apply --check "$ASYNC_XSHM_PATCH"
+  git -C "$SRC" apply "$ASYNC_XSHM_PATCH"
 fi
 
 git -C "$SRC" diff --check
@@ -65,3 +73,4 @@ echo "build=$BUILD"
 echo "prefix=$PREFIX"
 echo "installed=$INSTALL"
 echo "pack_invert=$PACK_INVERT"
+echo "async_xshm=$ASYNC_XSHM"
