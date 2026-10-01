@@ -1,0 +1,85 @@
+name: GPU Source Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - twrp-cli-minimal-gpu-audit
+    paths:
+      - 'recovery-wifi/rctools-gpu'
+      - 'recovery-wifi/GPU-DIRECT.md'
+      - 'recovery-wifi/build-virtualgl-kgsl.sh'
+      - 'recovery-wifi/patches/**'
+      - '.github/workflows/gpu-source-audit.yml'
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout audit branch
+        uses: actions/checkout@v5
+
+      - name: Install source-audit dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y             dash git cmake ninja-build g++             libturbojpeg0-dev             libx11-dev libxext-dev libxtst-dev             libgl-dev libglu1-mesa-dev libegl-dev             libxcb1-dev libxcb-keysyms1-dev             libxcb-glx0-dev libx11-xcb-dev
+
+      - name: Validate RCTools shell and UI contract
+        run: |
+          set -euo pipefail
+          dash -n recovery-wifi/rctools-gpu
+
+          grep -Fq 'RCTools GPU' recovery-wifi/rctools-gpu
+          grep -Fq '[1] llvmpipe' recovery-wifi/rctools-gpu
+          grep -Fq '[2] Freedreno / KGSL' recovery-wifi/rctools-gpu
+          grep -Fq '[3] VirGL' recovery-wifi/rctools-gpu
+          grep -Fq '[4] Tools' recovery-wifi/rctools-gpu
+          grep -Fq '[1] Setup' recovery-wifi/rctools-gpu
+          grep -Fq '[2] Status' recovery-wifi/rctools-gpu
+          grep -Fq '[3] Enable' recovery-wifi/rctools-gpu
+          grep -Fq '[4] Disable' recovery-wifi/rctools-gpu
+          grep -Fq '[5] Test' recovery-wifi/rctools-gpu
+
+          if grep -nE 'rctools-gpu-(profile|env\.clean|pretest|test)\.\$"'               recovery-wifi/rctools-gpu; then
+            echo 'Found non-unique temporary-file name'
+            exit 1
+          fi
+
+      - name: Validate VirtualGL eglkgsl patch
+        run: |
+          set -euo pipefail
+          chmod +x recovery-wifi/build-virtualgl-kgsl.sh
+          recovery-wifi/build-virtualgl-kgsl.sh
+
+      - name: Validate Mesa KGSL compatibility patch
+        run: |
+          set -euo pipefail
+          MESA=/tmp/mesa-kgsl-audit
+          rm -rf "$MESA"
+          git init -q "$MESA"
+          git -C "$MESA" remote add origin             https://github.com/lfdevs/mesa-for-android-container.git
+          git -C "$MESA" fetch -q --depth=1 origin             98f3d6229d61452cef80f8563af7c56ae599dc14
+          git -C "$MESA" checkout -q --detach FETCH_HEAD
+
+          git -C "$MESA" apply --check             "$GITHUB_WORKSPACE/recovery-wifi/patches/mesa-kgsl-channel-compat.patch"
+          git -C "$MESA" apply             "$GITHUB_WORKSPACE/recovery-wifi/patches/mesa-kgsl-channel-compat.patch"
+          git -C "$MESA" diff --check
+
+          grep -Fq 'EGL_PLATFORM_SURFACELESS_MESA'             "$GITHUB_WORKSPACE/recovery-wifi/patches/virtualgl-eglkgsl.patch"
+          grep -Fq 'ion_allocation_data_legacy'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'if (!(extension && extension->present))'             "$MESA/src/x11/x11_dri3.c"
+
+      - name: Summarize audit
+        run: |
+          {
+            echo '### GPU source audit'
+            echo
+            echo '- RCTools shell syntax: PASS'
+            echo '- RCTools menu contract: PASS'
+            echo '- VirtualGL eglkgsl patch + build: PASS'
+            echo '- Mesa Channel KGSL patch applies cleanly: PASS'
+            echo
+            echo 'Device validation is still required before merging the Mesa patch.'
+          } >> "$GITHUB_STEP_SUMMARY"
