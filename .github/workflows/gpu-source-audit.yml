@@ -122,16 +122,20 @@ jobs:
             VGL_DISPLAY=eglkgsl \
             VGL_KGSL_ASYNC_XSHM=1 \
             VGL_SYNC=0 \
+            VGL_VERBOSE=1 \
             timeout 30s "$X11UT" >/tmp/x11transut-async.log 2>&1
           grep -Fq 'Megapixels/sec' /tmp/x11transut-async.log
+          grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async.log
 
           env \
             DISPLAY=:99 \
             VGL_DISPLAY=eglkgsl \
             VGL_KGSL_ASYNC_XSHM=1 \
             VGL_SYNC=0 \
+            VGL_VERBOSE=1 \
             timeout 30s "$X11UT" -bottomup >/tmp/x11transut-async-bottomup.log 2>&1
           grep -Fq 'Megapixels/sec' /tmp/x11transut-async-bottomup.log
+          grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async-bottomup.log
 
       - name: Validate Mesa KGSL compatibility patch
         shell: bash
