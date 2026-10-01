@@ -14,10 +14,172 @@ preserving the existing EGLDevice behavior for all other selectors.
 diff --git a/server/faker.cpp b/server/faker.cpp
 --- a/server/faker.cpp
 +++ b/server/faker.cpp
-@@ -192,78 +192,101 @@
- 		GlobalCriticalSection::SafeLock l(globalMutex);
- 		if(!dpy3D)
- 		{
+@@ -30,238 +30,265 @@
+ #include <dlfcn.h>
+ #include "faker.h"
+ 
+-
+-namespace faker {
+-
+-Display *dpy3D = NULL;
+-bool deadYet = false;
+-char *glExtensions = NULL;
+-EGLint eglMajor = 0, eglMinor = 0;
+-VGL_THREAD_LOCAL(TraceLevel, long, 0)
+-VGL_THREAD_LOCAL(FakerLevel, long, 0)
+-VGL_THREAD_LOCAL(GLXExcludeCurrent, bool, false)
+-VGL_THREAD_LOCAL(EGLExcludeCurrent, bool, false)
+-VGL_THREAD_LOCAL(OGLExcludeCurrent, bool, false)
+-VGL_THREAD_LOCAL(AutotestColor, long, -1)
+-VGL_THREAD_LOCAL(AutotestRColor, long, -1)
+-VGL_THREAD_LOCAL(AutotestFrame, long, -1)
+-VGL_THREAD_LOCAL(AutotestDisplay, Display *, NULL)
+-VGL_THREAD_LOCAL(AutotestDrawable, long, 0)
+-VGL_THREAD_LOCAL(EGLXContextCurrent, bool, false)
+-VGL_THREAD_LOCAL(EGLError, long, EGL_SUCCESS)
+-VGL_THREAD_LOCAL(CurrentEGLXDisplay, EGLXDisplay *, NULL)
+-
+-
+-static void cleanup(void)
+-{
+-	if(PixmapHash::isAlloc()) PMHASH.kill();
+-	if(VisualHash::isAlloc()) VISHASH.kill();
+-	if(ContextHash::isAlloc()) CTXHASH.kill();
+-	if(GLXDrawableHash::isAlloc()) GLXDHASH.kill();
+-	if(WindowHash::isAlloc()) WINHASH.kill();
+-	if(EGLXDisplayHash::isAlloc()) EGLXDPYHASH.kill();
+-	if(EGLXWindowHash::isAlloc()) EGLXWINHASH.kill();
+-	if(backend::ContextHashEGL::isAlloc()) CTXHASHEGL.kill();
+-	if(backend::PbufferHashEGL::isAlloc()) PBHASHEGL.kill();
+-	if(backend::RBOContext::isAlloc()) RBOCONTEXT.kill();
+-	free(glExtensions);
+-	unloadSymbols();
+-}
+-
+-
+-void safeExit(int retcode)
+-{
+-	bool shutdown;
+-
+-	globalMutex.lock(false);
+-	shutdown = deadYet;
+-	if(!deadYet)
+-	{
+-		deadYet = true;
+-		cleanup();
+-		fconfig_deleteinstance();
+-	}
+-	globalMutex.unlock(false);
+-	if(!shutdown)
+-	{
+-		if(!strcasecmp(fconfig.exitfunction, "_exit"))
+-			_exit(retcode);
+-		else if(!strcasecmp(fconfig.exitfunction, "abort"))
+-			abort();
+-		else
+-			exit(retcode);
+-	}
+-	else pthread_exit(0);
+-}
+-
+-
+-class GlobalCleanup
+-{
+-	public:
+-
+-		~GlobalCleanup()
+-		{
+-			faker::GlobalCriticalSection *gcs =
+-				faker::GlobalCriticalSection::getInstance(false);
+-			if(gcs) gcs->lock(false);
+-			fconfig_deleteinstance(gcs);
+-			deadYet = true;
+-			if(gcs) gcs->unlock(false);
+-		}
+-};
+-GlobalCleanup globalCleanup;
+-
+-
+-// Used when VGL_TRAPX11=1
+-
+-int xhandler(Display *dpy, XErrorEvent *xe)
+-{
+-	char temps[256];
+-
+-	temps[0] = 0;
+-	XGetErrorText(dpy, xe->error_code, temps, 255);
+-	vglout.PRINT("[VGL] WARNING: X11 error trapped\n[VGL]    Error:  %s\n[VGL]    XID:    0x%.8x\n",
+-		temps, xe->resourceid);
+-	return 0;
+-}
+-
+-
+-void sendGLXError(Display *dpy, CARD16 minorCode, CARD8 errorCode,
+-	bool x11Error)
+-{
+-	xError error;
+-	int majorCode, errorBase, dummy;
+-
+-	if(!backend::queryExtension(dpy, &majorCode, &dummy, &errorBase))
+-	{
+-		if(fconfig.egl)
+-			THROW("The EGL back end requires a 2D X server with a GLX extension.");
+-		else
+-			THROW("The 3D X server does not have a GLX extension.");
+-	}
+-
+-	if(!fconfig.egl) dpy = DPY3D;
+-
+-	LockDisplay(dpy);
+-
+-	error.type = X_Error;
+-	error.errorCode = x11Error ? errorCode : errorBase + errorCode;
+-	error.sequenceNumber = dpy->request;
+-	error.resourceID = 0;
+-	error.minorCode = minorCode;
+-	error.majorCode = majorCode;
+-	_XError(dpy, &error);
+-
+-	UnlockDisplay(dpy);
+-}
+-
+-
+-// Called from XOpenDisplay(), unless a GLX function is called first
+-
+-void init(void)
+-{
+-	static int init = 0;
+-
+-	if(init) return;
+-	GlobalCriticalSection::SafeLock l(globalMutex);
+-	if(init) return;
+-	init = 1;
+-
+-	fconfig_reloadenv();
+-	if(strlen(fconfig.log) > 0) vglout.logTo(fconfig.log);
+-
+-	if(fconfig.verbose)
+-		vglout.println("[VGL] %s v%s %d-bit (Build %s)", __APPNAME, __VERSION,
+-			(int)sizeof(size_t) * 8, __BUILD);
+-
+-	if(getenv("VGL_DEBUG"))
+-	{
+-		vglout.print("[VGL] Attach debugger to process %d ...\n", getpid());
+-		fgetc(stdin);
+-	}
+-	if(fconfig.trapx11) XSetErrorHandler(xhandler);
+-}
+-
+-
+-Display *init3D(void)
+-{
+-	init();
+-
+-	if(!dpy3D)
+-	{
+-		GlobalCriticalSection::SafeLock l(globalMutex);
+-		if(!dpy3D)
+-		{
 -			if(fconfig.egl)
 -			{
 -				int numDevices = 0, i, validDevices = 0;
@@ -88,8 +250,172 @@ diff --git a/server/faker.cpp b/server/faker.cpp
 -				{
 -					if(devices) free(devices);
 -					throw;
--				}
--			}
++#ifndef EGL_PLATFORM_SURFACELESS_MESA
++#define EGL_PLATFORM_SURFACELESS_MESA 0x31DD
++#endif
++
++
++namespace faker {
++
++Display *dpy3D = NULL;
++bool deadYet = false;
++char *glExtensions = NULL;
++EGLint eglMajor = 0, eglMinor = 0;
++VGL_THREAD_LOCAL(TraceLevel, long, 0)
++VGL_THREAD_LOCAL(FakerLevel, long, 0)
++VGL_THREAD_LOCAL(GLXExcludeCurrent, bool, false)
++VGL_THREAD_LOCAL(EGLExcludeCurrent, bool, false)
++VGL_THREAD_LOCAL(OGLExcludeCurrent, bool, false)
++VGL_THREAD_LOCAL(AutotestColor, long, -1)
++VGL_THREAD_LOCAL(AutotestRColor, long, -1)
++VGL_THREAD_LOCAL(AutotestFrame, long, -1)
++VGL_THREAD_LOCAL(AutotestDisplay, Display *, NULL)
++VGL_THREAD_LOCAL(AutotestDrawable, long, 0)
++VGL_THREAD_LOCAL(EGLXContextCurrent, bool, false)
++VGL_THREAD_LOCAL(EGLError, long, EGL_SUCCESS)
++VGL_THREAD_LOCAL(CurrentEGLXDisplay, EGLXDisplay *, NULL)
++
++
++static void cleanup(void)
++{
++	if(PixmapHash::isAlloc()) PMHASH.kill();
++	if(VisualHash::isAlloc()) VISHASH.kill();
++	if(ContextHash::isAlloc()) CTXHASH.kill();
++	if(GLXDrawableHash::isAlloc()) GLXDHASH.kill();
++	if(WindowHash::isAlloc()) WINHASH.kill();
++	if(EGLXDisplayHash::isAlloc()) EGLXDPYHASH.kill();
++	if(EGLXWindowHash::isAlloc()) EGLXWINHASH.kill();
++	if(backend::ContextHashEGL::isAlloc()) CTXHASHEGL.kill();
++	if(backend::PbufferHashEGL::isAlloc()) PBHASHEGL.kill();
++	if(backend::RBOContext::isAlloc()) RBOCONTEXT.kill();
++	free(glExtensions);
++	unloadSymbols();
++}
++
++
++void safeExit(int retcode)
++{
++	bool shutdown;
++
++	globalMutex.lock(false);
++	shutdown = deadYet;
++	if(!deadYet)
++	{
++		deadYet = true;
++		cleanup();
++		fconfig_deleteinstance();
++	}
++	globalMutex.unlock(false);
++	if(!shutdown)
++	{
++		if(!strcasecmp(fconfig.exitfunction, "_exit"))
++			_exit(retcode);
++		else if(!strcasecmp(fconfig.exitfunction, "abort"))
++			abort();
++		else
++			exit(retcode);
++	}
++	else pthread_exit(0);
++}
++
++
++class GlobalCleanup
++{
++	public:
++
++		~GlobalCleanup()
++		{
++			faker::GlobalCriticalSection *gcs =
++				faker::GlobalCriticalSection::getInstance(false);
++			if(gcs) gcs->lock(false);
++			fconfig_deleteinstance(gcs);
++			deadYet = true;
++			if(gcs) gcs->unlock(false);
++		}
++};
++GlobalCleanup globalCleanup;
++
++
++// Used when VGL_TRAPX11=1
++
++int xhandler(Display *dpy, XErrorEvent *xe)
++{
++	char temps[256];
++
++	temps[0] = 0;
++	XGetErrorText(dpy, xe->error_code, temps, 255);
++	vglout.PRINT("[VGL] WARNING: X11 error trapped\n[VGL]    Error:  %s\n[VGL]    XID:    0x%.8x\n",
++		temps, xe->resourceid);
++	return 0;
++}
++
++
++void sendGLXError(Display *dpy, CARD16 minorCode, CARD8 errorCode,
++	bool x11Error)
++{
++	xError error;
++	int majorCode, errorBase, dummy;
++
++	if(!backend::queryExtension(dpy, &majorCode, &dummy, &errorBase))
++	{
++		if(fconfig.egl)
++			THROW("The EGL back end requires a 2D X server with a GLX extension.");
++		else
++			THROW("The 3D X server does not have a GLX extension.");
++	}
++
++	if(!fconfig.egl) dpy = DPY3D;
++
++	LockDisplay(dpy);
++
++	error.type = X_Error;
++	error.errorCode = x11Error ? errorCode : errorBase + errorCode;
++	error.sequenceNumber = dpy->request;
++	error.resourceID = 0;
++	error.minorCode = minorCode;
++	error.majorCode = majorCode;
++	_XError(dpy, &error);
++
++	UnlockDisplay(dpy);
++}
++
++
++// Called from XOpenDisplay(), unless a GLX function is called first
++
++void init(void)
++{
++	static int init = 0;
++
++	if(init) return;
++	GlobalCriticalSection::SafeLock l(globalMutex);
++	if(init) return;
++	init = 1;
++
++	fconfig_reloadenv();
++	if(strlen(fconfig.log) > 0) vglout.logTo(fconfig.log);
++
++	if(fconfig.verbose)
++		vglout.println("[VGL] %s v%s %d-bit (Build %s)", __APPNAME, __VERSION,
++			(int)sizeof(size_t) * 8, __BUILD);
++
++	if(getenv("VGL_DEBUG"))
++	{
++		vglout.print("[VGL] Attach debugger to process %d ...\n", getpid());
++		fgetc(stdin);
++	}
++	if(fconfig.trapx11) XSetErrorHandler(xhandler);
++}
++
++
++Display *init3D(void)
++{
++	init();
++
++	if(!dpy3D)
++	{
++		GlobalCriticalSection::SafeLock l(globalMutex);
++		if(!dpy3D)
++		{
 +			if(fconfig.egl)
 +			{
 +				if(!strcasecmp(fconfig.localdpystring, "eglkgsl"))
@@ -100,7 +426,7 @@ diff --git a/server/faker.cpp b/server/faker.cpp
 +						vglout.println("[VGL] Opening KGSL surfaceless EGL display");
 +
 +					if(!(dpy3D =
-+						(Display *)_eglGetPlatformDisplayEXT((EGLenum)0x31DD,
++						(Display *)_eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA,
 +							EGL_DEFAULT_DISPLAY, NULL)))
 +						THROW("Could not open KGSL surfaceless EGL display");
 +					if(!_eglInitialize((EGLDisplay)dpy3D, &eglMajor, &eglMinor))
@@ -183,8 +509,6 @@ diff --git a/server/faker.cpp b/server/faker.cpp
 +						if(devices) free(devices);
 +						throw;
 +					}
-+				}
-+			}
+ 				}
+ 			}
  			else  // fconfig.egl
- 			{
- 				if(fconfig.verbose)
