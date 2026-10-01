@@ -280,12 +280,14 @@ Real-device validation:
   BGRA->BGRA and increased the observed glxgears rate from roughly 53 FPS to
   roughly 125--126 FPS
 - `glxspheres64` with synchronous visible readback: roughly 15--17 FPS
-- `glxspheres64` with `VGL_READBACK=none`: roughly 57--58 FPS after warm-up
+- `glxspheres64` with `VGL_READBACK=none`: roughly 57--58 FPS after warm-up,
+  but this is **not** a visible-presentation benchmark.  In VirtualGL,
+  `RRREAD_NONE` makes `VirtualWin::readback()` return before copying the 3D
+  framebuffer to X11, so it cannot be used as an optimization target for VNC.
 
 VirtualGL 3.1.5 currently uses one PBO and maps it immediately after
 `glReadPixels()`.  On this KGSL stack the built-in synchronicity detector
-disables PBO mode, even with BGRA->BGRA.  Until a multi-PBO pipeline is
-validated, the project default is:
+disables PBO mode, even with BGRA->BGRA.  The visible baseline therefore remains:
 
 ```sh
 VGL_DISPLAY=eglkgsl
@@ -293,17 +295,18 @@ VGL_FORCEALPHA=1
 VGL_READBACK=sync
 ```
 
-### Experimental A/B/C presentation validation
+### Experimental A/B/C/D presentation validation
 
-The source tree can build three VirtualGL/KGSL variants from the same pinned
-VirtualGL commit.  They are deliberately separate so that each presentation
-optimization can be measured independently:
+The source tree can build four VirtualGL/KGSL variants from the same pinned
+VirtualGL commit.  They are deliberately separate so that each optimization
+can be measured independently:
 
-| Variant | `pack_invert` | `async_xshm` | Purpose |
-| --- | ---: | ---: | --- |
-| A — stable | 0 | 0 | Existing synchronous X11 transport baseline |
-| B — pack-invert | 1 | 0 | Avoid the CPU vertical `fbx_flip()` when `GL_MESA_pack_invert` is available |
-| C — pack-invert + async-XShm | 1 | 1 | Add two in-flight MIT-SHM images with `ShmCompletion`-driven reuse |
+| Variant | `pack_invert` | `async_xshm` | `pbo_pipeline` | Purpose |
+| --- | ---: | ---: | ---: | --- |
+| A — stable | 0 | 0 | 0 | Existing synchronous X11 transport baseline |
+| B — pack-invert | 1 | 0 | 0 | Avoid the CPU vertical `fbx_flip()` when `GL_MESA_pack_invert` is available |
+| C — pack-invert + async-XShm | 1 | 1 | 0 | Add two in-flight MIT-SHM images with `ShmCompletion`-driven reuse |
+| D — pack-invert + async-XShm + two-PBO | 1 | 1 | 1 | Add one-frame-latency two-PBO KGSL readback so mapping the previous readback can overlap the current GPU read |
 
 Variant C uses the presentation model already proven by the standalone Channel
 bridge: `XShmPutImage(..., True)`, explicit completion events, and no
@@ -320,6 +323,15 @@ VirtualGL X11 path keeps its original three-frame pool.
 The `XIfEvent()` predicate itself performs no Xlib calls.  The MIT-SHM event
 base is resolved before entering `XIfEvent()`, then the predicate compares
 only the precomputed event type and the frame's `shmseg`.
+
+Variant D keeps C's presentation pipeline and adds a separate, opt-in readback
+pipeline.  It is accepted only for the project-specific `eglkgsl` backend,
+full-frame mono X11 readback, and a top-down layout produced through
+`GL_MESA_pack_invert`.  The first frame warms the pipeline synchronously.
+Subsequent frames copy the previous PBO before queuing the current
+`glReadPixels()` into the other PBO, so D intentionally adds one frame of
+readback latency.  Resize, format, type, pitch, read-buffer, or readback-context
+changes reset the pipeline rather than reusing incompatible data.
 
 The installed runtime identifies its feature set in:
 
@@ -346,45 +358,51 @@ mkdir -p "$ROOT/opt/rctools-gpu/mesa"
 tar -xzf "$BUNDLE"/mesa_*_arm64.tar.gz \
     -C "$ROOT/opt/rctools-gpu/mesa"
 
-# Choose exactly one for each A/B/C test:
+# Choose exactly one for each A/B/C/D test:
 VGL_TAR="$BUNDLE/VirtualGL-KGSL-stable-arm64.tar.gz"                    # A
 # VGL_TAR="$BUNDLE/VirtualGL-KGSL-pack-invert-experimental-arm64.tar.gz" # B
 # VGL_TAR="$BUNDLE/VirtualGL-KGSL-pack-invert-async-xshm-experimental-arm64.tar.gz" # C
+# VGL_TAR="$BUNDLE/VirtualGL-KGSL-pack-invert-async-xshm-pbo-experimental-arm64.tar.gz" # D
 
 rm -rf "$ROOT/opt/VirtualGL-KGSL"
 tar -xzf "$VGL_TAR" -C "$ROOT"
 ```
 
-After each A/B/C swap, select **Freedreno / KGSL** again in the unchanged
+After each A/B/C/D swap, select **Freedreno / KGSL** again in the unchanged
 RCTools GPU menu before starting the container.  This rewrites the managed
-environment from that runtime's buildinfo, so C receives
-`VGL_KGSL_ASYNC_XSHM=1` and A/B do not.  Do not carry an old container
-process across a runtime swap.
+environment from that runtime's buildinfo.  C and D receive
+`VGL_KGSL_ASYNC_XSHM=1`; only D receives
+`VGL_KGSL_PBO_PIPELINE=1`.  Do not carry an old container process across a
+runtime swap.
 
-RCTools reads that file.  It exports `VGL_KGSL_ASYNC_XSHM=1` only when the
-installed runtime explicitly contains `async_xshm=1`; switching back to A or B
-removes the variable from the managed environment.  No menu option is added and
-the stable runtime cannot accidentally opt into the experimental transport.
+RCTools reads that file and exports each experimental variable only when the
+installed runtime explicitly declares the corresponding feature.  Switching
+back to A/B/C removes `VGL_KGSL_PBO_PIPELINE`; switching back to A/B removes
+`VGL_KGSL_ASYNC_XSHM`.  No menu option is added, so a stable runtime cannot
+accidentally opt into an experimental transport/readback path.
 
 `VGL_READBACK=sync` and `VGL_SYNC` are different controls.  The former keeps
 the KGSL framebuffer readback synchronous.  The latter enables VirtualGL strict
 2D/3D synchronization.  RCTools does not enable `VGL_SYNC`, so the default
 `fconfig.sync=0` still allows variant C to pipeline the X11 presentation step.
 
-Real-device A/B/C validation must use the same Mesa build, geometry, VNC server
-configuration, application, and sample interval.  For each variant record:
+Real-device A/B/C/D validation must use the same Mesa build, geometry, VNC
+server configuration, application, and sample interval.  For each variant
+record:
 
-- `rctools-gpu status`, including `virtualgl_pack_invert` and
-  `virtualgl_async_xshm`
-- the managed environment, confirming `VGL_KGSL_ASYNC_XSHM=1` only for C
+- `rctools-gpu status`, including `virtualgl_pack_invert`,
+  `virtualgl_async_xshm`, and `virtualgl_pbo_pipeline`
+- the managed environment, confirming `VGL_KGSL_ASYNC_XSHM=1` only for C/D
+  and `VGL_KGSL_PBO_PIPELINE=1` only for D
 - `GL_VENDOR=freedreno` and `GL_RENDERER=FD506`
 - visible orientation/correctness, resize behavior, FPS and MPix/s
 - `GL_ERROR`
 - post-test KGSL/Adreno kernel logs for fault, hang, timeout, reset, IOMMU
   fault, BUG or Oops
 
-A, B, and C remain experimental comparisons until those real-device checks
-pass.  A source build or CI success alone is not a device-validation result.
+A, B, C, and D remain comparison points until the corresponding real-device
+checks pass.  A source build or CI success alone is not a device-validation
+result.
 
 ## Devfreq note
 
