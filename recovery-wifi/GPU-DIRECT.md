@@ -381,10 +381,14 @@ back to A/B/C removes `VGL_KGSL_PBO_PIPELINE`; switching back to A/B removes
 `VGL_KGSL_ASYNC_XSHM`.  No menu option is added, so a stable runtime cannot
 accidentally opt into an experimental transport/readback path.
 
-`VGL_READBACK=sync` and `VGL_SYNC` are different controls.  The former keeps
-the KGSL framebuffer readback synchronous.  The latter enables VirtualGL strict
-2D/3D synchronization.  RCTools does not enable `VGL_SYNC`, so the default
-`fconfig.sync=0` still allows variant C to pipeline the X11 presentation step.
+`VGL_READBACK=sync` and `VGL_SYNC` are different controls.
+`VGL_READBACK=sync` deliberately disables VirtualGL's upstream single-PBO
+readback path.  A/B/C therefore use synchronous framebuffer readback, while D
+intercepts that path with the separately gated
+`VGL_KGSL_PBO_PIPELINE=1` two-PBO implementation.  `VGL_SYNC` enables
+VirtualGL strict 2D/3D synchronization.  RCTools does not enable `VGL_SYNC`,
+so the default `fconfig.sync=0` still allows C/D to pipeline X11
+presentation.
 
 Real-device A/B/C/D validation must use the same Mesa build, geometry, VNC
 server configuration, application, and sample interval.  For each variant
