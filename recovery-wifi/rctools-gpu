@@ -1513,7 +1513,14 @@ test_profile() {
         if "$BB" grep -Fqx 'MESA_DEPENDENCIES=missing' "$pre"; then
             err "DIRECT_GPU_MESA_DEPENDENCY_MISSING"
             err "one or more shared libraries required by kgsl_dri.so are unavailable"
-            "$BB" grep -A40 '^=== Mesa shared-library dependencies ===
+            "$BB" grep -A40 '^=== Mesa shared-library dependencies ===$' "$pre" >&2 || true
+            "$BB" rm -f "$pre"
+            return 1
+        fi
+
+        if [ "$direct_vgl" -eq 1 ]; then
+            for required in \
+                'RCTOOLS_GPU_VIRTUALGL=1' \
                 'VGL_DISPLAY=eglkgsl' \
                 'VGL_FORCEALPHA=1' \
                 'VGL_READBACK=sync'
@@ -1550,7 +1557,10 @@ test_profile() {
                 return 1
             fi
         else
-            if "$BB" grep -Fq 'VGL_DISPLAY=' "$pre" ||
+            if "$BB" grep -Fq 'RCTOOLS_GPU_VIRTUALGL=1' "$pre" ||
+               "$BB" grep -Fq 'VGL_DISPLAY=' "$pre" ||
+               "$BB" grep -Fq 'VGL_FORCEALPHA=' "$pre" ||
+               "$BB" grep -Fq 'VGL_READBACK=' "$pre" ||
                "$BB" grep -Fq 'VGL_KGSL_ASYNC_XSHM=' "$pre" ||
                "$BB" grep -Fq 'VGL_KGSL_PBO_PIPELINE=' "$pre"; then
                 err "DIRECT_GPU_VIRTUALGL_ENV_LEAK"
