@@ -8,6 +8,7 @@ on:
     branches:
       - twrp-cli-minimal-gpu-headless
       - twrp-cli-minimal-gpu-direct
+      - gpu-test-v1
 
 permissions:
   contents: read
