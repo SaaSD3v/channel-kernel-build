@@ -167,6 +167,13 @@ jobs:
           grep -Fq 'Megapixels/sec' /tmp/x11transut-async-bottomup.log
           grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async-bottomup.log
 
+          echo '=== Xvfb sync baseline ==='
+          grep -E 'Testing|Megapixels/sec' /tmp/x11transut-sync-baseline.log
+          echo '=== Xvfb async MIT-SHM ==='
+          grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async.log
+          echo '=== Xvfb async MIT-SHM + bottom-up ==='
+          grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-bottomup.log
+
           {
             echo '### VirtualGL async-XShm Xvfb smoke'
             echo
