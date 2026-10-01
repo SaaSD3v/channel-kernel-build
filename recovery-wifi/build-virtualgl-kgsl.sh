@@ -3,6 +3,8 @@ set -euo pipefail
 
 VGL_REPO="${VGL_REPO:-https://github.com/VirtualGL/virtualgl.git}"
 VGL_COMMIT="${VGL_COMMIT:-2473cf39bdbe88ca41ecd58ac4007385c9682a9f}"
+PREFIX="${PREFIX:-/opt/VirtualGL-KGSL}"
+INSTALL="${INSTALL:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${GITHUB_WORKSPACE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -35,7 +37,7 @@ test -e "$TJPEG_LIB"
 
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=/tmp/VirtualGL-KGSL-stage \
+  -DCMAKE_INSTALL_PREFIX="$PREFIX" \
   -DTJPEG_INCLUDE_DIR=/usr/include \
   -DTJPEG_LIBRARY="$TJPEG_LIB" \
   -DVGL_USEXV=0 \
@@ -43,6 +45,12 @@ cmake -S "$SRC" -B "$BUILD" -G Ninja \
 
 cmake --build "$BUILD" -j"${JOBS:-2}"
 
+if [[ "$INSTALL" == 1 ]]; then
+  cmake --install "$BUILD"
+fi
+
 echo "VirtualGL KGSL build OK"
 echo "source_commit=$VGL_COMMIT"
 echo "build=$BUILD"
+echo "prefix=$PREFIX"
+echo "installed=$INSTALL"
