@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - twrp-cli-minimal-gpu-audit
+      - gpu-test-v1
     paths:
       - 'recovery-wifi/build-mesa-kgsl-channel.sh'
       - 'recovery-wifi/build-virtualgl-kgsl.sh'
@@ -167,10 +168,13 @@ jobs:
 
           cp recovery-wifi/install-gpu-runtime.sh "$OUT/install-gpu-runtime.sh"
           chmod 0755 "$OUT/install-gpu-runtime.sh"
+          cp recovery-wifi/rctools-gpu "$OUT/rctools-gpu"
+          chmod 0755 "$OUT/rctools-gpu"
+          cp recovery-wifi/GPU-DIRECT.md "$OUT/GPU-DIRECT.md"
 
           (
             cd "$OUT"
-            sha256sum ./*.tar.gz ./install-gpu-runtime.sh | sort -k2 > SHA256SUMS
+            sha256sum ./*.tar.gz ./install-gpu-runtime.sh ./rctools-gpu ./GPU-DIRECT.md | sort -k2 > SHA256SUMS
           )
 
           cat >"$OUT/MANIFEST.txt" <<EOF
@@ -191,6 +195,8 @@ jobs:
 
           Device validation order: A -> B -> C -> D.
           CI/source success is not a real-device validation result.
+          Checkpoint: gpu-test-v1 from c02cf2066397cc2069bd6beda5607ab2725ad823
+          Bundle also contains the matching rctools-gpu and GPU-DIRECT.md.
           EOF
 
           cat "$OUT/MANIFEST.txt"
