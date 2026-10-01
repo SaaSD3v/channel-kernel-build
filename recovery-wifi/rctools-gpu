@@ -1207,6 +1207,12 @@ container_status() {
             if direct_runtime "$cfg" >/dev/null 2>&1; then
                 say 'freedreno_runtime=ready'
                 say 'presentation=EGL surfaceless'
+                env_vgl_display="$(gpu_env_value "$cfg" VGL_DISPLAY 2>/dev/null)"
+                env_vgl_forcealpha="$(gpu_env_value "$cfg" VGL_FORCEALPHA 2>/dev/null)"
+                env_vgl_readback="$(gpu_env_value "$cfg" VGL_READBACK 2>/dev/null)"
+                env_vgl_async="$(gpu_env_value "$cfg" VGL_KGSL_ASYNC_XSHM 2>/dev/null)"
+                env_vgl_pbo="$(gpu_env_value "$cfg" VGL_KGSL_PBO_PIPELINE 2>/dev/null)"
+
                 if [ "$direct_vgl" -eq 1 ]; then
                     say 'virtualgl_kgsl=ready'
                     say "virtualgl_pack_invert=$direct_vgl_pack_invert"
@@ -1218,8 +1224,36 @@ container_status() {
                     else
                         say 'virtualgl_readback=sync'
                     fi
+
+                    vgl_env_mismatch=0
+                    [ "$env_vgl_display" = 'eglkgsl' ] || vgl_env_mismatch=1
+                    [ "$env_vgl_forcealpha" = '1' ] || vgl_env_mismatch=1
+                    [ "$env_vgl_readback" = 'sync' ] || vgl_env_mismatch=1
+
+                    if [ "$direct_vgl_async_xshm" -eq 1 ]; then
+                        [ "$env_vgl_async" = '1' ] || vgl_env_mismatch=1
+                    else
+                        [ -z "$env_vgl_async" ] || vgl_env_mismatch=1
+                    fi
+
+                    if [ "$direct_vgl_pbo_pipeline" -eq 1 ]; then
+                        [ "$env_vgl_pbo" = '1' ] || vgl_env_mismatch=1
+                    else
+                        [ -z "$env_vgl_pbo" ] || vgl_env_mismatch=1
+                    fi
+
+                    if [ "$vgl_env_mismatch" -eq 0 ]; then
+                        say 'virtualgl_env_state=consistent'
+                    else
+                        say 'virtualgl_env_state=mismatch (reapply Freedreno backend)'
+                    fi
                 else
                     say 'virtualgl_kgsl=not installed'
+                    if [ -n "$env_vgl_display$env_vgl_forcealpha$env_vgl_readback$env_vgl_async$env_vgl_pbo" ]; then
+                        say 'virtualgl_env_state=stale (runtime missing; reapply Freedreno backend)'
+                    else
+                        say 'virtualgl_env_state=clean'
+                    fi
                 fi
                 say 'xserver_env=clean (do not start Xtigervnc with KGSL Mesa variables)'
             else
