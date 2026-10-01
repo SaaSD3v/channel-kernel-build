@@ -120,6 +120,19 @@ jobs:
           env \
             DISPLAY=:99 \
             VGL_DISPLAY=eglkgsl \
+            VGL_SYNC=0 \
+            VGL_VERBOSE=1 \
+            timeout 30s "$X11UT" >/tmp/x11transut-sync-baseline.log 2>&1
+          grep -Fq 'Megapixels/sec' /tmp/x11transut-sync-baseline.log
+          if grep -Fq '[VGL] KGSL async MIT-SHM presentation active' \
+              /tmp/x11transut-sync-baseline.log; then
+            echo 'Async XShm marker leaked into disabled baseline'
+            exit 1
+          fi
+
+          env \
+            DISPLAY=:99 \
+            VGL_DISPLAY=eglkgsl \
             VGL_KGSL_ASYNC_XSHM=1 \
             VGL_SYNC=0 \
             VGL_VERBOSE=1 \
@@ -136,6 +149,25 @@ jobs:
             timeout 30s "$X11UT" -bottomup >/tmp/x11transut-async-bottomup.log 2>&1
           grep -Fq 'Megapixels/sec' /tmp/x11transut-async-bottomup.log
           grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async-bottomup.log
+
+          {
+            echo '### VirtualGL async-XShm Xvfb smoke'
+            echo
+            echo 'Baseline (async gate disabled):'
+            echo '~~~text'
+            grep -E 'Testing|Megapixels/sec' /tmp/x11transut-sync-baseline.log
+            echo '~~~'
+            echo
+            echo 'Async MIT-SHM:'
+            echo '~~~text'
+            grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async.log
+            echo '~~~'
+            echo
+            echo 'Async MIT-SHM + bottom-up input:'
+            echo '~~~text'
+            grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-bottomup.log
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Validate Mesa KGSL compatibility patch
         shell: bash
