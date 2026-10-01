@@ -31,7 +31,7 @@ diff --git a/server/VirtualDrawable.h b/server/VirtualDrawable.h
 diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 --- a/server/VirtualDrawable.cpp
 +++ b/server/VirtualDrawable.cpp
-@@ -396,162 +396,184 @@
+@@ -396,162 +396,186 @@
  }
  
  
@@ -234,7 +234,6 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +		if(packExt && strstr(packExt, "GL_MESA_pack_invert"))
 +		{
 +			_glGetIntegerv(GL_PACK_INVERT_MESA, &oldPackInvert);
-+			_glPixelStorei(GL_PACK_INVERT_MESA, GL_TRUE);
 +			packInvert = true;
 +		}
 +	}
@@ -284,8 +283,16 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +	TRY_GL();
 +	profReadback.startFrame();
 +	if(usePBO) t0 = GetTime();
++	#ifdef GL_PACK_INVERT_MESA
++	if(packInvert)
++		_glPixelStorei(GL_PACK_INVERT_MESA, GL_TRUE);
++	#endif
 +	backend::readPixels(x, y, width, height, glFormat, type,
 +		usePBO ? NULL : bits);
++	#ifdef GL_PACK_INVERT_MESA
++	if(packInvert)
++		_glPixelStorei(GL_PACK_INVERT_MESA, oldPackInvert);
++	#endif
 +
 +	if(usePBO)
 +	{
@@ -324,11 +331,6 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +			}
 +		}
 +	}
-+
-+	#ifdef GL_PACK_INVERT_MESA
-+	if(packInvert)
-+		_glPixelStorei(GL_PACK_INVERT_MESA, oldPackInvert);
-+	#endif
 +
 +	profReadback.endFrame(width * height, 0, stereo ? 0.5 : 1);
 +	CATCH_GL("Could not read pixels");
