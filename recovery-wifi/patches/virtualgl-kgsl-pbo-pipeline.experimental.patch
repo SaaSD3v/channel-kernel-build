@@ -1,0 +1,776 @@
+From: RCTools GPU audit
+Subject: [PATCH EXPERIMENTAL] readback: pipeline two PBOs for eglkgsl mono X11
+
+Base: VirtualGL/virtualgl 2473cf39bdbe88ca41ecd58ac4007385c9682a9f
+Requires: virtualgl-kgsl-pack-invert.experimental.patch
+
+Add an opt-in VGL_KGSL_PBO_PIPELINE=1 path for the project-specific eglkgsl
+backend.  It is intentionally restricted to full-frame mono X11 readback with
+GL_MESA_pack_invert active.  The first frame warms the pipeline synchronously.
+Subsequent calls copy the previous PBO before enqueueing the current glReadPixels
+into the other PBO, introducing one frame of latency while avoiding the
+upstream same-PBO immediate-map serialization.
+
+Any layout/read-buffer change resets and reallocates both PBO stores.  Context
+recreation invalidates the PBO names.  All other paths retain VirtualGL's
+existing synchronous/PBO behavior.
+
+This patch is source-only until real FD506/TigerVNC A/B testing validates
+correctness, latency, and performance.
+
+diff --git a/server/VirtualDrawable.h b/server/VirtualDrawable.h
+--- a/server/VirtualDrawable.h
++++ b/server/VirtualDrawable.h
+@@ -109,6 +109,12 @@
+ 			int autotestFrameCount;
+ 
+ 			GLuint pbo;
++			GLuint kgslPbo[2];
++			int kgslPboNext;
++			int kgslPboWidth, kgslPboHeight, kgslPboPitch;
++			GLenum kgslPboFormat, kgslPboType;
++			GLint kgslPboReadBuf;
++			bool kgslPboPrimed, kgslPboReported;
+ 			int numSync, numFrames, lastFormat;
+ 			bool usePBO;
+ 			bool alreadyPrinted, alreadyWarned, alreadyWarnedRenderMode;
+diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
+--- a/server/VirtualDrawable.cpp
++++ b/server/VirtualDrawable.cpp
+@@ -232,312 +232,430 @@
+ 	ctx = 0;
+ 	direct = -1;
+ 	pbo = 0;
+-	numSync = numFrames = 0;
+-	lastFormat = -1;
+-	usePBO = (fconfig.readback == RRREAD_PBO);
+-	alreadyPrinted = alreadyWarned = alreadyWarnedRenderMode = false;
+-	ext = NULL;
+-	eventMask = 0;
+-}
+-
+-
+-VirtualDrawable::~VirtualDrawable(void)
+-{
+-	mutex.lock(false);
+-	delete oglDraw;  oglDraw = NULL;
+-	if(ctx)
+-	{
+-		if(edpy != EGL_NO_DISPLAY)
+-			_eglDestroyContext(edpy, (EGLContext)ctx);
+-		else
+-			backend::destroyContext(dpy, ctx);
+-		ctx = 0;
+-	}
+-	mutex.unlock(false);
+-}
+-
+-
+-int VirtualDrawable::init(int width, int height, VGLFBConfig config_)
+-{
+-	if(!config_ || width < 1 || height < 1) THROW("Invalid argument");
+-
+-	if(edpy != EGL_NO_DISPLAY)
+-		THROW("VirtualDrawable::init() method not supported with EGL/X11");
+-
+-	CriticalSection::SafeLock l(mutex);
+-	if(oglDraw && oglDraw->getWidth() == width && oglDraw->getHeight() == height
+-		&& FBCID(oglDraw->getFBConfig()) == FBCID(config_))
+-		return 0;
+-	oglDraw = new OGLDrawable(dpy, width, height, config_);
+-	if(config && FBCID(config_) != FBCID(config) && ctx)
+-	{
+-		backend::destroyContext(dpy, ctx);  ctx = 0;
+-	}
+-	config = config_;
+-	return 1;
+-}
+-
+-
+-void VirtualDrawable::setDirect(Bool direct_)
+-{
+-	if(edpy != EGL_NO_DISPLAY)
+-		THROW("VirtualDrawable::setDirect() method not supported with EGL/X11");
+-
+-	if(direct_ != True && direct_ != False) return;
+-	CriticalSection::SafeLock l(mutex);
+-	if(direct_ != direct && ctx)
+-	{
+-		backend::destroyContext(dpy, ctx);  ctx = 0;
+-	}
+-	direct = direct_;
+-}
+-
+-
+-void VirtualDrawable::clear(void)
+-{
+-	CriticalSection::SafeLock l(mutex);
+-	if(oglDraw) oglDraw->clear();
+-}
+-
+-
+-// Get the current 3D off-screen drawable
+-
+-GLXDrawable VirtualDrawable::getGLXDrawable(void)
+-{
+-	GLXDrawable retval = 0;
+-	CriticalSection::SafeLock l(mutex);
+-	if(oglDraw) retval = oglDraw->getGLXDrawable();
+-	return retval;
+-}
+-
+-
+-Display *VirtualDrawable::getX11Display(void)
+-{
+-	return dpy;
+-}
+-
+-
+-Drawable VirtualDrawable::getX11Drawable(void)
+-{
+-	return x11Draw;
+-}
+-
+-
+-void VirtualDrawable::initReadbackContext(void)
+-{
+-	CriticalSection::SafeLock l(mutex);
+-	if(!ctx)
+-	{
+-		if(!isInit())
+-			THROW("VirtualDrawable instance has not been fully initialized");
+-		if(edpy != EGL_NO_DISPLAY)
+-		{
+-			EGLenum api = _eglQueryAPI();
+-			_eglBindAPI(EGL_OPENGL_API);
+-			if((ctx = (GLXContext)_eglCreateContext(edpy, (EGLConfig)config, NULL,
+-				NULL)) == 0)
+-				THROW_EGL("eglCreateContext()");
+-			if(api != EGL_NONE) _eglBindAPI(api);
+-		}
+-		else
+-		{
+-			if((ctx = backend::createContext(dpy, config, NULL, direct, NULL)) == 0)
+-				THROW("Could not create OpenGL context for readback");
+-		}
+-	}
+-}
+-
+-
+-static const char *formatString(int glFormat)
+-{
+-	switch(glFormat)
+-	{
+-		case GL_RGB:       return "RGB";
+-		case GL_RGBA:      return "RGBA";
+-		case GL_BGR:       return "BGR";
+-		case GL_BGRA:      return "BGRA";
+-		#ifdef GL_ABGR_EXT
+-		case GL_ABGR_EXT:  return "ABGR";
+-		#endif
+-		case GL_RED:       return "COMPONENT";
+-		default:           return "????";
+-	}
+-}
+-
+-
+-bool VirtualDrawable::checkRenderMode(void)
+-{
+-	// VirtualGL has to create a temporary context when performing pixel
+-	// readback, because the current context may not be using the same drawable
+-	// for rendering and readback, and the values of certain parameters within
+-	// that context might not be suitable for pixel readback.  However, the
+-	// use of this temporary context triggers a GLXBadContextState error if the
+-	// render mode is not GL_RENDER (it is illegal to call
+-	// glXMake[Context]Current() with a render mode of GL_SELECT|GL_FEEDBACK.)
+-	// Temporarily switching the render mode to GL_RENDER is impossible without
+-	// breaking OpenGL/GLX conformance, because calling glRenderMode(GL_RENDER)
+-	// resets the state of the select or feedback buffer, and there is no way to
+-	// restore that state to its previous value.  Thus, we have no choice but to
+-	// skip pixel readback if the render mode != GL_RENDER.  Although this is not
+-	// known to break any existing applications, our behavior in this regard is
+-	// non-standard, so we print a warning if VGL_VERBOSE=1.
+-	int renderMode = 0;
+-	_glGetIntegerv(GL_RENDER_MODE, &renderMode);
+-	if(renderMode != GL_RENDER && renderMode != 0)
+-	{
+-		if(!alreadyWarnedRenderMode && fconfig.verbose)
+-		{
+-			vglout.println("[VGL] WARNING: One or more readbacks skipped because render mode != GL_RENDER.");
+-			alreadyWarnedRenderMode = true;
+-		}
+-		return false;
+-	}
+-	return true;
+-}
+-
+-
+-static bool has_gl_extension(const char *name)
+-{
+-	if(!name || !name[0]) return false;
+-
+-	const char *exts = (const char *)_glGetString(GL_EXTENSIONS);
+-	if(exts)
+-	{
+-		size_t len = strlen(name);
+-		const char *p = exts;
+-		while((p = strstr(p, name)) != NULL)
+-		{
+-			if((p == exts || p[-1] == ' ')
+-				&& (p[len] == 0 || p[len] == ' '))
+-				return true;
+-			p += len;
+-		}
+-		return false;
+-	}
+-
+-	/*
+-	 * Core profiles reject glGetString(GL_EXTENSIONS). Clear only the error
+-	 * from that compatibility probe, then use the OpenGL 3.x enumeration API.
+-	 */
+-	while(_glGetError() != GL_NO_ERROR) {}
+-
+-	GLint count = 0;
+-	_glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+-	if(_glGetError() != GL_NO_ERROR || count < 1)
+-		return false;
+-
+-	for(GLint i = 0; i < count; i++)
+-	{
+-		const char *ext =
+-			(const char *)_glGetStringi(GL_EXTENSIONS, (GLuint)i);
+-		if(ext && !strcmp(ext, name))
+-			return true;
+-	}
+-
+-	return false;
+-}
+-
+-
+-bool VirtualDrawable::readPixels(GLint x, GLint y, GLint width, GLint pitch,
+-	GLint height, GLenum glFormat, PF *pf, GLubyte *bits, GLint readBuf,
+-	bool stereo, bool topDown)
+-{
+-	double t0 = 0.0, tRead, tTotal;
+-	bool packInvert = false;
+-	GLint oldPackInvert = 0;
+-	GLenum type = GL_UNSIGNED_BYTE;
+-
+-	// Compute OpenGL format from pixel format of frame
+-	if(glFormat == GL_NONE)
+-	{
+-		glFormat = pf_glformat[pf->id];  type = pf_gldatatype[pf->id];
+-	}
+-	if(glFormat == GL_NONE) THROW("Unsupported pixel format");
+-
+-	// Whenever the readback format changes (perhaps due to switching
+-	// compression or transports), then reset the PBO synchronicity detector
+-	int currentFormat =
+-		(glFormat == GL_GREEN || glFormat == GL_BLUE) ? GL_RED : glFormat;
+-	if(lastFormat >= 0 && lastFormat != currentFormat)
+-	{
+-		usePBO = (fconfig.readback == RRREAD_PBO);
+-		numSync = numFrames = 0;
+-		alreadyPrinted = alreadyWarned = false;
+-	}
+-	lastFormat = currentFormat;
+-
+-	if(!checkRenderMode()) return false;
+-
+-	initReadbackContext();
+-	TempContext tc(edpy != EGL_NO_DISPLAY ? (Display *)edpy : dpy,
+-		getGLXDrawable(), getGLXDrawable(), ctx, edpy != EGL_NO_DISPLAY);
+-
+-	backend::readBuffer(readBuf);
+-
+-	#ifdef GL_PACK_INVERT_MESA
+-	if(topDown && has_gl_extension("GL_MESA_pack_invert"))
+-	{
+-		_glGetIntegerv(GL_PACK_INVERT_MESA, &oldPackInvert);
+-		packInvert = true;
+-	}
+-	#endif
+-
+-	if(pitch % 8 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 8);
+-	else if(pitch % 4 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 4);
+-	else if(pitch % 2 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 2);
+-	else if(pitch % 1 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 1);
+-
+-	if(usePBO)
+-	{
+-		if(!ext)
+-		{
+-			if(!has_gl_extension("GL_ARB_pixel_buffer_object"))
+-				THROW("GL_ARB_pixel_buffer_object extension not available");
+-			ext = "GL_ARB_pixel_buffer_object";
+-		}
+-		if(!pbo) _glGenBuffers(1, &pbo);
+-		if(!pbo) THROW("Could not generate pixel buffer object");
+-		if(!alreadyPrinted && fconfig.verbose)
+-		{
+-			vglout.println("[VGL] Using pixel buffer objects for readback (%s --> %s)",
+-				formatString(oglDraw->getFormat()), formatString(glFormat));
+-			alreadyPrinted = true;
+-		}
+-		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, pbo);
+-		int size = 0;
+-		_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE, &size);
+-		if(size != pitch * height)
+-			_glBufferData(GL_PIXEL_PACK_BUFFER_EXT, pitch * height, NULL,
+-				GL_STREAM_READ);
+-		_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE, &size);
+-		if(size != pitch * height)
+-			THROW("Could not set PBO size");
+-	}
+-	else
+-	{
+-		if(!alreadyPrinted && fconfig.verbose)
+-		{
+-			vglout.println("[VGL] Using synchronous readback (%s --> %s)",
+-				formatString(oglDraw->getFormat()), formatString(glFormat));
+-			alreadyPrinted = true;
+-		}
+-	}
+-
+-	TRY_GL();
+-	profReadback.startFrame();
+-	if(usePBO) t0 = GetTime();
+-	#ifdef GL_PACK_INVERT_MESA
+-	if(packInvert)
+-		_glPixelStorei(GL_PACK_INVERT_MESA, GL_TRUE);
+-	#endif
+-	backend::readPixels(x, y, width, height, glFormat, type,
+-		usePBO ? NULL : bits);
+-	#ifdef GL_PACK_INVERT_MESA
+-	if(packInvert)
+-		_glPixelStorei(GL_PACK_INVERT_MESA, oldPackInvert);
+-	#endif
+-
+-	if(usePBO)
++	kgslPbo[0] = kgslPbo[1] = 0;
++	kgslPboNext = 0;
++	kgslPboWidth = kgslPboHeight = kgslPboPitch = -1;
++	kgslPboFormat = kgslPboType = GL_NONE;
++	kgslPboReadBuf = GL_NONE;
++	kgslPboPrimed = kgslPboReported = false;
++	numSync = numFrames = 0;
++	lastFormat = -1;
++	usePBO = (fconfig.readback == RRREAD_PBO);
++	alreadyPrinted = alreadyWarned = alreadyWarnedRenderMode = false;
++	ext = NULL;
++	eventMask = 0;
++}
++
++
++VirtualDrawable::~VirtualDrawable(void)
++{
++	mutex.lock(false);
++	delete oglDraw;  oglDraw = NULL;
++	if(ctx)
++	{
++		if(edpy != EGL_NO_DISPLAY)
++			_eglDestroyContext(edpy, (EGLContext)ctx);
++		else
++			backend::destroyContext(dpy, ctx);
++		ctx = 0;
++	}
++	mutex.unlock(false);
++}
++
++
++int VirtualDrawable::init(int width, int height, VGLFBConfig config_)
++{
++	if(!config_ || width < 1 || height < 1) THROW("Invalid argument");
++
++	if(edpy != EGL_NO_DISPLAY)
++		THROW("VirtualDrawable::init() method not supported with EGL/X11");
++
++	CriticalSection::SafeLock l(mutex);
++	if(oglDraw && oglDraw->getWidth() == width && oglDraw->getHeight() == height
++		&& FBCID(oglDraw->getFBConfig()) == FBCID(config_))
++		return 0;
++	oglDraw = new OGLDrawable(dpy, width, height, config_);
++	if(config && FBCID(config_) != FBCID(config) && ctx)
++	{
++		backend::destroyContext(dpy, ctx);  ctx = 0;
++		kgslPbo[0] = kgslPbo[1] = 0;
++		kgslPboNext = 0;
++		kgslPboPrimed = false;
++	}
++	config = config_;
++	return 1;
++}
++
++
++void VirtualDrawable::setDirect(Bool direct_)
++{
++	if(edpy != EGL_NO_DISPLAY)
++		THROW("VirtualDrawable::setDirect() method not supported with EGL/X11");
++
++	if(direct_ != True && direct_ != False) return;
++	CriticalSection::SafeLock l(mutex);
++	if(direct_ != direct && ctx)
++	{
++		backend::destroyContext(dpy, ctx);  ctx = 0;
++		kgslPbo[0] = kgslPbo[1] = 0;
++		kgslPboNext = 0;
++		kgslPboPrimed = false;
++	}
++	direct = direct_;
++}
++
++
++void VirtualDrawable::clear(void)
++{
++	CriticalSection::SafeLock l(mutex);
++	if(oglDraw) oglDraw->clear();
++}
++
++
++// Get the current 3D off-screen drawable
++
++GLXDrawable VirtualDrawable::getGLXDrawable(void)
++{
++	GLXDrawable retval = 0;
++	CriticalSection::SafeLock l(mutex);
++	if(oglDraw) retval = oglDraw->getGLXDrawable();
++	return retval;
++}
++
++
++Display *VirtualDrawable::getX11Display(void)
++{
++	return dpy;
++}
++
++
++Drawable VirtualDrawable::getX11Drawable(void)
++{
++	return x11Draw;
++}
++
++
++void VirtualDrawable::initReadbackContext(void)
++{
++	CriticalSection::SafeLock l(mutex);
++	if(!ctx)
++	{
++		if(!isInit())
++			THROW("VirtualDrawable instance has not been fully initialized");
++		if(edpy != EGL_NO_DISPLAY)
++		{
++			EGLenum api = _eglQueryAPI();
++			_eglBindAPI(EGL_OPENGL_API);
++			if((ctx = (GLXContext)_eglCreateContext(edpy, (EGLConfig)config, NULL,
++				NULL)) == 0)
++				THROW_EGL("eglCreateContext()");
++			if(api != EGL_NONE) _eglBindAPI(api);
++		}
++		else
++		{
++			if((ctx = backend::createContext(dpy, config, NULL, direct, NULL)) == 0)
++				THROW("Could not create OpenGL context for readback");
++		}
++	}
++}
++
++
++static const char *formatString(int glFormat)
++{
++	switch(glFormat)
++	{
++		case GL_RGB:       return "RGB";
++		case GL_RGBA:      return "RGBA";
++		case GL_BGR:       return "BGR";
++		case GL_BGRA:      return "BGRA";
++		#ifdef GL_ABGR_EXT
++		case GL_ABGR_EXT:  return "ABGR";
++		#endif
++		case GL_RED:       return "COMPONENT";
++		default:           return "????";
++	}
++}
++
++
++bool VirtualDrawable::checkRenderMode(void)
++{
++	// VirtualGL has to create a temporary context when performing pixel
++	// readback, because the current context may not be using the same drawable
++	// for rendering and readback, and the values of certain parameters within
++	// that context might not be suitable for pixel readback.  However, the
++	// use of this temporary context triggers a GLXBadContextState error if the
++	// render mode is not GL_RENDER (it is illegal to call
++	// glXMake[Context]Current() with a render mode of GL_SELECT|GL_FEEDBACK.)
++	// Temporarily switching the render mode to GL_RENDER is impossible without
++	// breaking OpenGL/GLX conformance, because calling glRenderMode(GL_RENDER)
++	// resets the state of the select or feedback buffer, and there is no way to
++	// restore that state to its previous value.  Thus, we have no choice but to
++	// skip pixel readback if the render mode != GL_RENDER.  Although this is not
++	// known to break any existing applications, our behavior in this regard is
++	// non-standard, so we print a warning if VGL_VERBOSE=1.
++	int renderMode = 0;
++	_glGetIntegerv(GL_RENDER_MODE, &renderMode);
++	if(renderMode != GL_RENDER && renderMode != 0)
++	{
++		if(!alreadyWarnedRenderMode && fconfig.verbose)
++		{
++			vglout.println("[VGL] WARNING: One or more readbacks skipped because render mode != GL_RENDER.");
++			alreadyWarnedRenderMode = true;
++		}
++		return false;
++	}
++	return true;
++}
++
++
++static bool has_gl_extension(const char *name)
++{
++	if(!name || !name[0]) return false;
++
++	const char *exts = (const char *)_glGetString(GL_EXTENSIONS);
++	if(exts)
++	{
++		size_t len = strlen(name);
++		const char *p = exts;
++		while((p = strstr(p, name)) != NULL)
++		{
++			if((p == exts || p[-1] == ' ')
++				&& (p[len] == 0 || p[len] == ' '))
++				return true;
++			p += len;
++		}
++		return false;
++	}
++
++	/*
++	 * Core profiles reject glGetString(GL_EXTENSIONS). Clear only the error
++	 * from that compatibility probe, then use the OpenGL 3.x enumeration API.
++	 */
++	while(_glGetError() != GL_NO_ERROR) {}
++
++	GLint count = 0;
++	_glGetIntegerv(GL_NUM_EXTENSIONS, &count);
++	if(_glGetError() != GL_NO_ERROR || count < 1)
++		return false;
++
++	for(GLint i = 0; i < count; i++)
++	{
++		const char *ext =
++			(const char *)_glGetStringi(GL_EXTENSIONS, (GLuint)i);
++		if(ext && !strcmp(ext, name))
++			return true;
++	}
++
++	return false;
++}
++
++
++bool VirtualDrawable::readPixels(GLint x, GLint y, GLint width, GLint pitch,
++	GLint height, GLenum glFormat, PF *pf, GLubyte *bits, GLint readBuf,
++	bool stereo, bool topDown)
++{
++	double t0 = 0.0, tRead, tTotal;
++	bool packInvert = false;
++	GLint oldPackInvert = 0;
++	GLenum type = GL_UNSIGNED_BYTE;
++
++	// Compute OpenGL format from pixel format of frame
++	if(glFormat == GL_NONE)
++	{
++		glFormat = pf_glformat[pf->id];  type = pf_gldatatype[pf->id];
++	}
++	if(glFormat == GL_NONE) THROW("Unsupported pixel format");
++
++	// Whenever the readback format changes (perhaps due to switching
++	// compression or transports), then reset the PBO synchronicity detector
++	int currentFormat =
++		(glFormat == GL_GREEN || glFormat == GL_BLUE) ? GL_RED : glFormat;
++	if(lastFormat >= 0 && lastFormat != currentFormat)
++	{
++		usePBO = (fconfig.readback == RRREAD_PBO);
++		numSync = numFrames = 0;
++		alreadyPrinted = alreadyWarned = false;
++	}
++	lastFormat = currentFormat;
++
++	if(!checkRenderMode()) return false;
++
++	initReadbackContext();
++	TempContext tc(edpy != EGL_NO_DISPLAY ? (Display *)edpy : dpy,
++		getGLXDrawable(), getGLXDrawable(), ctx, edpy != EGL_NO_DISPLAY);
++
++	backend::readBuffer(readBuf);
++
++	#ifdef GL_PACK_INVERT_MESA
++	if(topDown && has_gl_extension("GL_MESA_pack_invert"))
++	{
++		_glGetIntegerv(GL_PACK_INVERT_MESA, &oldPackInvert);
++		packInvert = true;
++	}
++	#endif
++
++	if(pitch % 8 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 8);
++	else if(pitch % 4 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 4);
++	else if(pitch % 2 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 2);
++	else if(pitch % 1 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 1);
++
++	const char *kgslPboEnv = getenv("VGL_KGSL_PBO_PIPELINE");
++	const char *vglDisplay = getenv("VGL_DISPLAY");
++	bool kgslPboPipeline =
++		kgslPboEnv && !strcmp(kgslPboEnv, "1")
++		&& vglDisplay && !strcmp(vglDisplay, "eglkgsl")
++		&& topDown && packInvert && !stereo && !fconfig.autotest
++		&& x == 0 && y == 0 && oglDraw
++		&& width == oglDraw->getWidth() && height == oglDraw->getHeight()
++		&& pitch == width * pf->size
++		&& has_gl_extension("GL_ARB_pixel_buffer_object");
++
++	if(!kgslPboPipeline)
++		kgslPboPrimed = false;
++
++	if(kgslPboPipeline)
++	{
++		if(!kgslPbo[0] || !kgslPbo[1])
++		{
++			_glGenBuffers(2, kgslPbo);
++			if(!kgslPbo[0] || !kgslPbo[1])
++				THROW("Could not generate KGSL PBO pipeline buffers");
++			kgslPboPrimed = false;
++			kgslPboNext = 0;
++		}
++
++		bool layoutChanged =
++			kgslPboWidth != width || kgslPboHeight != height
++			|| kgslPboPitch != pitch || kgslPboFormat != glFormat
++			|| kgslPboType != type || kgslPboReadBuf != readBuf;
++
++		if(layoutChanged)
++		{
++			for(int i = 0; i < 2; i++)
++			{
++				_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, kgslPbo[i]);
++				_glBufferData(GL_PIXEL_PACK_BUFFER_EXT, pitch * height, NULL,
++					GL_STREAM_READ);
++				int size = 0;
++				_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE,
++					&size);
++				if(size != pitch * height)
++					THROW("Could not set KGSL PBO pipeline size");
++			}
++			_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, 0);
++			kgslPboWidth = width;
++			kgslPboHeight = height;
++			kgslPboPitch = pitch;
++			kgslPboFormat = glFormat;
++			kgslPboType = type;
++			kgslPboReadBuf = readBuf;
++			kgslPboNext = 0;
++			kgslPboPrimed = false;
++		}
++
++		if(!kgslPboReported && fconfig.verbose)
++		{
++			vglout.println("[VGL] KGSL two-PBO readback pipeline active");
++			kgslPboReported = true;
++		}
++	}
++	else if(usePBO)
++	{
++		if(!ext)
++		{
++			if(!has_gl_extension("GL_ARB_pixel_buffer_object"))
++				THROW("GL_ARB_pixel_buffer_object extension not available");
++			ext = "GL_ARB_pixel_buffer_object";
++		}
++		if(!pbo) _glGenBuffers(1, &pbo);
++		if(!pbo) THROW("Could not generate pixel buffer object");
++		if(!alreadyPrinted && fconfig.verbose)
++		{
++			vglout.println("[VGL] Using pixel buffer objects for readback (%s --> %s)",
++				formatString(oglDraw->getFormat()), formatString(glFormat));
++			alreadyPrinted = true;
++		}
++		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, pbo);
++		int size = 0;
++		_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE, &size);
++		if(size != pitch * height)
++			_glBufferData(GL_PIXEL_PACK_BUFFER_EXT, pitch * height, NULL,
++				GL_STREAM_READ);
++		_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE, &size);
++		if(size != pitch * height)
++			THROW("Could not set PBO size");
++	}
++	else
++	{
++		if(!alreadyPrinted && fconfig.verbose)
++		{
++			vglout.println("[VGL] Using synchronous readback (%s --> %s)",
++				formatString(oglDraw->getFormat()), formatString(glFormat));
++			alreadyPrinted = true;
++		}
++	}
++
++	TRY_GL();
++	profReadback.startFrame();
++
++	if(kgslPboPipeline)
++	{
++		int current = kgslPboNext;
++		int previous = 1 - current;
++
++		if(kgslPboPrimed)
++		{
++			_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, kgslPbo[previous]);
++			unsigned char *pboBits =
++				(unsigned char *)_glMapBuffer(GL_PIXEL_PACK_BUFFER_EXT, GL_READ_ONLY);
++			if(!pboBits)
++				THROW("Could not map previous KGSL PBO");
++			memcpy(bits, pboBits, pitch * height);
++			if(!_glUnmapBuffer(GL_PIXEL_PACK_BUFFER_EXT))
++				THROW("Could not unmap previous KGSL PBO");
++		}
++
++		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, kgslPbo[current]);
++		#ifdef GL_PACK_INVERT_MESA
++		_glPixelStorei(GL_PACK_INVERT_MESA, GL_TRUE);
++		#endif
++		backend::readPixels(x, y, width, height, glFormat, type, NULL);
++		#ifdef GL_PACK_INVERT_MESA
++		_glPixelStorei(GL_PACK_INVERT_MESA, oldPackInvert);
++		#endif
++		_glFlush();
++
++		if(!kgslPboPrimed)
++		{
++			unsigned char *pboBits =
++				(unsigned char *)_glMapBuffer(GL_PIXEL_PACK_BUFFER_EXT, GL_READ_ONLY);
++			if(!pboBits)
++				THROW("Could not map initial KGSL PBO");
++			memcpy(bits, pboBits, pitch * height);
++			if(!_glUnmapBuffer(GL_PIXEL_PACK_BUFFER_EXT))
++				THROW("Could not unmap initial KGSL PBO");
++			kgslPboPrimed = true;
++		}
++
++		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, 0);
++		kgslPboNext = previous;
++	}
++	else
++	{
++		if(usePBO) t0 = GetTime();
++		#ifdef GL_PACK_INVERT_MESA
++		if(packInvert)
++			_glPixelStorei(GL_PACK_INVERT_MESA, GL_TRUE);
++		#endif
++		backend::readPixels(x, y, width, height, glFormat, type,
++			usePBO ? NULL : bits);
++		#ifdef GL_PACK_INVERT_MESA
++		if(packInvert)
++			_glPixelStorei(GL_PACK_INVERT_MESA, oldPackInvert);
++		#endif
++	}
++
++	if(!kgslPboPipeline && usePBO)
+ 	{
+ 		tRead = GetTime() - t0;
+ 		unsigned char *pboBits = NULL;
