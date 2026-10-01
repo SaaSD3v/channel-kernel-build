@@ -151,15 +151,24 @@ diff --git a/util/fbx.c b/util/fbx.c
 +
 +
 +#ifdef USESHM
++typedef struct _fbx_shm_completion_match
++{
++	int eventType;
++	ShmSeg shmseg;
++} fbx_shm_completion_match;
++
++
 +static Bool
 +fbx_shm_completion(Display *dpy, XEvent *event, XPointer arg)
 +{
-+	fbx_struct *fb = (fbx_struct *)arg;
-+	if(!fb || event->type != XShmGetEventBase(dpy) + ShmCompletion)
++	(void)dpy;
++	const fbx_shm_completion_match *match =
++		(const fbx_shm_completion_match *)arg;
++	if(!match || event->type != match->eventType)
 +		return False;
 +
 +	XShmCompletionEvent *completion = (XShmCompletionEvent *)event;
-+	return completion->shmseg == fb->shminfo.shmseg ? True : False;
++	return completion->shmseg == match->shmseg ? True : False;
 +}
 +#endif
 +
@@ -172,7 +181,22 @@ diff --git a/util/fbx.c b/util/fbx.c
 +	if(!fb || !fb->wh.dpy || !fb->shm || fb->pm)
 +		THROW("MIT-SHM image is required");
 +
-+	XIfEvent(fb->wh.dpy, &event, fbx_shm_completion, (XPointer)fb);
++	/*
++	 * XIfEvent() invokes predicates with the Display locked when Xlib is
++	 * threaded.  Xlib predicates must not call Xlib functions, so resolve the
++	 * MIT-SHM event base before entering XIfEvent() and pass only plain data to
++	 * the predicate.
++	 */
++	int eventBase = XShmGetEventBase(fb->wh.dpy);
++	if(eventBase < 0)
++		THROW("Could not obtain MIT-SHM event base");
++
++	fbx_shm_completion_match match = {
++		.eventType = eventBase + ShmCompletion,
++		.shmseg = fb->shminfo.shmseg,
++	};
++
++	XIfEvent(fb->wh.dpy, &event, fbx_shm_completion, (XPointer)&match);
 +	return 0;
 +
 +	finally:
