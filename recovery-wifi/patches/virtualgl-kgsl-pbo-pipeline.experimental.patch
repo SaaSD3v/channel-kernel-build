@@ -37,7 +37,7 @@ diff --git a/server/VirtualDrawable.h b/server/VirtualDrawable.h
 diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 --- a/server/VirtualDrawable.cpp
 +++ b/server/VirtualDrawable.cpp
-@@ -232,312 +232,436 @@
+@@ -232,351 +232,486 @@
  	ctx = 0;
  	direct = -1;
  	pbo = 0;
@@ -347,6 +347,45 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 -	#endif
 -
 -	if(usePBO)
+-	{
+-		tRead = GetTime() - t0;
+-		unsigned char *pboBits = NULL;
+-		pboBits = (unsigned char *)_glMapBuffer(GL_PIXEL_PACK_BUFFER_EXT,
+-			GL_READ_ONLY);
+-		if(!pboBits) THROW("Could not map pixel buffer object");
+-		memcpy(bits, pboBits, pitch * height);
+-		if(!_glUnmapBuffer(GL_PIXEL_PACK_BUFFER_EXT))
+-			THROW("Could not unmap pixel buffer object");
+-		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, 0);
+-		tTotal = GetTime() - t0;
+-		numFrames++;
+-		if(tRead / tTotal > 0.5 && numFrames <= 10)
+-		{
+-			numSync++;
+-			if(numSync >= 10 && !alreadyWarned && fconfig.verbose)
+-			{
+-				vglout.println("[VGL] NOTICE: PBO readback is not behaving asynchronously.  Disabling PBOs.");
+-				if(glFormat != oglDraw->getFormat())
+-				{
+-					vglout.println("[VGL]    This could be due to a mismatch between the readback pixel format");
+-					vglout.println("[VGL]    (%s) and the Pbuffer pixel format (%s).",
+-						formatString(glFormat), formatString(oglDraw->getFormat()));
+-					if(((oglDraw->getFormat() == GL_BGRA && glFormat == GL_BGR)
+-						|| (oglDraw->getFormat() == GL_RGBA && glFormat == GL_RGB))
+-						&& fconfig.forcealpha)
+-						vglout.println("[VGL]    Try setting VGL_FORCEALPHA=0.");
+-					else if(((oglDraw->getFormat() == GL_BGR && glFormat == GL_BGRA)
+-						|| (oglDraw->getFormat() == GL_RGB && glFormat == GL_RGBA))
+-						&& !fconfig.forcealpha)
+-						vglout.println("[VGL]    Try setting VGL_FORCEALPHA=1.");
+-				}
+-				alreadyWarned = true;
+-			}
+-		}
+-	}
+-
+-	profReadback.endFrame(width * height, 0, stereo ? 0.5 : 1);
+-	CATCH_GL("Could not read pixels");
 +	kgslPbo[0] = kgslPbo[1] = 0;
 +	kgslPboNext = 0;
 +	kgslPboWidth = kgslPboHeight = kgslPboPitch = -1;
@@ -719,6 +758,9 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +	TRY_GL();
 +	profReadback.startFrame();
 +
++	bool kgslPboCommitPrime = false;
++	int kgslPboCommitNext = -1;
++
 +	if(kgslPboPipeline)
 +	{
 +		int current = kgslPboNext;
@@ -755,11 +797,11 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +			memcpy(bits, pboBits, pitch * height);
 +			if(!_glUnmapBuffer(GL_PIXEL_PACK_BUFFER_EXT))
 +				THROW("Could not unmap initial KGSL PBO");
-+			kgslPboPrimed = true;
++			kgslPboCommitPrime = true;
 +		}
 +
 +		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, 0);
-+		kgslPboNext = previous;
++		kgslPboCommitNext = previous;
 +	}
 +	else
 +	{
@@ -777,6 +819,53 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +	}
 +
 +	if(!kgslPboPipeline && usePBO)
- 	{
- 		tRead = GetTime() - t0;
- 		unsigned char *pboBits = NULL;
++	{
++		tRead = GetTime() - t0;
++		unsigned char *pboBits = NULL;
++		pboBits = (unsigned char *)_glMapBuffer(GL_PIXEL_PACK_BUFFER_EXT,
++			GL_READ_ONLY);
++		if(!pboBits) THROW("Could not map pixel buffer object");
++		memcpy(bits, pboBits, pitch * height);
++		if(!_glUnmapBuffer(GL_PIXEL_PACK_BUFFER_EXT))
++			THROW("Could not unmap pixel buffer object");
++		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, 0);
++		tTotal = GetTime() - t0;
++		numFrames++;
++		if(tRead / tTotal > 0.5 && numFrames <= 10)
++		{
++			numSync++;
++			if(numSync >= 10 && !alreadyWarned && fconfig.verbose)
++			{
++				vglout.println("[VGL] NOTICE: PBO readback is not behaving asynchronously.  Disabling PBOs.");
++				if(glFormat != oglDraw->getFormat())
++				{
++					vglout.println("[VGL]    This could be due to a mismatch between the readback pixel format");
++					vglout.println("[VGL]    (%s) and the Pbuffer pixel format (%s).",
++						formatString(glFormat), formatString(oglDraw->getFormat()));
++					if(((oglDraw->getFormat() == GL_BGRA && glFormat == GL_BGR)
++						|| (oglDraw->getFormat() == GL_RGBA && glFormat == GL_RGB))
++						&& fconfig.forcealpha)
++						vglout.println("[VGL]    Try setting VGL_FORCEALPHA=0.");
++					else if(((oglDraw->getFormat() == GL_BGR && glFormat == GL_BGRA)
++						|| (oglDraw->getFormat() == GL_RGB && glFormat == GL_RGBA))
++						&& !fconfig.forcealpha)
++						vglout.println("[VGL]    Try setting VGL_FORCEALPHA=1.");
++				}
++				alreadyWarned = true;
++			}
++		}
++	}
++
++	profReadback.endFrame(width * height, 0, stereo ? 0.5 : 1);
++	CATCH_GL("Could not read pixels");
++
++	if(kgslPboPipeline)
++	{
++		if(kgslPboCommitPrime)
++			kgslPboPrimed = true;
++		if(kgslPboCommitNext >= 0)
++			kgslPboNext = kgslPboCommitNext;
++	}
+ 
+ 	// If automatic faker testing is enabled, store the FB color in an
+ 	// environment variable so the test program can verify it
