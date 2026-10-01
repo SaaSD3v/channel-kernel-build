@@ -597,20 +597,42 @@ save_backend() {
     printf '%s\n' "$2" >"$f"
 }
 
-ensure_env_file() {
+container_env_file() {
     cfg="$1"
     env="$(cfg_get "$cfg" env_file 2>/dev/null)"
 
+    # DroidSpaces recovery mode does not accept an absolute env_file outside
+    # its internal workspace when it is read only from container.config.
+    # RCTools therefore treats the config value as metadata and always passes
+    # the effective file explicitly through --env.
     if [ -z "$env" ]; then
         dir="$("$BB" dirname "$cfg")"
         env="$dir/.env"
-        cfg_set "$cfg" env_file "$env" || return 1
     fi
+
+    printf '%s\n' "$env"
+}
+
+ensure_env_file() {
+    cfg="$1"
+    env="$(container_env_file "$cfg")"
 
     parent="$("$BB" dirname "$env")"
     "$BB" mkdir -p "$parent" 2>/dev/null || return 1
     [ -e "$env" ] || : >"$env"
     printf '%s\n' "$env"
+}
+
+show_recovery_start_hint() {
+    cfg="$1"
+    env="$(container_env_file "$cfg")"
+    name="$(container_name "$cfg")"
+
+    say 'Recovery restart command:'
+    printf '  %s --conf="%s" --env="%s" --net=host start\n' \
+        "$DS_BIN" "$cfg" "$env"
+    say 'Recovery enter command:'
+    printf '  %s --name="%s" enter\n' "$DS_BIN" "$name"
 }
 
 sanitize_legacy_gpu_profile() {
@@ -696,7 +718,7 @@ write_gpu_env() {
 
 clear_gpu_env() {
     cfg="$1"
-    env="$(cfg_get "$cfg" env_file 2>/dev/null)"
+    env="$(container_env_file "$cfg")"
     if [ -n "$env" ] && [ -e "$env" ]; then
         strip_gpu_env "$env"
     fi
@@ -952,7 +974,8 @@ container_status() {
     say "enable_hw_access=$(cfg_get "$cfg" enable_hw_access)"
     say "enable_gpu_mode=$(cfg_get "$cfg" enable_gpu_mode)"
     say "enable_virgl=$(cfg_get "$cfg" enable_virgl)"
-    say "env_file=$(cfg_get "$cfg" env_file)"
+    say "env_file_config=$(cfg_get "$cfg" env_file)"
+    say "env_file_effective=$(container_env_file "$cfg")"
 
     if [ "$backend" = freedreno ]; then
         if direct_runtime "$cfg" >/dev/null 2>&1; then
@@ -978,8 +1001,7 @@ test_profile() {
     backend="$(saved_backend "$cfg")"
     pre="/tmp/rctools-gpu-pretest.$$"
     log="/tmp/rctools-gpu-test.$$"
-    env="$(cfg_get "$cfg" env_file 2>/dev/null)"
-    [ -n "$env" ] || env="$("$BB" dirname "$cfg")/.env"
+    env="$(container_env_file "$cfg")"
 
     [ -r "$env" ] || {
         err "GPU environment file missing: $env"
@@ -1262,6 +1284,8 @@ backend_action() {
         say ''
         say 'Configuration applied.'
         say 'Restart a running container so DroidSpaces reloads config and env.'
+        say ''
+        show_recovery_start_hint "$cfg"
     else
         say ''
         err "backend saved but setup is incomplete"
