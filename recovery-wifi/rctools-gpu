@@ -815,7 +815,7 @@ stop_virgl_for_cfg() {
 prime_direct_kgsl() {
     prepare_kgsl_core || return 1
 
-    log="/tmp/rctools-kgsl-prime.$"
+    log="/tmp/rctools-kgsl-prime.$$"
     tries=0
 
     say 'stage=prime KGSL/ZAP'
