@@ -1089,7 +1089,11 @@ apply_freedreno() {
     say 'mode=direct KGSL'
     say 'presentation=EGL surfaceless'
     if [ "$direct_vgl" -eq 1 ]; then
-        say 'virtualgl_kgsl=enabled (BGRA alpha, synchronous readback)'
+        if [ "$direct_vgl_pbo_pipeline" -eq 1 ]; then
+            say 'virtualgl_kgsl=enabled (BGRA alpha, two-PBO pipelined readback)'
+        else
+            say 'virtualgl_kgsl=enabled (BGRA alpha, synchronous readback)'
+        fi
     else
         say 'virtualgl_kgsl=not installed'
     fi
@@ -1209,7 +1213,11 @@ container_status() {
                     say "virtualgl_async_xshm=$direct_vgl_async_xshm"
                     say "virtualgl_pbo_pipeline=$direct_vgl_pbo_pipeline"
                     say 'virtualgl_forcealpha=1'
-                    say 'virtualgl_readback=sync'
+                    if [ "$direct_vgl_pbo_pipeline" -eq 1 ]; then
+                        say 'virtualgl_readback=two-PBO-pipelined'
+                    else
+                        say 'virtualgl_readback=sync'
+                    fi
                 else
                     say 'virtualgl_kgsl=not installed'
                 fi
