@@ -67,6 +67,117 @@ jobs:
           grep -Fq 'virtualgl_pbo_pipeline=' recovery-wifi/rctools-gpu
           grep -Fq 'pbo_pipeline requires pack_invert' recovery-wifi/rctools-gpu
 
+      - name: Exercise on-device installer rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          T=/tmp/rctools-installer-ut
+          ROOT="$T/rootfs"
+          BUNDLE="$T/bundle"
+          CFG="$T/container.config"
+          FAKE_DS="$T/droidspaces"
+          WRAP="$T/wrap"
+
+          rm -rf "$T"
+          mkdir -p "$BUNDLE" "$WRAP"
+
+          cat >"$FAKE_DS" <<'EOF'
+          #!/bin/sh
+          case "${FAKE_DS_MODE:-success}" in
+            success) exit 0 ;;
+            stopped)
+              echo "Container 'debian' is not running or invalid." >&2
+              exit 1
+              ;;
+            fail)
+              echo "Cannot stop 'debian': another command is managing this container" >&2
+              exit 1
+              ;;
+          esac
+          EOF
+          chmod +x "$FAKE_DS"
+
+          build_bundle() {
+            rm -rf "$T/mesa-stage" "$T/vgl-stage"
+            mkdir -p               "$T/mesa-stage/usr/lib/aarch64-linux-gnu/dri"               "$T/mesa-stage/usr/share/rctools-gpu"               "$T/vgl-stage/opt/VirtualGL-KGSL/bin"               "$T/vgl-stage/opt/VirtualGL-KGSL/lib"               "$T/vgl-stage/opt/VirtualGL-KGSL/share/rctools-gpu"
+
+            : >"$T/mesa-stage/usr/lib/aarch64-linux-gnu/dri/kgsl_dri.so"
+            cat >"$T/mesa-stage/usr/share/rctools-gpu/mesa-channel-kgsl.buildinfo" <<'EOF'
+          mesa_source_commit=98f3d6229d61452cef80f8563af7c56ae599dc14
+          architecture=arm64
+          freedreno_kmds=kgsl
+          EOF
+
+            cat >"$T/vgl-stage/opt/VirtualGL-KGSL/bin/vglrun" <<'EOF'
+          #!/bin/sh
+          exit 0
+          EOF
+            chmod +x "$T/vgl-stage/opt/VirtualGL-KGSL/bin/vglrun"
+            : >"$T/vgl-stage/opt/VirtualGL-KGSL/lib/libvglfaker.so"
+            cat >"$T/vgl-stage/opt/VirtualGL-KGSL/share/rctools-gpu/virtualgl-kgsl.buildinfo" <<'EOF'
+          pack_invert=0
+          async_xshm=0
+          pbo_pipeline=0
+          EOF
+
+            tar -czf "$BUNDLE/mesa_test_arm64.tar.gz" -C "$T/mesa-stage" .
+            tar -czf "$BUNDLE/VirtualGL-KGSL-stable-arm64.tar.gz"               -C "$T/vgl-stage" opt/VirtualGL-KGSL
+            (
+              cd "$BUNDLE"
+              sha256sum                 mesa_test_arm64.tar.gz                 VirtualGL-KGSL-stable-arm64.tar.gz > SHA256SUMS
+            )
+          }
+
+          reset_root() {
+            rm -rf "$ROOT"
+            mkdir -p               "$ROOT/opt/rctools-gpu/mesa"               "$ROOT/opt/VirtualGL-KGSL"
+            echo old-mesa >"$ROOT/opt/rctools-gpu/mesa/OLD"
+            echo old-vgl >"$ROOT/opt/VirtualGL-KGSL/OLD"
+            printf 'name=debian\nrootfs_path=%s\n' "$ROOT" >"$CFG"
+          }
+
+          build_bundle
+
+          # Already-stopped is safe and must install successfully.
+          reset_root
+          FAKE_DS_MODE=stopped           DS_BIN="$FAKE_DS" CFG_PATH="$CFG"             sh recovery-wifi/install-gpu-runtime.sh "$BUNDLE" A debian
+          test -r "$ROOT/opt/rctools-gpu/mesa/usr/share/rctools-gpu/mesa-channel-kgsl.buildinfo"
+          test -r "$ROOT/opt/VirtualGL-KGSL/share/rctools-gpu/virtualgl-kgsl.buildinfo"
+          test ! -e "$ROOT/opt/rctools-gpu/mesa/OLD"
+          test ! -e "$ROOT/opt/VirtualGL-KGSL/OLD"
+
+          # A real stop failure must leave both existing runtimes untouched.
+          reset_root
+          if FAKE_DS_MODE=fail              DS_BIN="$FAKE_DS" CFG_PATH="$CFG"              sh recovery-wifi/install-gpu-runtime.sh "$BUNDLE" A debian; then
+            echo 'installer unexpectedly ignored a real stop failure'
+            exit 1
+          fi
+          test "$(cat "$ROOT/opt/rctools-gpu/mesa/OLD")" = old-mesa
+          test "$(cat "$ROOT/opt/VirtualGL-KGSL/OLD")" = old-vgl
+
+          # Failure while backing up VirtualGL must restore Mesa and must not
+          # delete the VirtualGL directory that never moved successfully.
+          reset_root
+          cat >"$WRAP/mv" <<'EOF'
+          #!/bin/sh
+          case "$1:$2" in
+            */opt/VirtualGL-KGSL:*/opt/.VirtualGL-KGSL.old.*)
+              echo 'forced VirtualGL backup failure' >&2
+              exit 1
+              ;;
+          esac
+          exec /usr/bin/mv "$@"
+          EOF
+          chmod +x "$WRAP/mv"
+
+          if PATH="$WRAP:$PATH" FAKE_DS_MODE=stopped              DS_BIN="$FAKE_DS" CFG_PATH="$CFG"              sh recovery-wifi/install-gpu-runtime.sh "$BUNDLE" A debian; then
+            echo 'installer unexpectedly survived forced VGL backup failure'
+            exit 1
+          fi
+          test "$(cat "$ROOT/opt/rctools-gpu/mesa/OLD")" = old-mesa
+          test "$(cat "$ROOT/opt/VirtualGL-KGSL/OLD")" = old-vgl
+
       - name: Build stable VirtualGL eglkgsl source
         shell: bash
         run: |
