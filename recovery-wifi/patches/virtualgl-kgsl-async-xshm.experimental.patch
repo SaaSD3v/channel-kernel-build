@@ -38,7 +38,7 @@ diff --git a/include/fbx.h b/include/fbx.h
 diff --git a/util/fbx.c b/util/fbx.c
 --- a/util/fbx.c
 +++ b/util/fbx.c
-@@ -557,47 +557,104 @@
+@@ -557,47 +557,128 @@
  
  #ifndef _WIN32
  
