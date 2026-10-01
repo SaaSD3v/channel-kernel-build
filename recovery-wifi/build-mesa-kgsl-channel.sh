@@ -21,6 +21,12 @@ for cmd in git meson ninja tar sha256sum; do
 done
 
 test -r "$PATCH"
+PATCH_SHA256="$(sha256sum "$PATCH" | awk '{print $1}')"
+PROJECT_COMMIT="${GITHUB_SHA:-}"
+if [[ -z "$PROJECT_COMMIT" ]] && git -C "$ROOT" rev-parse HEAD >/dev/null 2>&1; then
+  PROJECT_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
+fi
+[[ -n "$PROJECT_COMMIT" ]] || PROJECT_COMMIT=unknown
 
 rm -rf "$SRC" "$BUILD" "$STAGE"
 mkdir -p "$OUT"
@@ -66,12 +72,35 @@ ninja -C "$BUILD" -j"$JOBS"
 
 DESTDIR="$STAGE" meson install -C "$BUILD"
 
+buildinfo_dir="$STAGE/usr/share/rctools-gpu"
+mkdir -p "$buildinfo_dir"
+cat >"$buildinfo_dir/mesa-channel-kgsl.buildinfo" <<EOF
+runtime=mesa-channel-kgsl
+mesa_source_commit=$MESA_COMMIT
+project_commit=$PROJECT_COMMIT
+compat_patch_sha256=$PATCH_SHA256
+architecture=$arch_tag
+prefix=/usr
+platforms=x11,wayland
+gallium_drivers=freedreno,zink,virgl,llvmpipe
+vulkan_drivers=freedreno
+freedreno_kmds=kgsl
+egl=enabled
+gles2=enabled
+glvnd=enabled
+glx=dri
+buildtype=release
+EOF
+
 name="mesa_${version}-channel-kgsl_${arch_tag}.tar.gz"
 tar -zcf "$OUT/$name" -C "$STAGE" .
 sha256sum "$OUT/$name" > "$OUT/$name.sha256"
+cp "$buildinfo_dir/mesa-channel-kgsl.buildinfo" "$OUT/$name.buildinfo"
 
 echo "Mesa Channel KGSL build OK"
 echo "source_commit=$MESA_COMMIT"
+echo "project_commit=$PROJECT_COMMIT"
+echo "patch_sha256=$PATCH_SHA256"
 echo "arch=$arch"
 echo "artifact=$OUT/$name"
 cat "$OUT/$name.sha256"
