@@ -11,6 +11,7 @@ on:
       - 'recovery-wifi/patches/mesa-kgsl-channel-compat.patch'
       - 'recovery-wifi/patches/virtualgl-eglkgsl.patch'
       - 'recovery-wifi/patches/virtualgl-kgsl-pack-invert.experimental.patch'
+      - 'recovery-wifi/patches/virtualgl-kgsl-async-xshm.experimental.patch'
       - '.github/workflows/gpu-runtime-arm64.yml'
 
 jobs:
@@ -27,7 +28,7 @@ jobs:
 
       - name: Install Mesa build dependencies
         run: |
-          sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
+          sed -i 's/^Types: deb$/Types: deb deb-src/'             /etc/apt/sources.list.d/debian.sources
           apt-get update
           apt-get build-dep -y mesa
           apt-get install -y git ccache libxfixes-dev libarchive-dev
@@ -35,6 +36,7 @@ jobs:
       - name: Build patched Mesa KGSL
         shell: bash
         run: |
+          set -euo pipefail
           chmod +x recovery-wifi/build-mesa-kgsl-channel.sh
           JOBS=2 recovery-wifi/build-mesa-kgsl-channel.sh
 
@@ -58,8 +60,13 @@ jobs:
         include:
           - variant: stable
             pack_invert: '0'
+            async_xshm: '0'
           - variant: pack-invert-experimental
             pack_invert: '1'
+            async_xshm: '0'
+          - variant: pack-invert-async-xshm-experimental
+            pack_invert: '1'
+            async_xshm: '1'
 
     steps:
       - name: Checkout project
@@ -75,11 +82,12 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x recovery-wifi/build-virtualgl-kgsl.sh
-          PREFIX=/opt/VirtualGL-KGSL           INSTALL=1           PACK_INVERT=${{ matrix.pack_invert }}           JOBS=2             recovery-wifi/build-virtualgl-kgsl.sh
+          PREFIX=/opt/VirtualGL-KGSL           INSTALL=1           PACK_INVERT=${{ matrix.pack_invert }}           ASYNC_XSHM=${{ matrix.async_xshm }}           JOBS=2             recovery-wifi/build-virtualgl-kgsl.sh
 
           mkdir -p recovery-wifi/out/virtualgl-kgsl
-          tar -zcf             "recovery-wifi/out/virtualgl-kgsl/VirtualGL-KGSL-${{ matrix.variant }}-arm64.tar.gz"             -C / opt/VirtualGL-KGSL
-          sha256sum             "recovery-wifi/out/virtualgl-kgsl/VirtualGL-KGSL-${{ matrix.variant }}-arm64.tar.gz"             > "recovery-wifi/out/virtualgl-kgsl/VirtualGL-KGSL-${{ matrix.variant }}-arm64.tar.gz.sha256"
+          archive="recovery-wifi/out/virtualgl-kgsl/VirtualGL-KGSL-${{ matrix.variant }}-arm64.tar.gz"
+          tar -zcf "$archive" -C / opt/VirtualGL-KGSL
+          sha256sum "$archive" > "$archive.sha256"
 
       - name: Upload VirtualGL runtime
         uses: actions/upload-artifact@v7
