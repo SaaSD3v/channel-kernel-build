@@ -262,12 +262,13 @@ diff --git a/server/X11Trans.h b/server/X11Trans.h
  			int nFrames;
 +			bool kgslAsyncXShm;
  			util::CriticalSection mutex;
- 			common::FBXFrame *frames[3];
+-			common::FBXFrame *frames[3];
++			common::FBXFrame *frames[4];
  			util::Event ready;
 diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 --- a/server/X11Trans.cpp
 +++ b/server/X11Trans.cpp
-@@ -31,75 +31,122 @@
+@@ -31,75 +31,125 @@
  
  X11Trans::X11Trans(void) : thread(NULL), deadYet(false)
  {
@@ -348,6 +349,7 @@ diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 +		kgslAsyncXShm = true;
 +
 +	if(fconfig.sync) nFrames = 1;
++	else if(kgslAsyncXShm) nFrames = 4;
 +	else nFrames = 3;
 +	for(int i = 0; i < nFrames; i++) frames[i] = NULL;
 +	thread = new Thread(this);
@@ -430,6 +432,8 @@ diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 +
 +				/* Match the proven two-buffer Channel bridge: keep two shared
 +				 * images in flight, then wait only for the oldest completion.
++				 * Async mode needs four pool frames so two in-flight images,
++				 * one queued/spoilable frame, and the producer can coexist.
 +				 */
 +				if(nPending == 2)
 +				{
