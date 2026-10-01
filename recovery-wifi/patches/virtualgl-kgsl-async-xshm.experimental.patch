@@ -268,7 +268,7 @@ diff --git a/server/X11Trans.h b/server/X11Trans.h
 diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 --- a/server/X11Trans.cpp
 +++ b/server/X11Trans.cpp
-@@ -31,75 +31,125 @@
+@@ -31,76 +31,141 @@
  
  X11Trans::X11Trans(void) : thread(NULL), deadYet(false)
  {
@@ -396,7 +396,22 @@ diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 +				asyncReported = true;
 +			}
 +			if(!async)
++			{
++				/*
++				 * A resize or XShm allocation failure can make one frame fall
++				 * back to the synchronous FBX path.  Frames use independent X
++				 * connections, so drain earlier async submissions first to keep
++				 * presentation order and to return those buffers to the pool.
++				 */
++				for(int i = 0; i < nPending; i++)
++				{
++					pending[i]->syncAsync();
++					pending[i]->signalComplete();
++					pending[i] = NULL;
++				}
++				nPending = 0;
 +				f->redraw();
++			}
 +			profBlit.endFrame(f->hdr.width * f->hdr.height, 0, 1);
 +
 +			profTotal.endFrame(f->hdr.width * f->hdr.height, 0, 1);
