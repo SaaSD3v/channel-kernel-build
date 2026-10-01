@@ -932,6 +932,8 @@ apply_virgl() {
 
     start_virgl "$socket" || return 1
     say 'backend=virgl'
+    say 'validation=context-only'
+    say 'warning=Channel VirGL draw/VBO has previously triggered a GPU hang; use this backend for diagnostics only'
 }
 
 apply_backend() {
@@ -1125,7 +1127,8 @@ test_profile() {
                 "$BB" rm -f "$log"
                 return 1
             }
-            say 'PASS VIRGL'
+            say 'PASS VIRGL_CONTEXT_ONLY'
+            say 'WARNING VirGL draw/VBO is not validated on Channel and has previously caused a GPU hang'
             ;;
         *)
             err "select a GPU backend first"
