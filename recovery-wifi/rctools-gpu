@@ -648,6 +648,29 @@ container_env_file() {
     printf '%s\n' "$env"
 }
 
+gpu_env_value() {
+    cfg="$1"
+    key="$2"
+    env="$(container_env_file "$cfg")"
+
+    [ -r "$env" ] || return 1
+
+    "$BB" awk -v k="$key" '
+      {
+        probe=$0
+        sub(/^[[:space:]]*export[[:space:]]+/, "", probe)
+      }
+      index(probe,k"=")==1 {
+        print substr(probe,length(k)+2)
+        exit
+      }
+    ' "$env"
+}
+
+active_backend() {
+    gpu_env_value "$1" RCTOOLS_GPU_BACKEND 2>/dev/null
+}
+
 ensure_env_file() {
     cfg="$1"
     env="$(container_env_file "$cfg")"
@@ -1117,52 +1140,106 @@ disable_profile() {
 container_status() {
     cfg="$1"
     name="$(container_name "$cfg")"
-    backend="$(saved_backend "$cfg")"
+    saved="$(saved_backend "$cfg")"
+    active="$(active_backend "$cfg")"
+    hw="$(cfg_get "$cfg" enable_hw_access)"
+    gpu="$(cfg_get "$cfg" enable_gpu_mode)"
+    virgl="$(cfg_get "$cfg" enable_virgl)"
 
     say "--- GPU container: $name ---"
     say "config=$cfg"
     say "rootfs_path=$(container_rootfs "$cfg")"
-    if [ -n "$backend" ]; then
-        say "saved_backend=$backend"
+
+    [ -n "$saved" ] && say "saved_backend=$saved" || say 'saved_backend=none'
+    [ -n "$active" ] && say "active_backend=$active" || say 'active_backend=none'
+
+    if [ -n "$active" ]; then
+        say 'profile_state=enabled'
     else
-        say 'saved_backend=none'
+        say 'profile_state=disabled'
     fi
-    say "enable_hw_access=$(cfg_get "$cfg" enable_hw_access)"
-    say "enable_gpu_mode=$(cfg_get "$cfg" enable_gpu_mode)"
-    say "enable_virgl=$(cfg_get "$cfg" enable_virgl)"
+
+    if [ -n "$saved" ] && [ -n "$active" ] && [ "$saved" != "$active" ]; then
+        say "selection_mismatch=saved:$saved active:$active"
+    fi
+
+    say "enable_hw_access=$hw"
+    say "enable_gpu_mode=$gpu"
+    say "enable_virgl=$virgl"
     say "env_file_config=$(cfg_get "$cfg" env_file)"
     say "env_file_effective=$(container_env_file "$cfg")"
 
-    if [ "$backend" = freedreno ]; then
-        if direct_runtime "$cfg" >/dev/null 2>&1; then
-            say 'freedreno_runtime=ready'
-            say "presentation=EGL surfaceless"
-            if [ "$direct_vgl" -eq 1 ]; then
-                say 'virtualgl_kgsl=ready'
-                say 'virtualgl_forcealpha=1'
-                say 'virtualgl_readback=sync'
+    case "$active" in
+        freedreno)
+            if [ "$hw:$gpu:$virgl" = '0:1:0' ]; then
+                say 'config_state=consistent'
             else
-                say 'virtualgl_kgsl=not installed'
+                say 'config_state=mismatch expected=0:1:0'
             fi
-            say 'xserver_env=clean (do not start Xtigervnc with KGSL Mesa variables)'
-        else
-            say 'freedreno_runtime=missing'
-        fi
-    fi
+
+            if direct_runtime "$cfg" >/dev/null 2>&1; then
+                say 'freedreno_runtime=ready'
+                say 'presentation=EGL surfaceless'
+                if [ "$direct_vgl" -eq 1 ]; then
+                    say 'virtualgl_kgsl=ready'
+                    say 'virtualgl_forcealpha=1'
+                    say 'virtualgl_readback=sync'
+                else
+                    say 'virtualgl_kgsl=not installed'
+                fi
+                say 'xserver_env=clean (do not start Xtigervnc with KGSL Mesa variables)'
+            else
+                say 'freedreno_runtime=missing'
+            fi
+            ;;
+        llvmpipe|virgl)
+            if [ "$hw:$gpu:$virgl" = '0:0:0' ]; then
+                say 'config_state=consistent'
+            else
+                say 'config_state=mismatch expected=0:0:0'
+            fi
+            ;;
+        '')
+            say 'config_state=inactive'
+            ;;
+        *)
+            say "config_state=unknown_backend:$active"
+            ;;
+    esac
 }
 
 test_profile() {
     cfg="$1"
     name="$(container_name "$cfg")"
-    backend="$(saved_backend "$cfg")"
-    pre="/tmp/rctools-gpu-pretest.$$"
-    log="/tmp/rctools-gpu-test.$$"
+    saved="$(saved_backend "$cfg")"
+    backend="$(active_backend "$cfg")"
+    pre="/tmp/rctools-gpu-pretest.$"
+    log="/tmp/rctools-gpu-test.$"
     env="$(container_env_file "$cfg")"
 
     [ -r "$env" ] || {
         err "GPU environment file missing: $env"
         return 1
     }
+
+    if [ -z "$backend" ]; then
+        err "GPU_PROFILE_DISABLED"
+        if [ -n "$saved" ]; then
+            err "saved backend: $saved"
+            err "use Enable to re-apply it before testing"
+        else
+            err "select a GPU backend first"
+        fi
+        return 1
+    fi
+
+    case "$backend" in
+        freedreno|llvmpipe|virgl) ;;
+        *)
+            err "unknown active GPU backend: $backend"
+            return 1
+            ;;
+    esac
 
     [ -x "$DS_BIN" ] || {
         err "DroidSpaces binary missing: $DS_BIN"
@@ -1190,12 +1267,36 @@ test_profile() {
 
     "$BB" cat "$pre"
 
+    if ! "$BB" grep -Fqx "RCTOOLS_GPU_BACKEND=$backend" "$pre"; then
+        err "GPU_BACKEND_ENV_NOT_LOADED"
+        err "expected active backend: $backend"
+        "$BB" rm -f "$pre"
+        return 1
+    fi
+
+    case "$backend" in
+        freedreno)
+            expected_hw=0
+            expected_gpu=1
+            expected_virgl=0
+            ;;
+        llvmpipe|virgl)
+            expected_hw=0
+            expected_gpu=0
+            expected_virgl=0
+            ;;
+    esac
+
+    if ! "$BB" grep -Fqx "enable_hw_access=$expected_hw" "$pre" ||
+       ! "$BB" grep -Fqx "enable_gpu_mode=$expected_gpu" "$pre" ||
+       ! "$BB" grep -Fqx "enable_virgl=$expected_virgl" "$pre"; then
+        err "GPU_CONFIG_ENV_MISMATCH"
+        err "active backend '$backend' does not match the loaded DroidSpaces flags"
+        "$BB" rm -f "$pre"
+        return 1
+    fi
+
     if [ "$backend" = freedreno ]; then
-        if ! "$BB" grep -q '^enable_gpu_mode=1$' "$pre"; then
-            err "DIRECT_GPU_CONFIG_NOT_LOADED"
-            "$BB" rm -f "$pre"
-            return 1
-        fi
         if ! "$BB" grep -Fqx 'KGSL_NODE=present' "$pre" ||
            ! "$BB" grep -Fqx 'KGSL_OPEN=ok' "$pre"; then
             err "DIRECT_GPU_DEVICE_NOT_AVAILABLE"
