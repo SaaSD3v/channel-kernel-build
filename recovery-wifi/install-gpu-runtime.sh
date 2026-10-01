@@ -112,7 +112,47 @@ TARGET_VGL="$ROOT/opt/VirtualGL-KGSL"
 cleanup_stage() {
   rm -rf "$STAGE" 2>/dev/null || true
 }
-trap cleanup_stage EXIT HUP INT TERM
+
+transaction_active=0
+transaction_done=0
+
+rollback() {
+  [ "$transaction_active" -eq 1 ] || return 0
+  [ "$transaction_done" -eq 0 ] || return 0
+
+  if [ "${installed_mesa:-0}" -eq 1 ]; then
+    rm -rf "$TARGET_MESA" 2>/dev/null || true
+  fi
+  if [ "${installed_vgl:-0}" -eq 1 ]; then
+    rm -rf "$TARGET_VGL" 2>/dev/null || true
+  fi
+
+  if [ "${had_mesa:-0}" -eq 1 ] && [ -e "$OLD_MESA" ]; then
+    mv "$OLD_MESA" "$TARGET_MESA" 2>/dev/null || true
+  fi
+  if [ "${had_vgl:-0}" -eq 1 ] && [ -e "$OLD_VGL" ]; then
+    mv "$OLD_VGL" "$TARGET_VGL" 2>/dev/null || true
+  fi
+}
+
+on_exit() {
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    rollback
+  fi
+  cleanup_stage
+  exit "$rc"
+}
+
+on_signal() {
+  rollback
+  cleanup_stage
+  trap - EXIT HUP INT TERM
+  exit 130
+}
+
+trap on_exit EXIT
+trap on_signal HUP INT TERM
 
 mkdir -p "$STAGE/mesa" "$STAGE/vgl"
 
@@ -167,7 +207,7 @@ case "$VARIANT" in
 esac
 
 say "[*] Stopping container $NAME"
-STOP_LOG="/tmp/rctools-gpu-install-stop.$"
+STOP_LOG="/tmp/rctools-gpu-install-stop.$$"
 if "$DS" --name="$NAME" stop >"$STOP_LOG" 2>&1; then
   :
 elif grep -qi 'not running or invalid' "$STOP_LOG" 2>/dev/null; then
@@ -186,22 +226,7 @@ had_mesa=0
 had_vgl=0
 installed_mesa=0
 installed_vgl=0
-
-rollback() {
-  if [ "$installed_mesa" -eq 1 ]; then
-    rm -rf "$TARGET_MESA" 2>/dev/null || true
-  fi
-  if [ "$installed_vgl" -eq 1 ]; then
-    rm -rf "$TARGET_VGL" 2>/dev/null || true
-  fi
-
-  if [ "$had_mesa" -eq 1 ] && [ -e "$OLD_MESA" ]; then
-    mv "$OLD_MESA" "$TARGET_MESA" 2>/dev/null || true
-  fi
-  if [ "$had_vgl" -eq 1 ] && [ -e "$OLD_VGL" ]; then
-    mv "$OLD_VGL" "$TARGET_VGL" 2>/dev/null || true
-  fi
-}
+transaction_active=1
 
 if [ -e "$TARGET_MESA" ]; then
   if ! mv "$TARGET_MESA" "$OLD_MESA"; then
@@ -229,6 +254,9 @@ if ! mv "$NEW_VGL" "$TARGET_VGL"; then
   die "could not install VirtualGL runtime"
 fi
 installed_vgl=1
+
+transaction_done=1
+transaction_active=0
 
 rm -rf "$OLD_MESA" "$OLD_VGL"
 rm -rf "$STAGE"
