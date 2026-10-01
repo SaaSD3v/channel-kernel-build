@@ -1368,6 +1368,60 @@ test_profile() {
             "$BB" rm -f "$pre"
             return 1
         fi
+
+        direct_runtime "$cfg" >/dev/null || {
+            err "DIRECT_GPU_RUNTIME_INVALID"
+            "$BB" rm -f "$pre"
+            return 1
+        }
+
+        if [ "$direct_vgl" -eq 1 ]; then
+            for required in \
+                'RCTOOLS_GPU_VIRTUALGL=1' \
+                'VGL_DISPLAY=eglkgsl' \
+                'VGL_FORCEALPHA=1' \
+                'VGL_READBACK=sync'
+            do
+                if ! "$BB" grep -Fqx "$required" "$pre"; then
+                    err "DIRECT_GPU_VIRTUALGL_ENV_MISMATCH"
+                    err "missing: $required"
+                    "$BB" rm -f "$pre"
+                    return 1
+                fi
+            done
+
+            if [ "$direct_vgl_async_xshm" -eq 1 ]; then
+                "$BB" grep -Fqx 'VGL_KGSL_ASYNC_XSHM=1' "$pre" || {
+                    err "DIRECT_GPU_ASYNC_XSHM_ENV_MISMATCH"
+                    "$BB" rm -f "$pre"
+                    return 1
+                }
+            elif "$BB" grep -Fq 'VGL_KGSL_ASYNC_XSHM=' "$pre"; then
+                err "DIRECT_GPU_ASYNC_XSHM_ENV_LEAK"
+                "$BB" rm -f "$pre"
+                return 1
+            fi
+
+            if [ "$direct_vgl_pbo_pipeline" -eq 1 ]; then
+                "$BB" grep -Fqx 'VGL_KGSL_PBO_PIPELINE=1' "$pre" || {
+                    err "DIRECT_GPU_PBO_PIPELINE_ENV_MISMATCH"
+                    "$BB" rm -f "$pre"
+                    return 1
+                }
+            elif "$BB" grep -Fq 'VGL_KGSL_PBO_PIPELINE=' "$pre"; then
+                err "DIRECT_GPU_PBO_PIPELINE_ENV_LEAK"
+                "$BB" rm -f "$pre"
+                return 1
+            fi
+        else
+            if "$BB" grep -Fq 'VGL_DISPLAY=' "$pre" ||
+               "$BB" grep -Fq 'VGL_KGSL_ASYNC_XSHM=' "$pre" ||
+               "$BB" grep -Fq 'VGL_KGSL_PBO_PIPELINE=' "$pre"; then
+                err "DIRECT_GPU_VIRTUALGL_ENV_LEAK"
+                "$BB" rm -f "$pre"
+                return 1
+            fi
+        fi
     fi
 
     "$BB" rm -f "$pre"
