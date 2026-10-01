@@ -7,12 +7,14 @@ PREFIX="${PREFIX:-/opt/VirtualGL-KGSL}"
 INSTALL="${INSTALL:-0}"
 PACK_INVERT="${PACK_INVERT:-0}"
 ASYNC_XSHM="${ASYNC_XSHM:-0}"
+PBO_PIPELINE="${PBO_PIPELINE:-0}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="${GITHUB_WORKSPACE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 PATCH="$ROOT/recovery-wifi/patches/virtualgl-eglkgsl.patch"
 PACK_INVERT_PATCH="$ROOT/recovery-wifi/patches/virtualgl-kgsl-pack-invert.experimental.patch"
 ASYNC_XSHM_PATCH="$ROOT/recovery-wifi/patches/virtualgl-kgsl-async-xshm.experimental.patch"
+PBO_PIPELINE_PATCH="$ROOT/recovery-wifi/patches/virtualgl-kgsl-pbo-pipeline.experimental.patch"
 SRC="${VGL_SRC:-/tmp/virtualgl-kgsl-src}"
 BUILD="${VGL_BUILD:-/tmp/virtualgl-kgsl-build}"
 
@@ -28,11 +30,19 @@ test -r "$PATCH"
 BASE_PATCH_SHA256="$(sha256sum "$PATCH" | awk '{print $1}')"
 PACK_INVERT_PATCH_SHA256=none
 ASYNC_XSHM_PATCH_SHA256=none
+PBO_PIPELINE_PATCH_SHA256=none
 if [[ "$PACK_INVERT" == 1 ]]; then
   PACK_INVERT_PATCH_SHA256="$(sha256sum "$PACK_INVERT_PATCH" | awk '{print $1}')"
 fi
 if [[ "$ASYNC_XSHM" == 1 ]]; then
   ASYNC_XSHM_PATCH_SHA256="$(sha256sum "$ASYNC_XSHM_PATCH" | awk '{print $1}')"
+fi
+if [[ "$PBO_PIPELINE" == 1 ]]; then
+  [[ "$PACK_INVERT" == 1 ]] || {
+    echo "PBO_PIPELINE=1 requires PACK_INVERT=1" >&2
+    exit 1
+  }
+  PBO_PIPELINE_PATCH_SHA256="$(sha256sum "$PBO_PIPELINE_PATCH" | awk '{print $1}')"
 fi
 
 PROJECT_COMMIT="${GITHUB_SHA:-}"
@@ -60,6 +70,12 @@ if [[ "$ASYNC_XSHM" == 1 ]]; then
   test -r "$ASYNC_XSHM_PATCH"
   git -C "$SRC" apply --check "$ASYNC_XSHM_PATCH"
   git -C "$SRC" apply "$ASYNC_XSHM_PATCH"
+fi
+
+if [[ "$PBO_PIPELINE" == 1 ]]; then
+  test -r "$PBO_PIPELINE_PATCH"
+  git -C "$SRC" apply --check "$PBO_PIPELINE_PATCH"
+  git -C "$SRC" apply "$PBO_PIPELINE_PATCH"
 fi
 
 git -C "$SRC" diff --check
@@ -93,6 +109,8 @@ pack_invert=$PACK_INVERT
 pack_invert_patch_sha256=$PACK_INVERT_PATCH_SHA256
 async_xshm=$ASYNC_XSHM
 async_xshm_patch_sha256=$ASYNC_XSHM_PATCH_SHA256
+pbo_pipeline=$PBO_PIPELINE
+pbo_pipeline_patch_sha256=$PBO_PIPELINE_PATCH_SHA256
 install_prefix=$PREFIX
 install_libdir=lib
 EOF
@@ -104,8 +122,10 @@ echo "project_commit=$PROJECT_COMMIT"
 echo "eglkgsl_patch_sha256=$BASE_PATCH_SHA256"
 echo "pack_invert_patch_sha256=$PACK_INVERT_PATCH_SHA256"
 echo "async_xshm_patch_sha256=$ASYNC_XSHM_PATCH_SHA256"
+echo "pbo_pipeline_patch_sha256=$PBO_PIPELINE_PATCH_SHA256"
 echo "build=$BUILD"
 echo "prefix=$PREFIX"
 echo "installed=$INSTALL"
 echo "pack_invert=$PACK_INVERT"
 echo "async_xshm=$ASYNC_XSHM"
+echo "pbo_pipeline=$PBO_PIPELINE"
