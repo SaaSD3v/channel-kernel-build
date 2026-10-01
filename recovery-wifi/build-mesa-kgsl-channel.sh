@@ -103,7 +103,11 @@ while IFS= read -r elf; do
   printf '\n' >>"$needed_file"
 done < <(
   {
-    find "$STAGE/usr/lib" -type f -name 'kgsl_dri.so' -print
+    kgsl_link="$(find "$STAGE/usr/lib" -name 'kgsl_dri.so' -print -quit)"
+    if [ -n "$kgsl_link" ]; then
+      readlink -f "$kgsl_link" 2>/dev/null || true
+    fi
+    find "$STAGE/usr/lib" -type f -name 'libdril_dri.so' -print
     find "$STAGE/usr/lib" -type f -name 'libgallium-*.so' -print
     find "$STAGE/usr/lib" -type f -name 'libEGL_mesa.so.*' -print
     find "$STAGE/usr/lib" -type f -name 'libGLX_mesa.so.*' -print
