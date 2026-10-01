@@ -53,6 +53,25 @@ jobs:
           chmod +x recovery-wifi/build-virtualgl-kgsl.sh
           recovery-wifi/build-virtualgl-kgsl.sh
 
+      - name: Compile experimental VirtualGL KGSL pack-invert patch
+        run: |
+          set -euo pipefail
+
+          SRC=/tmp/virtualgl-kgsl-src
+          BUILD=/tmp/virtualgl-kgsl-pack-invert-build
+          PATCH="$GITHUB_WORKSPACE/recovery-wifi/patches/virtualgl-kgsl-pack-invert.experimental.patch"
+
+          git -C "$SRC" apply --check "$PATCH"
+          git -C "$SRC" apply "$PATCH"
+          git -C "$SRC" diff --check
+
+          rm -rf "$BUILD"
+          TJPEG_LIB="$(ldconfig -p | awk '/libturbojpeg\.so/{print $NF; exit}')"
+
+          cmake -S "$SRC" -B "$BUILD" -G Ninja             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=/tmp/VirtualGL-KGSL-experimental             -DTJPEG_INCLUDE_DIR=/usr/include             -DTJPEG_LIBRARY="$TJPEG_LIB"             -DVGL_USEXV=0             -DVGL_FAKEOPENCL=0
+
+          cmake --build "$BUILD" -j2
+
       - name: Validate Mesa KGSL compatibility patch
         run: |
           set -euo pipefail
