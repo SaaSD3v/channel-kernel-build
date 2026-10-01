@@ -580,7 +580,7 @@ cfg_set_gpu_mode() {
     hw="$2"
     gpu="$3"
     virgl="$4"
-    tmp="/tmp/rctools-gpu-mode.$"
+    tmp="/tmp/rctools-gpu-mode.$$"
 
     [ -f "$file" ] || {
         err "container config not found: $file"
@@ -753,7 +753,7 @@ filter_gpu_env() {
 
 strip_gpu_env() {
     file="$1"
-    tmp="/tmp/rctools-gpu-env.clean.$"
+    tmp="/tmp/rctools-gpu-env.clean.$$"
 
     filter_gpu_env "$file" "$tmp" || {
         "$BB" rm -f "$tmp"
@@ -773,7 +773,7 @@ write_gpu_env() {
     shift 2
 
     env="$(ensure_env_file "$cfg")" || return 1
-    tmp="/tmp/rctools-gpu-env.write.$"
+    tmp="/tmp/rctools-gpu-env.write.$$"
 
     filter_gpu_env "$env" "$tmp" || {
         "$BB" rm -f "$tmp"
