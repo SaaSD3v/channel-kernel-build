@@ -4,8 +4,9 @@ set -euo pipefail
 VGL_REPO="${VGL_REPO:-https://github.com/VirtualGL/virtualgl.git}"
 VGL_COMMIT="${VGL_COMMIT:-2473cf39bdbe88ca41ecd58ac4007385c9682a9f}"
 
-ROOT="${GITHUB_WORKSPACE:-$(cd "$(dirname "$0")/.." && pwd)}"
-PATCH="$ROOT/patches/virtualgl-eglkgsl.patch"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${GITHUB_WORKSPACE:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PATCH="$ROOT/recovery-wifi/patches/virtualgl-eglkgsl.patch"
 SRC="${VGL_SRC:-/tmp/virtualgl-kgsl-src}"
 BUILD="${VGL_BUILD:-/tmp/virtualgl-kgsl-build}"
 
