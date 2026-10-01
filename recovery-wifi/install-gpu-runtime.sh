@@ -163,9 +163,17 @@ rm -rf "$OLD_MESA" "$OLD_VGL"
 
 had_mesa=0
 had_vgl=0
+installed_mesa=0
+installed_vgl=0
 
 rollback() {
-  rm -rf "$TARGET_MESA" "$TARGET_VGL" 2>/dev/null || true
+  if [ "$installed_mesa" -eq 1 ]; then
+    rm -rf "$TARGET_MESA" 2>/dev/null || true
+  fi
+  if [ "$installed_vgl" -eq 1 ]; then
+    rm -rf "$TARGET_VGL" 2>/dev/null || true
+  fi
+
   if [ "$had_mesa" -eq 1 ] && [ -e "$OLD_MESA" ]; then
     mv "$OLD_MESA" "$TARGET_MESA" 2>/dev/null || true
   fi
@@ -193,11 +201,13 @@ if ! mv "$STAGE/mesa" "$TARGET_MESA"; then
   rollback
   die "could not install Mesa runtime"
 fi
+installed_mesa=1
 
 if ! mv "$NEW_VGL" "$TARGET_VGL"; then
   rollback
   die "could not install VirtualGL runtime"
 fi
+installed_vgl=1
 
 rm -rf "$OLD_MESA" "$OLD_VGL"
 rm -rf "$STAGE"
