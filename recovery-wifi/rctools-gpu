@@ -802,7 +802,7 @@ stop_virgl_for_cfg() {
 prime_direct_kgsl() {
     prepare_gpu || return 1
 
-    log=/tmp/rctools-kgsl-prime.log
+    log="/tmp/rctools-kgsl-prime.$"
     tries=0
 
     say 'stage=prime KGSL/ZAP'
