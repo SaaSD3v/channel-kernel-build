@@ -60,6 +60,9 @@ jobs:
           grep -Fq "grep -Fqx 'async_xshm=1'" recovery-wifi/rctools-gpu
           grep -Fq "'VGL_KGSL_ASYNC_XSHM=1'" recovery-wifi/rctools-gpu
           grep -Fq 'virtualgl_async_xshm=' recovery-wifi/rctools-gpu
+          grep -Fq "grep -Fqx 'pbo_pipeline=1'" recovery-wifi/rctools-gpu
+          grep -Fq "'VGL_KGSL_PBO_PIPELINE=1'" recovery-wifi/rctools-gpu
+          grep -Fq 'virtualgl_pbo_pipeline=' recovery-wifi/rctools-gpu
 
       - name: Build stable VirtualGL eglkgsl source
         shell: bash
@@ -228,10 +231,8 @@ jobs:
           grep -Fq 'VGL_KGSL_PBO_PIPELINE' "$VD"
           grep -Fq 'GLuint kgslPbo[2];' "$VDH"
           grep -Fq 'kgslPboPrimed' "$VDH"
-          grep -Fq 'pbo_pipeline=1' < <(
-            PBO_PIPELINE=1 PACK_INVERT=1 ASYNC_XSHM=1 \
-              INSTALL=0 recovery-wifi/build-virtualgl-kgsl.sh 2>/dev/null
-          )
+          grep -Fq 'pbo_pipeline=$PBO_PIPELINE' recovery-wifi/build-virtualgl-kgsl.sh
+          grep -Fq 'PBO_PIPELINE=1 requires PACK_INVERT=1' recovery-wifi/build-virtualgl-kgsl.sh
 
       - name: Validate Mesa KGSL compatibility patch
         shell: bash
