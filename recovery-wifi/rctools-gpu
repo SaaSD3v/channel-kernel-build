@@ -550,31 +550,6 @@ cfg_get() {
     "$BB" awk -v k="$key" 'index($0,k"=")==1 {print substr($0,length(k)+2); exit}' "$file"
 }
 
-cfg_set() {
-    file="$1"
-    key="$2"
-    value="$3"
-    tmp="/tmp/rctools-gpu-cfg.$$"
-
-    [ -f "$file" ] || {
-        err "container config not found: $file"
-        return 1
-    }
-
-    "$BB" awk -v k="$key" -v v="$value" '
-      BEGIN {done=0}
-      index($0,k"=")==1 {if(!done) print k"="v; done=1; next}
-      {print}
-      END {if(!done) print k"="v}
-    ' "$file" >"$tmp" || return 1
-
-    "$BB" cat "$tmp" >"$file" || {
-        "$BB" rm -f "$tmp"
-        return 1
-    }
-    "$BB" rm -f "$tmp"
-}
-
 cfg_set_gpu_mode() {
     file="$1"
     hw="$2"
