@@ -75,6 +75,27 @@ sha_check_file() {
 }
 
 if [ -r "$BUNDLE/SHA256SUMS" ]; then
+  mesa_base="${MESA##*/}"
+  vgl_base="${VGL##*/}"
+
+  listed_in_sums() {
+    wanted="$1"
+    awk -v wanted="$wanted" '
+      NF >= 2 {
+        name=$2
+        sub(/^\*/, "", name)
+        sub(/^\.\//, "", name)
+        if (name == wanted) found=1
+      }
+      END { exit(found ? 0 : 1) }
+    ' "$BUNDLE/SHA256SUMS"
+  }
+
+  listed_in_sums "$mesa_base" ||
+    die "selected Mesa archive is not listed in SHA256SUMS: $mesa_base"
+  listed_in_sums "$vgl_base" ||
+    die "selected VirtualGL archive is not listed in SHA256SUMS: $vgl_base"
+
   say "[*] Verifying bundle SHA256SUMS"
   sha_check_file "$BUNDLE" SHA256SUMS || die "bundle checksum validation failed"
 else
