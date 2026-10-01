@@ -1213,8 +1213,8 @@ test_profile() {
     name="$(container_name "$cfg")"
     saved="$(saved_backend "$cfg")"
     backend="$(active_backend "$cfg")"
-    pre="/tmp/rctools-gpu-pretest.$"
-    log="/tmp/rctools-gpu-test.$"
+    pre="/tmp/rctools-gpu-pretest.$$"
+    log="/tmp/rctools-gpu-test.$$"
     env="$(container_env_file "$cfg")"
 
     [ -r "$env" ] || {
