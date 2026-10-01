@@ -1,0 +1,89 @@
+name: GPU Runtime ARM64 Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - twrp-cli-minimal-gpu-audit
+    paths:
+      - 'recovery-wifi/build-mesa-kgsl-channel.sh'
+      - 'recovery-wifi/build-virtualgl-kgsl.sh'
+      - 'recovery-wifi/patches/mesa-kgsl-channel-compat.patch'
+      - 'recovery-wifi/patches/virtualgl-eglkgsl.patch'
+      - 'recovery-wifi/patches/virtualgl-kgsl-pack-invert.experimental.patch'
+      - '.github/workflows/gpu-runtime-arm64.yml'
+
+jobs:
+  mesa-channel-kgsl:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    container:
+      image: debian:trixie-slim
+      options: --privileged --user root
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v5
+
+      - name: Install Mesa build dependencies
+        run: |
+          sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
+          apt-get update
+          apt-get build-dep -y mesa
+          apt-get install -y git ccache libxfixes-dev libarchive-dev
+
+      - name: Build patched Mesa KGSL
+        shell: bash
+        run: |
+          chmod +x recovery-wifi/build-mesa-kgsl-channel.sh
+          JOBS=2 recovery-wifi/build-mesa-kgsl-channel.sh
+
+      - name: Upload Mesa runtime
+        uses: actions/upload-artifact@v7
+        with:
+          name: mesa-channel-kgsl-debian-trixie-arm64
+          path: recovery-wifi/out/mesa-kgsl-channel/*
+          retention-days: 90
+
+  virtualgl-kgsl:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    container:
+      image: debian:trixie-slim
+      options: --privileged --user root
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: stable
+            pack_invert: '0'
+          - variant: pack-invert-experimental
+            pack_invert: '1'
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v5
+
+      - name: Install VirtualGL build dependencies
+        run: |
+          apt-get update
+          apt-get install -y             git cmake ninja-build g++ binutils             libturbojpeg0-dev             libx11-dev libxext-dev libxtst-dev             libgl-dev libglu1-mesa-dev libegl-dev             libxcb1-dev libxcb-keysyms1-dev             libxcb-glx0-dev libx11-xcb-dev
+
+      - name: Build VirtualGL KGSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x recovery-wifi/build-virtualgl-kgsl.sh
+          PREFIX=/opt/VirtualGL-KGSL           INSTALL=1           PACK_INVERT=${{ matrix.pack_invert }}           JOBS=2             recovery-wifi/build-virtualgl-kgsl.sh
+
+          mkdir -p recovery-wifi/out/virtualgl-kgsl
+          tar -zcf             "recovery-wifi/out/virtualgl-kgsl/VirtualGL-KGSL-${{ matrix.variant }}-arm64.tar.gz"             -C / opt/VirtualGL-KGSL
+          sha256sum             "recovery-wifi/out/virtualgl-kgsl/VirtualGL-KGSL-${{ matrix.variant }}-arm64.tar.gz"             > "recovery-wifi/out/virtualgl-kgsl/VirtualGL-KGSL-${{ matrix.variant }}-arm64.tar.gz.sha256"
+
+      - name: Upload VirtualGL runtime
+        uses: actions/upload-artifact@v7
+        with:
+          name: virtualgl-kgsl-${{ matrix.variant }}-arm64
+          path: recovery-wifi/out/virtualgl-kgsl/*
+          retention-days: 90
