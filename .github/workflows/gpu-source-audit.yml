@@ -57,6 +57,9 @@ jobs:
           grep -Fq 'VGL_DISPLAY=eglkgsl' recovery-wifi/rctools-gpu
           grep -Fq 'VGL_FORCEALPHA=1' recovery-wifi/rctools-gpu
           grep -Fq 'VGL_READBACK=sync' recovery-wifi/rctools-gpu
+          grep -Fq "grep -Fqx 'async_xshm=1'" recovery-wifi/rctools-gpu
+          grep -Fq "'VGL_KGSL_ASYNC_XSHM=1'" recovery-wifi/rctools-gpu
+          grep -Fq 'virtualgl_async_xshm=' recovery-wifi/rctools-gpu
 
       - name: Build stable VirtualGL eglkgsl source
         shell: bash
