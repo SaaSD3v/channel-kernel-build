@@ -177,8 +177,8 @@ jobs:
           virtualgl_base=2473cf39bdbe88ca41ecd58ac4007385c9682a9f
 
           VirtualGL variants:
-          A stable: pack_invert=0 async_xshm=0
-          B pack-invert: pack_invert=1 async_xshm=0
+          A stable: pack_invert=0 async_xshm=0 pbo_pipeline=0
+          B pack-invert: pack_invert=1 async_xshm=0 pbo_pipeline=0
           C pack-invert + async-XShm: pack_invert=1 async_xshm=1 pbo_pipeline=0
           D pack-invert + async-XShm + two-PBO: pack_invert=1 async_xshm=1 pbo_pipeline=1
 
