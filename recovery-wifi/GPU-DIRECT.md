@@ -213,13 +213,112 @@ os_same_file_description couldn't determine if two DRM fds reference the same fi
 
 Mesa has a fallback for this case. The warning was present during successful render/readback and stress testing.
 
+## Remote X11 / TigerVNC validation
+
+Direct GLX presentation to TigerVNC is **not** the working architecture on this
+device.  The custom KGSL Mesa currently special-cases
+`MESA_LOADER_DRIVER_OVERRIDE=kgsl` in `x11_dri3_open()`, while TigerVNC has
+no DRI3 render node.  Inheriting the KGSL Mesa environment into Xtigervnc can
+therefore force an invalid DRI3 path.
+
+The validated X server launch keeps Xtigervnc on the distro/system libraries:
+
+```sh
+env \
+  -u LD_LIBRARY_PATH \
+  -u LIBGL_DRIVERS_PATH \
+  -u MESA_LOADER_DRIVER_OVERRIDE \
+  -u __EGL_VENDOR_LIBRARY_FILENAMES \
+  -u GALLIUM_DRIVER \
+  -u LIBGL_ALWAYS_SOFTWARE \
+  -u VTEST_SOCKET_NAME \
+  vncserver :1 -geometry 1024x768 -depth 24 -rendernode '' -localhost no
+```
+
+GPU applications use the custom Mesa environment separately.
+
+TigerVNC `:1` exposes MIT-SHM.  A project test bridge rendering through
+EGL-surfaceless/KGSL and presenting through two asynchronous MIT-SHM buffers
+reached roughly 131--137 visible FPS at 640x480.  With native BGRA readback
+directly into the alternating XShm buffers, the same bridge reached roughly
+152--159 FPS with `GL_RENDERER=FD506` and `GL_ERROR=0`.
+
+These figures measure the project bridge, not arbitrary application
+performance.
+
+## VirtualGL KGSL path
+
+VirtualGL 3.1.5 was source-patched so its EGL back end can use
+`EGL_PLATFORM_SURFACELESS_MESA` directly when `VGL_DISPLAY=eglkgsl`.
+This bypasses VirtualGL's normal EGLDevice/DRM-render-node requirement.
+
+Validated application path:
+
+```text
+GLX application
+    |
+    v
+VirtualGL faker
+    |
+    v
+EGL surfaceless
+    |
+    v
+Mesa Freedreno / FD506 / KGSL
+    |
+    v
+VirtualGL X11 transport
+    |
+    v
+TigerVNC / IceWM
+```
+
+Real-device validation:
+
+- `glxgears -info`: `GL_RENDERER=FD506`, `GL_VENDOR=freedreno`
+- `VGL_FORCEALPHA=1` changes the readback path from BGR->BGRA to
+  BGRA->BGRA and increased the observed glxgears rate from roughly 53 FPS to
+  roughly 125--126 FPS
+- `glxspheres64` with synchronous visible readback: roughly 15--17 FPS
+- `glxspheres64` with `VGL_READBACK=none`: roughly 57--58 FPS after warm-up
+
+VirtualGL 3.1.5 currently uses one PBO and maps it immediately after
+`glReadPixels()`.  On this KGSL stack the built-in synchronicity detector
+disables PBO mode, even with BGRA->BGRA.  Until a multi-PBO pipeline is
+validated, the project default is:
+
+```sh
+VGL_DISPLAY=eglkgsl
+VGL_FORCEALPHA=1
+VGL_READBACK=sync
+```
+
+## Devfreq note
+
+The working governor is `msm-adreno-tz`.  The driver exposes frequencies from
+133.33 MHz through 725 MHz.  A real-device test that forced the generic
+`performance` governor at 725 MHz was a performance regression
+(`glxspheres64` settled near 31 FPS rather than roughly 58 FPS with the
+normal path).  Do not make `performance` or a fixed clock an RCTools default.
+
+Clock readings taken while the workload is idle are not evidence of the clock
+used during rendering.  Leave `msm-adreno-tz` and the normal range intact
+unless a workload-time trace proves otherwise.
+
 ## Project boundary
 
 Keep responsibilities separate:
 
-- recovery/kernel: preserve working KGSL, ION, firmware and Adreno hardware path
+- recovery/kernel: preserve working KGSL, ION, firmware, devfreq and Adreno
+  hardware path
 - DroidSpaces: mirror GPU nodes into isolated `/dev` when GPU mode is enabled
-- container userspace: provide/select Mesa Freedreno KGSL and dependencies
-- RCTools VirGL: optional host VirGL lifecycle only
+- container userspace: provide the Mesa Freedreno KGSL runtime and optional
+  patched VirtualGL runtime
+- RCTools direct mode: write only the selected container's GPU environment and
+  never force a host/recovery GL stack
+- RCTools VirGL: optional host VirGL lifecycle, separate from direct KGSL
 
-RCTools must not choose container Mesa backends or inject distro-specific Mesa environment variables.
+When the project-specific `/opt/VirtualGL-KGSL` runtime is present, RCTools
+may add the validated `eglkgsl`, `VGL_FORCEALPHA=1`, and
+`VGL_READBACK=sync` settings to that container's managed GPU environment.
+Xtigervnc itself must still be started with the KGSL Mesa variables unset.
