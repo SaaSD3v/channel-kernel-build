@@ -167,12 +167,29 @@ jobs:
           grep -Fq 'Megapixels/sec' /tmp/x11transut-async-bottomup.log
           grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async-bottomup.log
 
+          if ! env \
+            DISPLAY=:99 \
+            VGL_DISPLAY=eglkgsl \
+            VGL_KGSL_ASYNC_XSHM=1 \
+            VGL_SYNC=0 \
+            VGL_VERBOSE=1 \
+            timeout 30s "$X11UT" -asyncfallback >/tmp/x11transut-async-fallback.log 2>&1; then
+            echo '=== async-to-sync XShm fallback test failed ==='
+            cat /tmp/x11transut-async-fallback.log
+            exit 1
+          fi
+          grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async-fallback.log
+          grep -Fq '[TEST] forced MIT-SHM -> synchronous fallback' /tmp/x11transut-async-fallback.log
+          grep -Fq 'Megapixels/sec' /tmp/x11transut-async-fallback.log
+
           echo '=== Xvfb sync baseline ==='
           grep -E 'Testing|Megapixels/sec' /tmp/x11transut-sync-baseline.log
           echo '=== Xvfb async MIT-SHM ==='
           grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async.log
           echo '=== Xvfb async MIT-SHM + bottom-up ==='
           grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-bottomup.log
+          echo '=== Xvfb async -> sync fallback ==='
+          grep -E 'KGSL async MIT-SHM|forced MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-fallback.log
 
           {
             echo '### VirtualGL async-XShm Xvfb smoke'
@@ -190,6 +207,11 @@ jobs:
             echo 'Async MIT-SHM + bottom-up input:'
             echo '~~~text'
             grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-bottomup.log
+            echo '~~~'
+            echo
+            echo 'Async MIT-SHM -> synchronous fallback:'
+            echo '~~~text'
+            grep -E 'KGSL async MIT-SHM|forced MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-fallback.log
             echo '~~~'
           } >> "$GITHUB_STEP_SUMMARY"
 
