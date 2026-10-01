@@ -1140,7 +1140,7 @@ apply_freedreno() {
             return 1
         fi
     elif [ -n "$direct_json" ]; then
-        apply_profile_files "$cfg" 0 1 0 freedreno \
+        if ! apply_profile_files "$cfg" 0 1 0 freedreno \
             'RCTOOLS_GPU_PRESENTATION=surfaceless' \
             'RCTOOLS_GPU_VIRTUALGL=0' \
             "LD_LIBRARY_PATH=$direct_ld" \
@@ -1151,7 +1151,7 @@ apply_freedreno() {
             return 1
         fi
     else
-        apply_profile_files "$cfg" 0 1 0 freedreno \
+        if ! apply_profile_files "$cfg" 0 1 0 freedreno \
             'RCTOOLS_GPU_PRESENTATION=surfaceless' \
             'RCTOOLS_GPU_VIRTUALGL=0' \
             "LD_LIBRARY_PATH=$direct_ld" \
