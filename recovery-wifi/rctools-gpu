@@ -149,7 +149,7 @@ stage_graphics_hal() {
     return 0
 }
 
-prepare_gpu() {
+prepare_kgsl_core() {
     [ "$(id -u 2>/dev/null)" = "0" ] || {
         err "run from a root recovery shell"
         return 1
@@ -164,6 +164,17 @@ prepare_gpu() {
         return 1
     }
 
+    ensure_vendor || return 1
+    stage_gpu_firmware || return 1
+    return 0
+}
+
+prepare_gpu() {
+    prepare_kgsl_core || return 1
+
+    # The following components belong to the recovery/proprietary diagnostics
+    # and VirGL host path.  The container Freedreno/KGSL backend does not
+    # depend on them.
     required_file "$LIBSYNC" || return 1
     required_file "$GPU_PROBE" || return 1
     required_file "$OPENCL_PROBE" || return 1
@@ -171,14 +182,11 @@ prepare_gpu() {
     required_file /system/bin/linker64 || return 1
     required_file /system/bin/sh || return 1
 
-    ensure_vendor || return 1
-
     for f in         "$VENDOR/lib64/libgsl.so"         "$VENDOR/lib64/libadreno_utils.so"         "$VENDOR/lib64/libllvm-glnext.so"         "$VENDOR/lib64/egl/libEGL_adreno.so"         "$VENDOR/lib64/egl/libGLESv2_adreno.so"         "$VENDOR/lib64/egl/eglSubDriverAndroid.so"         "$VENDOR/firmware/a530_pm4.fw"         "$VENDOR/firmware/a530_pfp.fw"
     do
         required_file "$f" || return 1
     done
 
-    stage_gpu_firmware || return 1
     stage_graphics_hal || return 1
     return 0
 }
@@ -805,7 +813,7 @@ stop_virgl_for_cfg() {
 }
 
 prime_direct_kgsl() {
-    prepare_gpu || return 1
+    prepare_kgsl_core || return 1
 
     log="/tmp/rctools-kgsl-prime.$"
     tries=0
