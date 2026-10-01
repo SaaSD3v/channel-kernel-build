@@ -1,0 +1,182 @@
+From: RCTools GPU audit
+Subject: [PATCH] faker: add surfaceless EGL backend for Qualcomm KGSL
+
+Base: VirtualGL/virtualgl
+Commit: 2473cf39bdbe88ca41ecd58ac4007385c9682a9f
+
+VirtualGL's EGL back end normally enumerates EGLDevice objects and therefore
+expects a DRM device/render node.  Mesa's Freedreno KGSL path on Android-style
+kernels instead uses /dev/kgsl-3d0 and EGL_PLATFORM_SURFACELESS_MESA, so the
+Adreno 506 in DroidSpaces is not discoverable as an EGLDevice.
+
+Treat VGL_DISPLAY=eglkgsl as an explicit project-specific request for a
+surfaceless EGL display.  Keep all existing EGLDevice behavior unchanged for
+"egl", "eglN", and DRI device paths.
+
+The resulting display is still required to expose
+EGL_KHR_no_config_context and EGL_KHR_surfaceless_context, matching the
+requirements of VirtualGL's existing EGL back end.
+
+diff --git a/server/faker.cpp b/server/faker.cpp
+--- a/server/faker.cpp
++++ b/server/faker.cpp
+@@
+ 			if(fconfig.egl)
+ 			{
+-				int numDevices = 0, i, validDevices = 0;
+-				const char *exts = NULL;
+-				EGLDeviceEXT *devices = NULL;
+-
+-				if(fconfig.verbose)
+-					vglout.println("[VGL] Opening EGL device %s",
+-						strlen(fconfig.localdpystring) > 0 ?
+-						fconfig.localdpystring : "(default)");
+-
+-				try
++				if(!strcasecmp(fconfig.localdpystring, "eglkgsl"))
+ 				{
+-					if(!(exts = _eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS)))
+-						THROW("Could not query EGL extensions");
+-					if(!strstr(exts, "EGL_EXT_platform_device"))
+-						THROW("EGL_EXT_platform_device extension not available");
+-
+-					if(!_eglQueryDevicesEXT(0, NULL, &numDevices) || numDevices < 1)
+-						THROW("No EGL devices found");
+-					if((devices =
+-						(EGLDeviceEXT *)malloc(sizeof(EGLDeviceEXT) * numDevices)) == NULL)
+-						THROW("Memory allocation failure");
+-					if(!_eglQueryDevicesEXT(numDevices, devices, &numDevices)
+-						|| numDevices < 1)
+-						THROW("Could not query EGL devices");
+-					for(i = 0; i < numDevices; i++)
++					const char *exts = NULL;
++
++					if(fconfig.verbose)
++						vglout.println("[VGL] Opening KGSL surfaceless EGL display");
++
++					if(!(dpy3D =
++						(Display *)_eglGetPlatformDisplayEXT((EGLenum)0x31DD,
++							EGL_DEFAULT_DISPLAY, NULL)))
++						THROW("Could not open KGSL surfaceless EGL display");
++					if(!_eglInitialize((EGLDisplay)dpy3D, &eglMajor, &eglMinor))
++						THROW("Could not initialize KGSL surfaceless EGL");
++					if(!(exts = _eglQueryString((EGLDisplay)dpy3D, EGL_EXTENSIONS)))
++						THROW("Could not query KGSL EGL extensions");
++					if(!strstr(exts, "EGL_KHR_no_config_context"))
++						THROW("EGL_KHR_no_config_context extension not available");
++					if(!strstr(exts, "EGL_KHR_surfaceless_context"))
++						THROW("EGL_KHR_surfaceless_context extension not available");
++				}
++				else
++				{
++					int numDevices = 0, i, validDevices = 0;
++					const char *exts = NULL;
++					EGLDeviceEXT *devices = NULL;
++
++					if(fconfig.verbose)
++						vglout.println("[VGL] Opening EGL device %s",
++							strlen(fconfig.localdpystring) > 0 ?
++							fconfig.localdpystring : "(default)");
++
++					try
+ 					{
+-						EGLDisplay edpy =
+-							_eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, devices[i],
+-								NULL);
+-						if(!edpy || !_eglInitialize(edpy, &eglMajor, &eglMinor))
+-							continue;
+-						_eglTerminate(edpy);
+-						if(!strcasecmp(fconfig.localdpystring, "egl"))
+-							break;
+-						if(!strncasecmp(fconfig.localdpystring, "egl", 3))
++						if(!(exts = _eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS)))
++							THROW("Could not query EGL extensions");
++						if(!strstr(exts, "EGL_EXT_platform_device"))
++							THROW("EGL_EXT_platform_device extension not available");
++
++						if(!_eglQueryDevicesEXT(0, NULL, &numDevices) || numDevices < 1)
++							THROW("No EGL devices found");
++						if((devices =
++							(EGLDeviceEXT *)malloc(sizeof(EGLDeviceEXT) * numDevices)) == NULL)
++							THROW("Memory allocation failure");
++						if(!_eglQueryDevicesEXT(numDevices, devices, &numDevices)
++							|| numDevices < 1)
++							THROW("Could not query EGL devices");
++						for(i = 0; i < numDevices; i++)
+ 						{
+-							char temps[80];
+-
+-							snprintf(temps, 80, "egl%d", validDevices);
+-							if(!strcasecmp(fconfig.localdpystring, temps))
++							EGLDisplay edpy =
++								_eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT, devices[i],
++									NULL);
++							if(!edpy || !_eglInitialize(edpy, &eglMajor, &eglMinor))
++								continue;
++							_eglTerminate(edpy);
++							if(!strcasecmp(fconfig.localdpystring, "egl"))
+ 								break;
++							if(!strncasecmp(fconfig.localdpystring, "egl", 3))
++							{
++								char temps[80];
++
++								snprintf(temps, 80, "egl%d", validDevices);
++								if(!strcasecmp(fconfig.localdpystring, temps))
++									break;
++							}
++							const char *devStr =
++								_eglQueryDeviceStringEXT(devices[i], EGL_DRM_DEVICE_FILE_EXT);
++							if(devStr && !strcmp(devStr, fconfig.localdpystring))
++								break;
++							validDevices++;
+ 						}
+-						const char *devStr =
+-							_eglQueryDeviceStringEXT(devices[i], EGL_DRM_DEVICE_FILE_EXT);
+-						if(devStr && !strcmp(devStr, fconfig.localdpystring))
+-							break;
+-						validDevices++;
+-					}
+-					if(i == numDevices) THROW("Invalid EGL device");
+-
+-					if(!(dpy3D =
+-						(Display *)_eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT,
+-							devices[i], NULL)))
+-						THROW("Could not open EGL display");
+-					free(devices);  devices = NULL;
+-					if(!_eglInitialize((EGLDisplay)dpy3D, &eglMajor, &eglMinor))
+-						THROW("Could not initialize EGL");
+-					if(!(exts = _eglQueryString((EGLDisplay)dpy3D, EGL_EXTENSIONS)))
+-						THROW("Could not query EGL extensions");
+-					if(!strstr(exts, "EGL_KHR_no_config_context"))
+-						THROW("EGL_KHR_no_config_context extension not available");
+-					if(!strstr(exts, "EGL_KHR_surfaceless_context"))
+-						THROW("EGL_KHR_surfaceless_context extension not available");
+-				}
+-				catch(...)
+-				{
+-					if(devices) free(devices);
+-					throw;
++
++						if(i == numDevices) THROW("Invalid EGL device");
++
++						if(!(dpy3D =
++							(Display *)_eglGetPlatformDisplayEXT(EGL_PLATFORM_DEVICE_EXT,
++								devices[i], NULL)))
++							THROW("Could not open EGL display");
++						free(devices);  devices = NULL;
++						if(!_eglInitialize((EGLDisplay)dpy3D, &eglMajor, &eglMinor))
++							THROW("Could not initialize EGL");
++						if(!(exts = _eglQueryString((EGLDisplay)dpy3D, EGL_EXTENSIONS)))
++							THROW("Could not query EGL extensions");
++						if(!strstr(exts, "EGL_KHR_no_config_context"))
++							THROW("EGL_KHR_no_config_context extension not available");
++						if(!strstr(exts, "EGL_KHR_surfaceless_context"))
++							THROW("EGL_KHR_surfaceless_context extension not available");
++					}
++					catch(...)
++					{
++						if(devices) free(devices);
++						throw;
++					}
+ 				}
+ 			}
