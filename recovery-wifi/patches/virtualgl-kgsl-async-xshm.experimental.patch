@@ -1,0 +1,434 @@
+From: RCTools GPU audit
+Subject: [PATCH EXPERIMENTAL] X11: pipeline two MIT-SHM frames with completion events
+
+Base: VirtualGL/virtualgl 2473cf39bdbe88ca41ecd58ac4007385c9682a9f
+
+The Channel V5 proof bridge validated this presentation model on TigerVNC:
+two MIT-SHM buffers in flight, XShmPutImage(..., True), ShmCompletion-driven
+reuse, and no per-frame XSync.
+
+Add the same mechanism behind VGL_KGSL_ASYNC_XSHM=1.  It is accepted only when
+VGL_DISPLAY=eglkgsl and VirtualGL is not in synchronous transport mode.
+The normal X11 transport remains unchanged otherwise.
+
+This patch is source-build validation only until real-device A/B testing
+confirms image ordering, resize behavior, stability, and performance.
+
+diff --git a/include/fbx.h b/include/fbx.h
+--- a/include/fbx.h
++++ b/include/fbx.h
+@@ -177,6 +177,17 @@
+ #else
+ int fbx_awrite(fbx_struct *fb, int srcX, int srcY, int dstX, int dstY,
+ 	int width, int height);
++
++/*
++  fbx_awrite_event()/fbx_wait_shm
++
++  MIT-SHM-only asynchronous write with an explicit ShmCompletion event.
++  This is intended for callers that maintain multiple independent buffers and
++  must know exactly when the X server is finished reading a shared segment.
++*/
++int fbx_awrite_event(fbx_struct *fb, int srcX, int srcY, int dstX, int dstY,
++	int width, int height);
++int fbx_wait_shm(fbx_struct *fb);
+ #endif
+ 
+ 
+diff --git a/util/fbx.c b/util/fbx.c
+--- a/util/fbx.c
++++ b/util/fbx.c
+@@ -557,47 +557,104 @@
+ 
+ #ifndef _WIN32
+ 
+-int fbx_awrite(fbx_struct *fb, int srcX_, int srcY_, int dstX_, int dstY_,
+-	int width_, int height_)
+-{
+-	int srcX, srcY, dstX, dstY, width, height;
+-
+-	if(!fb) THROW("Invalid argument");
+-
+-	srcX = srcX_ >= 0 ? srcX_ : 0;  srcY = srcY_ >= 0 ? srcY_ : 0;
+-	dstX = dstX_ >= 0 ? dstX_ : 0;  dstY = dstY_ >= 0 ? dstY_ : 0;
+-	width = width_ > 0 ? width_ : fb->width;
+-	height = height_ > 0 ? height_ : fb->height;
+-
+-	if(width > fb->width) width = fb->width;
+-	if(height > fb->height) height = fb->height;
+-	if(srcX + width > fb->width) width = fb->width - srcX;
+-	if(srcY + height > fb->height) height = fb->height - srcY;
+-	if(!fb->wh.dpy || !fb->wh.d || !fb->xi || !fb->bits)
+-		THROW("Not initialized");
+-
+-	#ifdef USESHM
+-	if(fb->shm)
+-	{
+-		if(!fb->xattach)
+-		{
+-			TRY_X11(XShmAttach(fb->wh.dpy, &fb->shminfo));  fb->xattach = 1;
+-		}
+-		TRY_X11(XShmPutImage(fb->wh.dpy, fb->wh.d, fb->xgc, fb->xi, srcX, srcY,
+-			dstX, dstY, width, height, False));
+-	}
+-	else
+-	#endif
+-	{
+-		Drawable draw = fb->pixmap ? fb->wh.d : fb->pm;
+-		if(draw == fb->pm) dstX = dstY = 0;
+-		XPutImage(fb->wh.dpy, draw, fb->xgc, fb->xi, srcX, srcY, dstX, dstY, width,
+-			height);
+-	}
+-	return 0;
+-
+-	finally:
+-	return -1;
++static int
++fbx_awrite_impl(fbx_struct *fb, int srcX_, int srcY_, int dstX_, int dstY_,
++	int width_, int height_, int sendShmCompletion)
++{
++	int srcX, srcY, dstX, dstY, width, height;
++
++	if(!fb) THROW("Invalid argument");
++
++	srcX = srcX_ >= 0 ? srcX_ : 0;  srcY = srcY_ >= 0 ? srcY_ : 0;
++	dstX = dstX_ >= 0 ? dstX_ : 0;  dstY = dstY_ >= 0 ? dstY_ : 0;
++	width = width_ > 0 ? width_ : fb->width;
++	height = height_ > 0 ? height_ : fb->height;
++
++	if(width > fb->width) width = fb->width;
++	if(height > fb->height) height = fb->height;
++	if(srcX + width > fb->width) width = fb->width - srcX;
++	if(srcY + height > fb->height) height = fb->height - srcY;
++	if(!fb->wh.dpy || !fb->wh.d || !fb->xi || !fb->bits)
++		THROW("Not initialized");
++
++	#ifdef USESHM
++	if(fb->shm)
++	{
++		if(!fb->xattach)
++		{
++			TRY_X11(XShmAttach(fb->wh.dpy, &fb->shminfo));  fb->xattach = 1;
++		}
++		TRY_X11(XShmPutImage(fb->wh.dpy, fb->wh.d, fb->xgc, fb->xi, srcX, srcY,
++			dstX, dstY, width, height, sendShmCompletion ? True : False));
++		if(sendShmCompletion)
++			XFlush(fb->wh.dpy);
++	}
++	else
++	#endif
++	{
++		Drawable draw = fb->pixmap ? fb->wh.d : fb->pm;
++		if(draw == fb->pm) dstX = dstY = 0;
++		XPutImage(fb->wh.dpy, draw, fb->xgc, fb->xi, srcX, srcY, dstX, dstY, width,
++			height);
++	}
++	return 0;
++
++	finally:
++	return -1;
++}
++
++
++int fbx_awrite(fbx_struct *fb, int srcX, int srcY, int dstX, int dstY,
++	int width, int height)
++{
++	return fbx_awrite_impl(fb, srcX, srcY, dstX, dstY, width, height, 0);
++}
++
++
++int fbx_awrite_event(fbx_struct *fb, int srcX, int srcY, int dstX, int dstY,
++	int width, int height)
++{
++	if(!fb || !fb->shm || fb->pm)
++		THROW("MIT-SHM image is required");
++
++	return fbx_awrite_impl(fb, srcX, srcY, dstX, dstY, width, height, 1);
++
++	finally:
++	return -1;
++}
++
++
++#ifdef USESHM
++static Bool
++fbx_shm_completion(Display *dpy, XEvent *event, XPointer arg)
++{
++	fbx_struct *fb = (fbx_struct *)arg;
++	if(!fb || event->type != XShmGetEventBase(dpy) + ShmCompletion)
++		return False;
++
++	XShmCompletionEvent *completion = (XShmCompletionEvent *)event;
++	return completion->shmseg == fb->shminfo.shmseg ? True : False;
++}
++#endif
++
++
++int fbx_wait_shm(fbx_struct *fb)
++{
++	#ifdef USESHM
++	XEvent event;
++
++	if(!fb || !fb->wh.dpy || !fb->shm || fb->pm)
++		THROW("MIT-SHM image is required");
++
++	XIfEvent(fb->wh.dpy, &event, fbx_shm_completion, (XPointer)fb);
++	return 0;
++
++	finally:
++	return -1;
++	#else
++	(void)fb;
++	return -1;
++	#endif
+ }
+ 
+ #endif
+diff --git a/common/Frame.h b/common/Frame.h
+--- a/common/Frame.h
++++ b/common/Frame.h
+@@ -119,6 +119,8 @@
+ 			void init(rrframeheader &h);
+ 			FBXFrame &operator= (CompressedFrame &cf);
+ 			void redraw(void);
++			bool redrawAsync(void);
++			void syncAsync(void);
+ 
+ 		private:
+ 
+diff --git a/common/Frame.cpp b/common/Frame.cpp
+--- a/common/Frame.cpp
++++ b/common/Frame.cpp
+@@ -672,6 +672,33 @@
+ }
+ 
+ 
++bool FBXFrame::redrawAsync(void)
++{
++	#ifdef _WIN32
++	redraw();
++	return false;
++	#else
++	if(!fb.shm || fb.pm)
++	{
++		redraw();
++		return false;
++	}
++
++	if(flags & FRAME_BOTTOMUP) TRY_FBX(fbx_flip(&fb, 0, 0, 0, 0));
++	TRY_FBX(fbx_awrite_event(&fb, 0, 0, 0, 0, fb.width, fb.height));
++	return true;
++	#endif
++}
++
++
++void FBXFrame::syncAsync(void)
++{
++	#ifndef _WIN32
++	TRY_FBX(fbx_wait_shm(&fb));
++	#endif
++}
++
++
+ #ifdef USEXV
+ 
+ // Frame created using X Video
+diff --git a/server/X11Trans.h b/server/X11Trans.h
+--- a/server/X11Trans.h
++++ b/server/X11Trans.h
+@@ -50,6 +50,7 @@
+ 		private:
+ 
+ 			int nFrames;
++			bool kgslAsyncXShm;
+ 			util::CriticalSection mutex;
+ 			common::FBXFrame *frames[3];
+ 			util::Event ready;
+diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
+--- a/server/X11Trans.cpp
++++ b/server/X11Trans.cpp
+@@ -31,75 +31,115 @@
+ 
+ X11Trans::X11Trans(void) : thread(NULL), deadYet(false)
+ {
+-	if(fconfig.sync) nFrames = 1;
+-	else nFrames = 3;
+-	for(int i = 0; i < nFrames; i++) frames[i] = NULL;
+-	thread = new Thread(this);
+-	thread->start();
+-	profBlit.setName("Blit      ");
+-	profTotal.setName("Total     ");
+-	if(fconfig.verbose) fbx_printwarnings(vglout.getFile());
+-	#ifdef USEHELGRIND
+-	ANNOTATE_BENIGN_RACE_SIZED(&deadYet, sizeof(bool), );
+-	// NOTE: Without this line, helgrind reports a data race on the class
+-	// instance address in the destructor (false positive?)
+-	ANNOTATE_BENIGN_RACE_SIZED(this, sizeof(X11Trans *), );
+-	#endif
+-}
+-
+-
+-void X11Trans::run(void)
+-{
+-	Timer timer, sleepTimer;  double err = 0.;  bool first = true;
+-
+-	try
+-	{
+-		_vgl_disableFaker();
+-
+-		while(!deadYet)
+-		{
+-			FBXFrame *f;  void *ftemp = NULL;
+-
+-			q.get(&ftemp);  f = (FBXFrame *)ftemp;  if(deadYet) return;
+-			if(!f) THROW("Queue has been shut down");
+-			ready.signal();
+-			profBlit.startFrame();
+-			f->redraw();
+-			profBlit.endFrame(f->hdr.width * f->hdr.height, 0, 1);
+-
+-			profTotal.endFrame(f->hdr.width * f->hdr.height, 0, 1);
+-			profTotal.startFrame();
+-
+-			if(fconfig.flushdelay > 0.)
+-			{
+-				long usec = (long)(fconfig.flushdelay * 1000000.);
+-				if(usec > 0) usleep(usec);
+-			}
+-			if(fconfig.fps > 0.)
+-			{
+-				double elapsed = timer.elapsed();
+-				if(first) first = false;
+-				else
+-				{
+-					if(elapsed < 1. / fconfig.fps)
+-					{
+-						sleepTimer.start();
+-						long usec = (long)((1. / fconfig.fps - elapsed - err) * 1000000.);
+-						if(usec > 0) usleep(usec);
+-						double sleepTime = sleepTimer.elapsed();
+-						err = sleepTime - (1. / fconfig.fps - elapsed - err);
+-						if(err < 0.) err = 0.;
+-					}
+-				}
+-				timer.start();
+-			}
+-
+-			f->signalComplete();
+-		}
+-
+-	}
+-	catch(std::exception &e)
+-	{
++	kgslAsyncXShm = false;
++	const char *asyncEnv = getenv("VGL_KGSL_ASYNC_XSHM");
++	const char *displayEnv = getenv("VGL_DISPLAY");
++	if(!fconfig.sync && asyncEnv && !strcmp(asyncEnv, "1")
++		&& displayEnv && !strcasecmp(displayEnv, "eglkgsl"))
++		kgslAsyncXShm = true;
++
++	if(fconfig.sync) nFrames = 1;
++	else nFrames = 3;
++	for(int i = 0; i < nFrames; i++) frames[i] = NULL;
++	thread = new Thread(this);
++	thread->start();
++	profBlit.setName("Blit      ");
++	profTotal.setName("Total     ");
++	if(fconfig.verbose) fbx_printwarnings(vglout.getFile());
++	#ifdef USEHELGRIND
++	ANNOTATE_BENIGN_RACE_SIZED(&deadYet, sizeof(bool), );
++	// NOTE: Without this line, helgrind reports a data race on the class
++	// instance address in the destructor (false positive?)
++	ANNOTATE_BENIGN_RACE_SIZED(this, sizeof(X11Trans *), );
++	#endif
++}
++
++
++void X11Trans::run(void)
++{
++	Timer timer, sleepTimer;  double err = 0.;  bool first = true;
++	FBXFrame *pending[2] = { NULL, NULL };
++	int nPending = 0;
++
++	try
++	{
++		_vgl_disableFaker();
++
++		while(!deadYet)
++		{
++			FBXFrame *f;  void *ftemp = NULL;
++
++			q.get(&ftemp);
++			if(deadYet) break;
++			f = (FBXFrame *)ftemp;
++			if(!f) THROW("Queue has been shut down");
++			ready.signal();
++
++			profBlit.startFrame();
++			bool async = kgslAsyncXShm && f->redrawAsync();
++			if(!async)
++				f->redraw();
++			profBlit.endFrame(f->hdr.width * f->hdr.height, 0, 1);
++
++			profTotal.endFrame(f->hdr.width * f->hdr.height, 0, 1);
++			profTotal.startFrame();
++
++			if(fconfig.flushdelay > 0.)
++			{
++				long usec = (long)(fconfig.flushdelay * 1000000.);
++				if(usec > 0) usleep(usec);
++			}
++			if(fconfig.fps > 0.)
++			{
++				double elapsed = timer.elapsed();
++				if(first) first = false;
++				else
++				{
++					if(elapsed < 1. / fconfig.fps)
++					{
++						sleepTimer.start();
++						long usec = (long)((1. / fconfig.fps - elapsed - err) * 1000000.);
++						if(usec > 0) usleep(usec);
++						double sleepTime = sleepTimer.elapsed();
++						err = sleepTime - (1. / fconfig.fps - elapsed - err);
++						if(err < 0.) err = 0.;
++					}
++				}
++				timer.start();
++			}
++
++			if(async)
++			{
++				pending[nPending++] = f;
++
++				/* Match the proven two-buffer Channel bridge: keep two shared
++				 * images in flight, then wait only for the oldest completion.
++				 */
++				if(nPending == 2)
++				{
++					pending[0]->syncAsync();
++					pending[0]->signalComplete();
++					pending[0] = pending[1];
++					pending[1] = NULL;
++					nPending = 1;
++				}
++			}
++			else
++				f->signalComplete();
++		}
++
++		for(int i = 0; i < nPending; i++)
++		{
++			pending[i]->syncAsync();
++			pending[i]->signalComplete();
++			pending[i] = NULL;
++		}
++		nPending = 0;
++	}
++	catch(std::exception &e)
++	{
++		for(int i = 0; i < nPending; i++)
++			if(pending[i]) pending[i]->signalComplete();
+ 		if(thread) thread->setError(e);
+ 		ready.signal();
+ 		_vgl_enableFaker();
