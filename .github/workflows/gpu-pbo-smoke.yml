@@ -59,7 +59,7 @@ jobs:
 
           echo "VGL_D_PREFIX=$PREFIX" >> "$GITHUB_ENV"
 
-      - name: Run surfaceless-to-X11 smoke
+      - name: Run surfaceless-to-X11 C-vs-D smoke
         shell: bash
         run: |
           set -euo pipefail
@@ -84,65 +84,111 @@ jobs:
 
           DISPLAY=:98 xdpyinfo | grep -Fq 'MIT-SHM'
 
-          # The Xvfb GLX context and VirtualGL's surfaceless EGL readback
-          # context use the same runner Mesa implementation.  This probe tells
-          # us whether the runner can exercise the pack-invert/PBO gate.
           pack_invert=0
           if DISPLAY=:98 glxinfo 2>/dev/null | grep -Fq 'GL_MESA_pack_invert'; then
             pack_invert=1
           fi
           echo "RUNNER_PACK_INVERT=$pack_invert"
 
-          log="$RUNNER_TEMP/vgl-pbo-smoke.log"
-          set +e
-          env \
-            DISPLAY=:98 \
-            VGL_DISPLAY=eglkgsl \
-            VGL_FORCEALPHA=1 \
-            VGL_READBACK=sync \
-            VGL_KGSL_ASYNC_XSHM=1 \
-            VGL_KGSL_PBO_PIPELINE=1 \
-            VGL_VERBOSE=1 \
-            timeout --signal=INT 10s \
-              "$VGL_D_PREFIX/bin/vglrun" -d eglkgsl +v \
-              "$VGL_D_PREFIX/bin/glxspheres64" \
-              >"$log" 2>&1
-          rc=$?
-          set -e
+          run_case() {
+            name="$1"
+            pbo="$2"
+            log="$RUNNER_TEMP/vgl-$name-smoke.log"
 
-          case "$rc" in
-            0|124|130) ;;
-            *)
-              echo "VirtualGL smoke failed rc=$rc"
-              cat "$log"
-              exit "$rc"
-              ;;
-          esac
+            set +e
+            env \
+              DISPLAY=:98 \
+              VGL_DISPLAY=eglkgsl \
+              VGL_FORCEALPHA=1 \
+              VGL_READBACK=sync \
+              VGL_KGSL_ASYNC_XSHM=1 \
+              VGL_KGSL_PBO_PIPELINE="$pbo" \
+              VGL_VERBOSE=1 \
+              timeout --signal=INT 12s \
+                stdbuf -oL -eL \
+                "$VGL_D_PREFIX/bin/vglrun" -d eglkgsl +v \
+                "$VGL_D_PREFIX/bin/glxspheres64" \
+                >"$log" 2>&1
+            rc=$?
+            set -e
 
-          grep -Fq 'Opening KGSL surfaceless EGL display' "$log"
-          grep -Eq 'OpenGL Renderer:|Renderer:' "$log"
+            case "$rc" in
+              0|124|130) ;;
+              *)
+                echo "VirtualGL $name smoke failed rc=$rc"
+                cat "$log"
+                exit "$rc"
+                ;;
+            esac
+
+            grep -Fq 'Opening KGSL surfaceless EGL display' "$log"
+            grep -Eq 'OpenGL Renderer:|Renderer:' "$log"
+            grep -Fq '[VGL] KGSL async MIT-SHM presentation active' "$log"
+
+            if [ "$pbo" -eq 1 ] && [ "$pack_invert" -eq 1 ]; then
+              grep -Fq '[VGL] KGSL two-PBO readback pipeline active' "$log"
+            else
+              if grep -Fq '[VGL] KGSL two-PBO readback pipeline active' "$log"; then
+                echo "two-PBO marker leaked into $name"
+                cat "$log"
+                exit 1
+              fi
+            fi
+
+            awk '/frames\/sec/ {sum += $1; n++}
+                 END {
+                   if(n) printf "%.3f\n", sum / n;
+                   else print "n/a";
+                 }' "$log" >"$RUNNER_TEMP/vgl-$name-fps.txt"
+          }
+
+          # C-like control: same binary, PBO gate disabled.
+          run_case c-like 0
+
+          # D: identical environment except the two-PBO gate.
+          run_case d-pbo 1
+
+          c_fps="$(cat "$RUNNER_TEMP/vgl-c-like-fps.txt")"
+          d_fps="$(cat "$RUNNER_TEMP/vgl-d-pbo-fps.txt")"
 
           if [ "$pack_invert" -eq 1 ]; then
-            grep -Fq '[VGL] KGSL two-PBO readback pipeline active' "$log"
             echo 'PBO_RUNTIME_SMOKE=PASS'
           else
             echo 'PBO_RUNTIME_SMOKE=SKIP_NO_GL_MESA_pack_invert'
           fi
 
-          echo '=== VirtualGL D smoke ==='
+          echo "C_LIKE_AVG_FPS=$c_fps"
+          echo "D_PBO_AVG_FPS=$d_fps"
+
+          echo '=== C-like smoke (PBO gate off) ==='
           grep -E \
             'Opening KGSL|OpenGL Renderer|Renderer:|KGSL async MIT-SHM|KGSL two-PBO|frames/sec|Mpixels/sec|PBO' \
-            "$log" || true
+            "$RUNNER_TEMP/vgl-c-like-smoke.log" || true
+
+          echo '=== D smoke (two-PBO gate on) ==='
+          grep -E \
+            'Opening KGSL|OpenGL Renderer|Renderer:|KGSL async MIT-SHM|KGSL two-PBO|frames/sec|Mpixels/sec|PBO' \
+            "$RUNNER_TEMP/vgl-d-pbo-smoke.log" || true
 
           {
-            echo '### VirtualGL D surfaceless/X11 smoke'
+            echo '### VirtualGL C-like vs D surfaceless/X11 smoke'
             echo
             echo "Runner GL_MESA_pack_invert: $pack_invert"
+            echo "C-like average reported FPS: $c_fps"
+            echo "D two-PBO average reported FPS: $d_fps"
             echo
+            echo 'C-like (PBO gate disabled):'
             echo '~~~text'
             grep -E \
               'Opening KGSL|OpenGL Renderer|Renderer:|KGSL async MIT-SHM|KGSL two-PBO|frames/sec|Mpixels/sec|PBO' \
-              "$log" || true
+              "$RUNNER_TEMP/vgl-c-like-smoke.log" || true
+            echo '~~~'
+            echo
+            echo 'D (PBO gate enabled):'
+            echo '~~~text'
+            grep -E \
+              'Opening KGSL|OpenGL Renderer|Renderer:|KGSL async MIT-SHM|KGSL two-PBO|frames/sec|Mpixels/sec|PBO' \
+              "$RUNNER_TEMP/vgl-d-pbo-smoke.log" || true
             echo '~~~'
             echo
             if [ "$pack_invert" -eq 1 ]; then
@@ -151,5 +197,5 @@ jobs:
               echo 'two-PBO runtime gate: not exercised because runner Mesa lacks GL_MESA_pack_invert'
             fi
             echo
-            echo 'This is a software-Mesa CI smoke, not FD506/Channel validation.'
+            echo 'These numbers are a software-Mesa CI sanity check, not FD506/Channel performance.'
           } >> "$GITHUB_STEP_SUMMARY"
