@@ -13,7 +13,7 @@ BUILD="${MESA_BUILD:-/tmp/mesa-kgsl-channel-build}"
 STAGE="${MESA_STAGE:-/tmp/mesa-kgsl-channel-stage}"
 OUT="${MESA_OUT:-$ROOT/recovery-wifi/out/mesa-kgsl-channel}"
 
-for cmd in git meson ninja tar sha256sum; do
+for cmd in git meson ninja tar sha256sum readelf; do
   command -v "$cmd" >/dev/null 2>&1 || {
     echo "Missing required command: $cmd" >&2
     exit 1
@@ -92,10 +92,29 @@ glx=dri
 buildtype=release
 EOF
 
+needed_file="$buildinfo_dir/mesa-channel-kgsl.needed"
+: >"$needed_file"
+while IFS= read -r elf; do
+  rel="${elf#"$STAGE"}"
+  printf '[%s]\n' "$rel" >>"$needed_file"
+  readelf -d "$elf" 2>/dev/null |
+    sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p' |
+    sort -u >>"$needed_file"
+  printf '\n' >>"$needed_file"
+done < <(
+  {
+    find "$STAGE/usr/lib" -type f -name 'kgsl_dri.so' -print
+    find "$STAGE/usr/lib" -type f -name 'libgallium-*.so' -print
+    find "$STAGE/usr/lib" -type f -name 'libEGL_mesa.so.*' -print
+    find "$STAGE/usr/lib" -type f -name 'libGLX_mesa.so.*' -print
+  } | sort -u
+)
+
 name="mesa_${version}-channel-kgsl_${arch_tag}.tar.gz"
 tar -zcf "$OUT/$name" -C "$STAGE" .
 sha256sum "$OUT/$name" > "$OUT/$name.sha256"
 cp "$buildinfo_dir/mesa-channel-kgsl.buildinfo" "$OUT/$name.buildinfo"
+cp "$needed_file" "$OUT/$name.needed"
 
 echo "Mesa Channel KGSL build OK"
 echo "source_commit=$MESA_COMMIT"
