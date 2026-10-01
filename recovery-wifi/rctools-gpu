@@ -708,7 +708,7 @@ sanitize_legacy_gpu_profile() {
         probe=$0
         sub(/^[[:space:]]*export[[:space:]]+/, "", probe)
       }
-      probe ~ /^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|FD_FORCE_KGSL|FD_KGSL_ENABLE_DMABUF|XWAYLAND_FORCE_KGSL_SURFACELESS|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|VGL_KGSL_ASYNC_XSHM)=/ {next}
+      probe ~ /^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|FD_FORCE_KGSL|FD_KGSL_ENABLE_DMABUF|XWAYLAND_FORCE_KGSL_SURFACELESS|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|VGL_KGSL_ASYNC_XSHM|VGL_KGSL_PBO_PIPELINE)=/ {next}
       probe ~ /^LD_PRELOAD=.*libion-legacy\.so/ {next}
       {print}
     ' "$file" >"$tmp" || return 1
@@ -743,7 +743,7 @@ filter_gpu_env() {
         probe=$0
         sub(/^[[:space:]]*export[[:space:]]+/, "", probe)
       }
-      probe ~ /^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|FD_FORCE_KGSL|FD_KGSL_ENABLE_DMABUF|XWAYLAND_FORCE_KGSL_SURFACELESS|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|VGL_KGSL_ASYNC_XSHM|LIBGL_DEBUG|MESA_DEBUG)=/ {next}
+      probe ~ /^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|FD_FORCE_KGSL|FD_KGSL_ENABLE_DMABUF|XWAYLAND_FORCE_KGSL_SURFACELESS|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|VGL_KGSL_ASYNC_XSHM|VGL_KGSL_PBO_PIPELINE|LIBGL_DEBUG|MESA_DEBUG)=/ {next}
       probe ~ /^LD_PRELOAD=.*libion-legacy\.so/ {next}
       {print}
     ' "$file" >"$out"
@@ -958,6 +958,7 @@ direct_runtime() {
     direct_vgl=0
     direct_vgl_pack_invert=0
     direct_vgl_async_xshm=0
+    direct_vgl_pbo_pipeline=0
     if [ -x "$root/opt/VirtualGL-KGSL/bin/vglrun" ] &&
        [ -r "$root/opt/VirtualGL-KGSL/lib/libvglfaker.so" ]; then
         direct_vgl=1
@@ -968,6 +969,8 @@ direct_runtime() {
                 direct_vgl_pack_invert=1
             "$BB" grep -Fqx 'async_xshm=1' "$vgl_buildinfo" 2>/dev/null &&
                 direct_vgl_async_xshm=1
+            "$BB" grep -Fqx 'pbo_pipeline=1' "$vgl_buildinfo" 2>/dev/null &&
+                direct_vgl_pbo_pipeline=1
         fi
     fi
 }
@@ -1051,6 +1054,9 @@ apply_freedreno() {
 
         if [ "$direct_vgl_async_xshm" -eq 1 ]; then
             set -- "$@" 'VGL_KGSL_ASYNC_XSHM=1'
+        fi
+        if [ "$direct_vgl_pbo_pipeline" -eq 1 ]; then
+            set -- "$@" 'VGL_KGSL_PBO_PIPELINE=1'
         fi
 
         apply_profile_files "$cfg" 0 1 0 freedreno "$@" || return 1
@@ -1195,6 +1201,7 @@ container_status() {
                     say 'virtualgl_kgsl=ready'
                     say "virtualgl_pack_invert=$direct_vgl_pack_invert"
                     say "virtualgl_async_xshm=$direct_vgl_async_xshm"
+                    say "virtualgl_pbo_pipeline=$direct_vgl_pbo_pipeline"
                     say 'virtualgl_forcealpha=1'
                     say 'virtualgl_readback=sync'
                 else
@@ -1268,9 +1275,9 @@ test_profile() {
         if (exec 9<>/dev/kgsl-3d0) 2>/dev/null; then echo "KGSL_OPEN=ok"; else echo "KGSL_OPEN=failed"; fi
         if (exec 9<>/dev/ion) 2>/dev/null; then echo "ION_OPEN=ok"; else echo "ION_OPEN=failed"; fi
         echo "=== runtime GPU env file ==="
-        grep -E "^(export )?(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|MESA_LOADER_DRIVER_OVERRIDE|__EGL_VENDOR_LIBRARY_FILENAMES|FD_FORCE_KGSL|FD_KGSL_ENABLE_DMABUF|XWAYLAND_FORCE_KGSL_SURFACELESS|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|VGL_KGSL_ASYNC_XSHM|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|LD_PRELOAD)=" /run/droidspaces.env 2>/dev/null || true
+        grep -E "^(export )?(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|MESA_LOADER_DRIVER_OVERRIDE|__EGL_VENDOR_LIBRARY_FILENAMES|FD_FORCE_KGSL|FD_KGSL_ENABLE_DMABUF|XWAYLAND_FORCE_KGSL_SURFACELESS|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|VGL_KGSL_ASYNC_XSHM|VGL_KGSL_PBO_PIPELINE|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|LD_PRELOAD)=" /run/droidspaces.env 2>/dev/null || true
         echo "=== GPU environment ==="
-        env | grep -E "^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|MESA_LOADER_DRIVER_OVERRIDE|__EGL_VENDOR_LIBRARY_FILENAMES|FD_FORCE_KGSL|FD_KGSL_ENABLE_DMABUF|XWAYLAND_FORCE_KGSL_SURFACELESS|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|VGL_KGSL_ASYNC_XSHM|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|LD_PRELOAD)=" || true
+        env | grep -E "^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|MESA_LOADER_DRIVER_OVERRIDE|__EGL_VENDOR_LIBRARY_FILENAMES|FD_FORCE_KGSL|FD_KGSL_ENABLE_DMABUF|XWAYLAND_FORCE_KGSL_SURFACELESS|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|VGL_KGSL_ASYNC_XSHM|VGL_KGSL_PBO_PIPELINE|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|LD_PRELOAD)=" || true
     ' >"$pre" 2>&1 || {
         err "could not inspect running container"
         "$BB" tail -n 100 "$pre" >&2
