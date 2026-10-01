@@ -849,6 +849,50 @@ apply_profile_files() {
     return 1
 }
 
+disable_profile_files() {
+    cfg="$1"
+    env="$(container_env_file "$cfg")"
+    hw="$(cfg_get "$cfg" enable_hw_access 2>/dev/null)"
+    [ -n "$hw" ] || hw=0
+
+    cfg_bak="/tmp/rctools-gpu-disable-config.bak.$$"
+    env_bak="/tmp/rctools-gpu-disable-env.bak.$$"
+    env_existed=0
+
+    "$BB" cat "$cfg" >"$cfg_bak" 2>/dev/null || {
+        err "could not snapshot container config"
+        "$BB" rm -f "$cfg_bak" "$env_bak"
+        return 1
+    }
+
+    if [ -e "$env" ]; then
+        env_existed=1
+        "$BB" cat "$env" >"$env_bak" 2>/dev/null || {
+            err "could not snapshot GPU environment"
+            "$BB" rm -f "$cfg_bak" "$env_bak"
+            return 1
+        }
+    fi
+
+    if cfg_set_gpu_mode "$cfg" "$hw" 0 0 &&
+       clear_gpu_env "$cfg"; then
+        "$BB" rm -f "$cfg_bak" "$env_bak"
+        return 0
+    fi
+
+    err "GPU disable write failed; restoring previous config and environment"
+    "$BB" cat "$cfg_bak" >"$cfg" 2>/dev/null ||         err "could not restore container config"
+
+    if [ "$env_existed" -eq 1 ]; then
+        "$BB" cat "$env_bak" >"$env" 2>/dev/null ||             err "could not restore GPU environment"
+    else
+        "$BB" rm -f "$env" 2>/dev/null || true
+    fi
+
+    "$BB" rm -f "$cfg_bak" "$env_bak"
+    return 1
+}
+
 clear_gpu_env() {
     cfg="$1"
     env="$(container_env_file "$cfg")"
@@ -1089,10 +1133,9 @@ apply_backend() {
 
 disable_profile() {
     cfg="$1"
+
+    disable_profile_files "$cfg" || return 1
     stop_virgl_for_cfg "$cfg"
-    cfg_set "$cfg" enable_gpu_mode 0 || return 1
-    cfg_set "$cfg" enable_virgl 0 || return 1
-    clear_gpu_env "$cfg" || return 1
     say 'GPU profile disabled; saved backend preserved'
 }
 
