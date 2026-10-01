@@ -939,12 +939,23 @@ direct_runtime() {
     }
 
     direct_ld="$guest_lib"
-    for p in /opt/rctools-gpu/llvm/usr/lib /opt/llvm22-test/usr/lib; do
-        if [ -d "$root$p" ]; then
-            direct_ld="$p:$direct_ld"
-            break
-        fi
-    done
+    direct_runtime_kind=packaged
+    direct_llvm_mode=system
+
+    # The reproducible /opt/rctools-gpu/mesa runtime is built against the
+    # Debian trixie ABI (currently libLLVM.so.19.1) and must resolve that from
+    # the container's normal system libraries.  Do not let an old LLVM test
+    # prefix shadow dependencies of the packaged runtime.
+    if [ "$guest_root" = '/opt/mesa-kgsl-test/usr' ]; then
+        direct_runtime_kind=legacy-test
+        for p in /opt/llvm22-test/usr/lib /opt/rctools-gpu/llvm/usr/lib; do
+            if [ -d "$root$p" ]; then
+                direct_ld="$p:$direct_ld"
+                direct_llvm_mode="$p"
+                break
+            fi
+        done
+    fi
 
     direct_dri="$guest_lib/dri"
     direct_json=
@@ -1206,6 +1217,8 @@ container_status() {
 
             if direct_runtime "$cfg" >/dev/null 2>&1; then
                 say 'freedreno_runtime=ready'
+                say "freedreno_runtime_kind=$direct_runtime_kind"
+                say "freedreno_llvm_mode=$direct_llvm_mode"
                 say 'presentation=EGL surfaceless'
                 env_vgl_display="$(gpu_env_value "$cfg" VGL_DISPLAY 2>/dev/null)"
                 env_vgl_forcealpha="$(gpu_env_value "$cfg" VGL_FORCEALPHA 2>/dev/null)"
