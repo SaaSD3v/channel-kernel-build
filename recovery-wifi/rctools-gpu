@@ -971,6 +971,12 @@ direct_runtime() {
                 direct_vgl_async_xshm=1
             "$BB" grep -Fqx 'pbo_pipeline=1' "$vgl_buildinfo" 2>/dev/null &&
                 direct_vgl_pbo_pipeline=1
+
+            if [ "$direct_vgl_pbo_pipeline" -eq 1 ] &&
+               [ "$direct_vgl_pack_invert" -ne 1 ]; then
+                err "VirtualGL KGSL buildinfo is inconsistent: pbo_pipeline requires pack_invert"
+                return 1
+            fi
         fi
     fi
 }
