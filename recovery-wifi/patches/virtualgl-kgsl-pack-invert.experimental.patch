@@ -1,0 +1,759 @@
+From: RCTools GPU audit
+Subject: [PATCH EXPERIMENTAL] X11: use GL_MESA_pack_invert for eglkgsl readback
+
+Base: VirtualGL/virtualgl 2473cf39bdbe88ca41ecd58ac4007385c9682a9f
+
+For the eglkgsl X11-proxy path only, request top-down pixel packing when the
+OpenGL context exposes GL_MESA_pack_invert.  This avoids the full-frame CPU
+fbx_flip() performed by FBXFrame::redraw().  Mono X11 proxy frames only are
+affected.  Other transports, stereo paths, and drivers retain the existing
+FRAME_BOTTOMUP behavior.  If the extension is unavailable at runtime, the
+code automatically falls back to the original CPU flip.
+
+This patch is source-build validated only.  Real-device visual orientation,
+performance, resize, and gamma-correction tests are required before use.
+
+diff --git a/server/VirtualDrawable.h b/server/VirtualDrawable.h
+--- a/server/VirtualDrawable.h
++++ b/server/VirtualDrawable.h
+@@ -94,8 +94,9 @@
+ 
+ 			void initReadbackContext(void);
+ 			bool checkRenderMode(void);
+-			void readPixels(GLint x, GLint y, GLint width, GLint pitch, GLint height,
+-				GLenum glFormat, PF *pf, GLubyte *bits, GLint readBuf, bool stereo);
++			bool readPixels(GLint x, GLint y, GLint width, GLint pitch, GLint height,
++				GLenum glFormat, PF *pf, GLubyte *bits, GLint readBuf, bool stereo,
++				bool topDown = false);
+ 
+ 			util::CriticalSection mutex;
+ 			Display *dpy;  Drawable x11Draw;
+diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
+--- a/server/VirtualDrawable.cpp
++++ b/server/VirtualDrawable.cpp
+@@ -396,162 +396,184 @@
+ }
+ 
+ 
+-void VirtualDrawable::readPixels(GLint x, GLint y, GLint width, GLint pitch,
+-	GLint height, GLenum glFormat, PF *pf, GLubyte *bits, GLint readBuf,
+-	bool stereo)
+-{
+-	double t0 = 0.0, tRead, tTotal;
+-	GLenum type = GL_UNSIGNED_BYTE;
+-
+-	// Compute OpenGL format from pixel format of frame
+-	if(glFormat == GL_NONE)
+-	{
+-		glFormat = pf_glformat[pf->id];  type = pf_gldatatype[pf->id];
+-	}
+-	if(glFormat == GL_NONE) THROW("Unsupported pixel format");
+-
+-	// Whenever the readback format changes (perhaps due to switching
+-	// compression or transports), then reset the PBO synchronicity detector
+-	int currentFormat =
+-		(glFormat == GL_GREEN || glFormat == GL_BLUE) ? GL_RED : glFormat;
+-	if(lastFormat >= 0 && lastFormat != currentFormat)
+-	{
+-		usePBO = (fconfig.readback == RRREAD_PBO);
+-		numSync = numFrames = 0;
+-		alreadyPrinted = alreadyWarned = false;
+-	}
+-	lastFormat = currentFormat;
+-
+-	if(!checkRenderMode()) return;
+-
+-	initReadbackContext();
+-	TempContext tc(edpy != EGL_NO_DISPLAY ? (Display *)edpy : dpy,
+-		getGLXDrawable(), getGLXDrawable(), ctx, edpy != EGL_NO_DISPLAY);
+-
+-	backend::readBuffer(readBuf);
+-
+-	if(pitch % 8 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 8);
+-	else if(pitch % 4 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 4);
+-	else if(pitch % 2 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 2);
+-	else if(pitch % 1 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 1);
+-
+-	if(usePBO)
+-	{
+-		if(!ext)
+-		{
+-			ext = (const char *)_glGetString(GL_EXTENSIONS);
+-			if(!ext || !strstr(ext, "GL_ARB_pixel_buffer_object"))
+-				THROW("GL_ARB_pixel_buffer_object extension not available");
+-		}
+-		if(!pbo) _glGenBuffers(1, &pbo);
+-		if(!pbo) THROW("Could not generate pixel buffer object");
+-		if(!alreadyPrinted && fconfig.verbose)
+-		{
+-			vglout.println("[VGL] Using pixel buffer objects for readback (%s --> %s)",
+-				formatString(oglDraw->getFormat()), formatString(glFormat));
+-			alreadyPrinted = true;
+-		}
+-		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, pbo);
+-		int size = 0;
+-		_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE, &size);
+-		if(size != pitch * height)
+-			_glBufferData(GL_PIXEL_PACK_BUFFER_EXT, pitch * height, NULL,
+-				GL_STREAM_READ);
+-		_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE, &size);
+-		if(size != pitch * height)
+-			THROW("Could not set PBO size");
+-	}
+-	else
+-	{
+-		if(!alreadyPrinted && fconfig.verbose)
+-		{
+-			vglout.println("[VGL] Using synchronous readback (%s --> %s)",
+-				formatString(oglDraw->getFormat()), formatString(glFormat));
+-			alreadyPrinted = true;
+-		}
+-	}
+-
+-	TRY_GL();
+-	profReadback.startFrame();
+-	if(usePBO) t0 = GetTime();
+-	backend::readPixels(x, y, width, height, glFormat, type,
+-		usePBO ? NULL : bits);
+-
+-	if(usePBO)
+-	{
+-		tRead = GetTime() - t0;
+-		unsigned char *pboBits = NULL;
+-		pboBits = (unsigned char *)_glMapBuffer(GL_PIXEL_PACK_BUFFER_EXT,
+-			GL_READ_ONLY);
+-		if(!pboBits) THROW("Could not map pixel buffer object");
+-		memcpy(bits, pboBits, pitch * height);
+-		if(!_glUnmapBuffer(GL_PIXEL_PACK_BUFFER_EXT))
+-			THROW("Could not unmap pixel buffer object");
+-		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, 0);
+-		tTotal = GetTime() - t0;
+-		numFrames++;
+-		if(tRead / tTotal > 0.5 && numFrames <= 10)
+-		{
+-			numSync++;
+-			if(numSync >= 10 && !alreadyWarned && fconfig.verbose)
+-			{
+-				vglout.println("[VGL] NOTICE: PBO readback is not behaving asynchronously.  Disabling PBOs.");
+-				if(glFormat != oglDraw->getFormat())
+-				{
+-					vglout.println("[VGL]    This could be due to a mismatch between the readback pixel format");
+-					vglout.println("[VGL]    (%s) and the Pbuffer pixel format (%s).",
+-						formatString(glFormat), formatString(oglDraw->getFormat()));
+-					if(((oglDraw->getFormat() == GL_BGRA && glFormat == GL_BGR)
+-						|| (oglDraw->getFormat() == GL_RGBA && glFormat == GL_RGB))
+-						&& fconfig.forcealpha)
+-						vglout.println("[VGL]    Try setting VGL_FORCEALPHA=0.");
+-					else if(((oglDraw->getFormat() == GL_BGR && glFormat == GL_BGRA)
+-						|| (oglDraw->getFormat() == GL_RGB && glFormat == GL_RGBA))
+-						&& !fconfig.forcealpha)
+-						vglout.println("[VGL]    Try setting VGL_FORCEALPHA=1.");
+-				}
+-				alreadyWarned = true;
+-			}
+-		}
+-	}
+-
+-	profReadback.endFrame(width * height, 0, stereo ? 0.5 : 1);
+-	CATCH_GL("Could not read pixels");
+-
+-	// If automatic faker testing is enabled, store the FB color in an
+-	// environment variable so the test program can verify it
+-	if(fconfig.autotest)
+-	{
+-		unsigned char *rowptr, *pixel;  int match = 1;
+-		int color = -1, i, j, k;
+-
+-		color = -1;
+-		if(readBuf != GL_FRONT_RIGHT && readBuf != GL_BACK_RIGHT)
+-			autotestFrameCount++;
+-		for(j = 0, rowptr = bits; j < height && match; j++, rowptr += pitch)
+-			for(i = 1, pixel = &rowptr[pf->size]; i < width && match;
+-				i++, pixel += pf->size)
+-				for(k = 0; k < pf->size; k++)
+-				{
+-					if(pixel[k] != rowptr[k])
+-					{
+-						match = 0;  break;
+-					}
+-				}
+-		if(match)
+-		{
+-			unsigned char rgb[3];
+-			backend::readPixels(0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, rgb);
+-			color = rgb[0] + (rgb[1] << 8) + (rgb[2] << 16);
+-		}
+-		if(readBuf == GL_FRONT_RIGHT || readBuf == GL_BACK_RIGHT)
+-			setAutotestRColor(color);
+-		else
+-			setAutotestColor(color);
+-		setAutotestFrame(autotestFrameCount);
+-		setAutotestDisplay(dpy);
+-		setAutotestDrawable(x11Draw);
+-	}
++bool VirtualDrawable::readPixels(GLint x, GLint y, GLint width, GLint pitch,
++	GLint height, GLenum glFormat, PF *pf, GLubyte *bits, GLint readBuf,
++	bool stereo, bool topDown)
++{
++	double t0 = 0.0, tRead, tTotal;
++	bool packInvert = false;
++	GLint oldPackInvert = 0;
++	GLenum type = GL_UNSIGNED_BYTE;
++
++	// Compute OpenGL format from pixel format of frame
++	if(glFormat == GL_NONE)
++	{
++		glFormat = pf_glformat[pf->id];  type = pf_gldatatype[pf->id];
++	}
++	if(glFormat == GL_NONE) THROW("Unsupported pixel format");
++
++	// Whenever the readback format changes (perhaps due to switching
++	// compression or transports), then reset the PBO synchronicity detector
++	int currentFormat =
++		(glFormat == GL_GREEN || glFormat == GL_BLUE) ? GL_RED : glFormat;
++	if(lastFormat >= 0 && lastFormat != currentFormat)
++	{
++		usePBO = (fconfig.readback == RRREAD_PBO);
++		numSync = numFrames = 0;
++		alreadyPrinted = alreadyWarned = false;
++	}
++	lastFormat = currentFormat;
++
++	if(!checkRenderMode()) return false;
++
++	initReadbackContext();
++	TempContext tc(edpy != EGL_NO_DISPLAY ? (Display *)edpy : dpy,
++		getGLXDrawable(), getGLXDrawable(), ctx, edpy != EGL_NO_DISPLAY);
++
++	backend::readBuffer(readBuf);
++
++	#ifdef GL_PACK_INVERT_MESA
++	if(topDown)
++	{
++		const char *packExt = (const char *)_glGetString(GL_EXTENSIONS);
++		if(packExt && strstr(packExt, "GL_MESA_pack_invert"))
++		{
++			_glGetIntegerv(GL_PACK_INVERT_MESA, &oldPackInvert);
++			_glPixelStorei(GL_PACK_INVERT_MESA, GL_TRUE);
++			packInvert = true;
++		}
++	}
++	#endif
++
++	if(pitch % 8 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 8);
++	else if(pitch % 4 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 4);
++	else if(pitch % 2 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 2);
++	else if(pitch % 1 == 0) _glPixelStorei(GL_PACK_ALIGNMENT, 1);
++
++	if(usePBO)
++	{
++		if(!ext)
++		{
++			ext = (const char *)_glGetString(GL_EXTENSIONS);
++			if(!ext || !strstr(ext, "GL_ARB_pixel_buffer_object"))
++				THROW("GL_ARB_pixel_buffer_object extension not available");
++		}
++		if(!pbo) _glGenBuffers(1, &pbo);
++		if(!pbo) THROW("Could not generate pixel buffer object");
++		if(!alreadyPrinted && fconfig.verbose)
++		{
++			vglout.println("[VGL] Using pixel buffer objects for readback (%s --> %s)",
++				formatString(oglDraw->getFormat()), formatString(glFormat));
++			alreadyPrinted = true;
++		}
++		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, pbo);
++		int size = 0;
++		_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE, &size);
++		if(size != pitch * height)
++			_glBufferData(GL_PIXEL_PACK_BUFFER_EXT, pitch * height, NULL,
++				GL_STREAM_READ);
++		_glGetBufferParameteriv(GL_PIXEL_PACK_BUFFER_EXT, GL_BUFFER_SIZE, &size);
++		if(size != pitch * height)
++			THROW("Could not set PBO size");
++	}
++	else
++	{
++		if(!alreadyPrinted && fconfig.verbose)
++		{
++			vglout.println("[VGL] Using synchronous readback (%s --> %s)",
++				formatString(oglDraw->getFormat()), formatString(glFormat));
++			alreadyPrinted = true;
++		}
++	}
++
++	TRY_GL();
++	profReadback.startFrame();
++	if(usePBO) t0 = GetTime();
++	backend::readPixels(x, y, width, height, glFormat, type,
++		usePBO ? NULL : bits);
++
++	if(usePBO)
++	{
++		tRead = GetTime() - t0;
++		unsigned char *pboBits = NULL;
++		pboBits = (unsigned char *)_glMapBuffer(GL_PIXEL_PACK_BUFFER_EXT,
++			GL_READ_ONLY);
++		if(!pboBits) THROW("Could not map pixel buffer object");
++		memcpy(bits, pboBits, pitch * height);
++		if(!_glUnmapBuffer(GL_PIXEL_PACK_BUFFER_EXT))
++			THROW("Could not unmap pixel buffer object");
++		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, 0);
++		tTotal = GetTime() - t0;
++		numFrames++;
++		if(tRead / tTotal > 0.5 && numFrames <= 10)
++		{
++			numSync++;
++			if(numSync >= 10 && !alreadyWarned && fconfig.verbose)
++			{
++				vglout.println("[VGL] NOTICE: PBO readback is not behaving asynchronously.  Disabling PBOs.");
++				if(glFormat != oglDraw->getFormat())
++				{
++					vglout.println("[VGL]    This could be due to a mismatch between the readback pixel format");
++					vglout.println("[VGL]    (%s) and the Pbuffer pixel format (%s).",
++						formatString(glFormat), formatString(oglDraw->getFormat()));
++					if(((oglDraw->getFormat() == GL_BGRA && glFormat == GL_BGR)
++						|| (oglDraw->getFormat() == GL_RGBA && glFormat == GL_RGB))
++						&& fconfig.forcealpha)
++						vglout.println("[VGL]    Try setting VGL_FORCEALPHA=0.");
++					else if(((oglDraw->getFormat() == GL_BGR && glFormat == GL_BGRA)
++						|| (oglDraw->getFormat() == GL_RGB && glFormat == GL_RGBA))
++						&& !fconfig.forcealpha)
++						vglout.println("[VGL]    Try setting VGL_FORCEALPHA=1.");
++				}
++				alreadyWarned = true;
++			}
++		}
++	}
++
++	#ifdef GL_PACK_INVERT_MESA
++	if(packInvert)
++		_glPixelStorei(GL_PACK_INVERT_MESA, oldPackInvert);
++	#endif
++
++	profReadback.endFrame(width * height, 0, stereo ? 0.5 : 1);
++	CATCH_GL("Could not read pixels");
++
++	// If automatic faker testing is enabled, store the FB color in an
++	// environment variable so the test program can verify it
++	if(fconfig.autotest)
++	{
++		unsigned char *rowptr, *pixel;  int match = 1;
++		int color = -1, i, j, k;
++
++		color = -1;
++		if(readBuf != GL_FRONT_RIGHT && readBuf != GL_BACK_RIGHT)
++			autotestFrameCount++;
++		for(j = 0, rowptr = bits; j < height && match; j++, rowptr += pitch)
++			for(i = 1, pixel = &rowptr[pf->size]; i < width && match;
++				i++, pixel += pf->size)
++				for(k = 0; k < pf->size; k++)
++				{
++					if(pixel[k] != rowptr[k])
++					{
++						match = 0;  break;
++					}
++				}
++		if(match)
++		{
++			unsigned char rgb[3];
++			backend::readPixels(0, 0, 1, 1, GL_RGB, GL_UNSIGNED_BYTE, rgb);
++			color = rgb[0] + (rgb[1] << 8) + (rgb[2] << 16);
++		}
++		if(readBuf == GL_FRONT_RIGHT || readBuf == GL_BACK_RIGHT)
++			setAutotestRColor(color);
++		else
++			setAutotestColor(color);
++		setAutotestFrame(autotestFrameCount);
++		setAutotestDisplay(dpy);
++		setAutotestDrawable(x11Draw);
++	}
++
++	return packInvert;
+ }
+ 
+ 
+diff --git a/server/VirtualWin.h b/server/VirtualWin.h
+--- a/server/VirtualWin.h
++++ b/server/VirtualWin.h
+@@ -53,8 +53,9 @@
+ 		protected:
+ 
+ 			int init(int w, int h, VGLFBConfig config);
+-			void readPixels(GLint x, GLint y, GLint width, GLint pitch, GLint height,
+-				GLenum glFormat, PF *pf, GLubyte *bits, GLint buf, bool stereo);
++			bool readPixels(GLint x, GLint y, GLint width, GLint pitch, GLint height,
++				GLenum glFormat, PF *pf, GLubyte *bits, GLint buf, bool stereo,
++				bool topDown = false);
+ 			void makeAnaglyph(common::Frame *f, int drawBuf, int stereoMode);
+ 			void makePassive(common::Frame *f, int drawBuf, GLenum glFormat,
+ 				int stereoMode);
+diff --git a/server/VirtualWin.cpp b/server/VirtualWin.cpp
+--- a/server/VirtualWin.cpp
++++ b/server/VirtualWin.cpp
+@@ -546,179 +546,193 @@
+ 	if(spoilLast && fconfig.spoil && !x11trans->isReady()) return;
+ 	if(!fconfig.spoil) x11trans->synchronize();
+ 	ERRIFNOT(f = x11trans->getFrame(dpy, x11Draw, width, height));
+-	f->flags |= FRAME_BOTTOMUP;
+-	if(doStereo && IS_ANAGLYPHIC(stereoMode))
+-	{
+-		stereoFrame.deInit();
+-		makeAnaglyph(f, drawBuf, stereoMode);
+-	}
+-	else
+-	{
+-		rFrame.deInit();  gFrame.deInit();  bFrame.deInit();
+-		if(doStereo && IS_PASSIVE(stereoMode))
+-			makePassive(f, drawBuf, GL_NONE, stereoMode);
+-		else
+-		{
+-			stereoFrame.deInit();
+-			GLint readBuf = drawBuf;
+-			if(stereoMode == RRSTEREO_REYE) readBuf = REYE(drawBuf);
+-			else if(stereoMode == RRSTEREO_LEYE) readBuf = LEYE(drawBuf);
+-			readPixels(0, 0, min(width, f->hdr.framew), f->pitch,
+-				min(height, f->hdr.frameh), GL_NONE, f->pf, f->bits, readBuf, false);
+-		}
+-	}
+-	if(fconfig.logo) f->addLogo();
+-	x11trans->sendFrame(f, sync);
+-}
+-
+-
+-#ifdef USEXV
+-
+-void VirtualWin::sendXV(GLint drawBuf, bool spoilLast, bool sync,
+-	bool doStereo, int stereoMode)
+-{
+-	int width = oglDraw->getWidth(), height = oglDraw->getHeight();
+-
+-	XVFrame *f;
+-	if(!xvtrans) xvtrans = new XVTrans();
+-	if(spoilLast && fconfig.spoil && !xvtrans->isReady()) return;
+-	if(!fconfig.spoil) xvtrans->synchronize();
+-	ERRIFNOT(f = xvtrans->getFrame(dpy, x11Draw, width, height));
+-	rrframeheader hdr;
+-	hdr.x = hdr.y = 0;
+-	hdr.width = hdr.framew = width;
+-	hdr.height = hdr.frameh = height;
+-
+-	if(oglDraw->getRGBSize() != 24)
+-		THROW("The XV Transport requires 8 bits per component");
+-	int glFormat = oglDraw->getFormat(), pixelFormat = PF_RGB;
+-	if(glFormat == GL_RGBA) pixelFormat = PF_RGBX;
+-	else if(glFormat == GL_BGR) pixelFormat = PF_BGR;
+-	else if(glFormat == GL_BGRA) pixelFormat = PF_BGRX;
+-
+-	frame.init(hdr, pixelFormat, FRAME_BOTTOMUP, false);
+-
+-	if(doStereo && IS_ANAGLYPHIC(stereoMode))
+-	{
+-		stereoFrame.deInit();
+-		makeAnaglyph(&frame, drawBuf, stereoMode);
+-	}
+-	else if(doStereo && IS_PASSIVE(stereoMode))
+-	{
+-		rFrame.deInit();  gFrame.deInit();  bFrame.deInit();
+-		makePassive(&frame, drawBuf, glFormat, stereoMode);
+-	}
+-	else
+-	{
+-		rFrame.deInit();  gFrame.deInit();  bFrame.deInit();  stereoFrame.deInit();
+-		GLint readBuf = drawBuf;
+-		if(stereoMode == RRSTEREO_REYE) readBuf = REYE(drawBuf);
+-		else if(stereoMode == RRSTEREO_LEYE) readBuf = LEYE(drawBuf);
+-		readPixels(0, 0, min(width, frame.hdr.framew), frame.pitch,
+-			min(height, frame.hdr.frameh), glFormat, frame.pf, frame.bits, readBuf,
+-			false);
+-	}
+-
+-	if(fconfig.logo) frame.addLogo();
+-
+-	*f = frame;
+-	xvtrans->sendFrame(f, sync);
+-}
+-
+-#endif
+-
+-
+-void VirtualWin::makeAnaglyph(Frame *f, int drawBuf, int stereoMode)
+-{
+-	int rbuf = LEYE(drawBuf), gbuf = REYE(drawBuf),  bbuf = REYE(drawBuf);
+-	if(stereoMode == RRSTEREO_GREENMAGENTA)
+-	{
+-		rbuf = REYE(drawBuf);  gbuf = LEYE(drawBuf);  bbuf = REYE(drawBuf);
+-	}
+-	else if(stereoMode == RRSTEREO_BLUEYELLOW)
+-	{
+-		rbuf = REYE(drawBuf);  gbuf = REYE(drawBuf);  bbuf = LEYE(drawBuf);
+-	}
+-	rFrame.init(f->hdr, PF_COMP, f->flags, false);
+-	readPixels(0, 0, rFrame.hdr.framew, rFrame.pitch, rFrame.hdr.frameh, GL_RED,
+-		rFrame.pf, rFrame.bits, rbuf, false);
+-	gFrame.init(f->hdr, PF_COMP, f->flags, false);
+-	readPixels(0, 0, gFrame.hdr.framew, gFrame.pitch, gFrame.hdr.frameh,
+-		GL_GREEN, gFrame.pf, gFrame.bits, gbuf, false);
+-	bFrame.init(f->hdr, PF_COMP, f->flags, false);
+-	readPixels(0, 0, bFrame.hdr.framew, bFrame.pitch, bFrame.hdr.frameh, GL_BLUE,
+-		bFrame.pf, bFrame.bits, bbuf, false);
+-	profAnaglyph.startFrame();
+-	f->makeAnaglyph(rFrame, gFrame, bFrame);
+-	profAnaglyph.endFrame(f->hdr.framew * f->hdr.frameh, 0, 1);
+-}
+-
+-
+-void VirtualWin::makePassive(Frame *f, int drawBuf, GLenum glFormat,
+-	int stereoMode)
+-{
+-	stereoFrame.init(f->hdr, f->pf->id, f->flags, true);
+-	readPixels(0, 0, stereoFrame.hdr.framew, stereoFrame.pitch,
+-		stereoFrame.hdr.frameh, glFormat, stereoFrame.pf, stereoFrame.bits,
+-		LEYE(drawBuf), true);
+-	readPixels(0, 0, stereoFrame.hdr.framew, stereoFrame.pitch,
+-		stereoFrame.hdr.frameh, glFormat, stereoFrame.pf, stereoFrame.rbits,
+-		REYE(drawBuf), true);
+-	profPassive.startFrame();
+-	f->makePassive(stereoFrame, stereoMode);
+-	profPassive.endFrame(f->hdr.framew * f->hdr.frameh, 0, 1);
+-}
+-
+-
+-void VirtualWin::readPixels(GLint x, GLint y, GLint width, GLint pitch,
+-	GLint height, GLenum glFormat, PF *pf, GLubyte *bits, GLint buf, bool stereo)
+-{
+-	VirtualDrawable::readPixels(x, y, width, pitch, height, glFormat, pf, bits,
+-		buf, stereo);
+-
+-	// Gamma correction
+-	if(fconfig.gamma != 0.0 && fconfig.gamma != 1.0 && fconfig.gamma != -1.0)
+-	{
+-		profGamma.startFrame();
+-		static bool first = true;
+-		if(first)
+-		{
+-			first = false;
+-			if(fconfig.verbose)
+-				vglout.println("[VGL] Using software gamma correction (correction factor=%f)\n",
+-					fconfig.gamma);
+-		}
+-		if(pf->bpc == 10)
+-		{
+-			int h = height;
+-			while(h--)
+-			{
+-				int w = width;
+-				unsigned int *srcPixel = (unsigned int *)bits;
+-				while(w--)
+-				{
+-					unsigned int r =
+-						fconfig.gamma_lut10[(*srcPixel >> pf->rshift) & 1023];
+-					unsigned int g =
+-						fconfig.gamma_lut10[(*srcPixel >> pf->gshift) & 1023];
+-					unsigned int b =
+-						fconfig.gamma_lut10[(*srcPixel >> pf->bshift) & 1023];
+-					*srcPixel++ =
+-						(r << pf->rshift) | (g << pf->gshift) | (b << pf->bshift);
+-				}
+-				bits += pitch;
+-			}
+-		}
+-		else
+-		{
+-			unsigned short *ptr1, *ptr2 = (unsigned short *)(&bits[pitch * height]);
+-			for(ptr1 = (unsigned short *)bits; ptr1 < ptr2; ptr1++)
+-				*ptr1 = fconfig.gamma_lut16[*ptr1];
+-			if((pitch * height) % 2 != 0)
+-				bits[pitch * height - 1] = fconfig.gamma_lut[bits[pitch * height - 1]];
+-		}
+-		profGamma.endFrame(width * height, 0, stereo ? 0.5 : 1);
+-	}
++
++	bool tryPackInvert =
++		fconfig.egl && !strcasecmp(fconfig.localdpystring, "eglkgsl")
++		&& !doStereo && !IS_ANAGLYPHIC(stereoMode)
++		&& !IS_PASSIVE(stereoMode);
++	if(!tryPackInvert)
++		f->flags |= FRAME_BOTTOMUP;
++
++	if(doStereo && IS_ANAGLYPHIC(stereoMode))
++	{
++		stereoFrame.deInit();
++		makeAnaglyph(f, drawBuf, stereoMode);
++	}
++	else
++	{
++		rFrame.deInit();  gFrame.deInit();  bFrame.deInit();
++		if(doStereo && IS_PASSIVE(stereoMode))
++			makePassive(f, drawBuf, GL_NONE, stereoMode);
++		else
++		{
++			stereoFrame.deInit();
++			GLint readBuf = drawBuf;
++			if(stereoMode == RRSTEREO_REYE) readBuf = REYE(drawBuf);
++			else if(stereoMode == RRSTEREO_LEYE) readBuf = LEYE(drawBuf);
++			bool packedTopDown =
++				readPixels(0, 0, min(width, f->hdr.framew), f->pitch,
++					min(height, f->hdr.frameh), GL_NONE, f->pf, f->bits, readBuf,
++					false, tryPackInvert);
++			if(tryPackInvert && !packedTopDown)
++				f->flags |= FRAME_BOTTOMUP;
++		}
++	}
++	if(fconfig.logo) f->addLogo();
++	x11trans->sendFrame(f, sync);
++}
++
++
++#ifdef USEXV
++
++void VirtualWin::sendXV(GLint drawBuf, bool spoilLast, bool sync,
++	bool doStereo, int stereoMode)
++{
++	int width = oglDraw->getWidth(), height = oglDraw->getHeight();
++
++	XVFrame *f;
++	if(!xvtrans) xvtrans = new XVTrans();
++	if(spoilLast && fconfig.spoil && !xvtrans->isReady()) return;
++	if(!fconfig.spoil) xvtrans->synchronize();
++	ERRIFNOT(f = xvtrans->getFrame(dpy, x11Draw, width, height));
++	rrframeheader hdr;
++	hdr.x = hdr.y = 0;
++	hdr.width = hdr.framew = width;
++	hdr.height = hdr.frameh = height;
++
++	if(oglDraw->getRGBSize() != 24)
++		THROW("The XV Transport requires 8 bits per component");
++	int glFormat = oglDraw->getFormat(), pixelFormat = PF_RGB;
++	if(glFormat == GL_RGBA) pixelFormat = PF_RGBX;
++	else if(glFormat == GL_BGR) pixelFormat = PF_BGR;
++	else if(glFormat == GL_BGRA) pixelFormat = PF_BGRX;
++
++	frame.init(hdr, pixelFormat, FRAME_BOTTOMUP, false);
++
++	if(doStereo && IS_ANAGLYPHIC(stereoMode))
++	{
++		stereoFrame.deInit();
++		makeAnaglyph(&frame, drawBuf, stereoMode);
++	}
++	else if(doStereo && IS_PASSIVE(stereoMode))
++	{
++		rFrame.deInit();  gFrame.deInit();  bFrame.deInit();
++		makePassive(&frame, drawBuf, glFormat, stereoMode);
++	}
++	else
++	{
++		rFrame.deInit();  gFrame.deInit();  bFrame.deInit();  stereoFrame.deInit();
++		GLint readBuf = drawBuf;
++		if(stereoMode == RRSTEREO_REYE) readBuf = REYE(drawBuf);
++		else if(stereoMode == RRSTEREO_LEYE) readBuf = LEYE(drawBuf);
++		readPixels(0, 0, min(width, frame.hdr.framew), frame.pitch,
++			min(height, frame.hdr.frameh), glFormat, frame.pf, frame.bits, readBuf,
++			false);
++	}
++
++	if(fconfig.logo) frame.addLogo();
++
++	*f = frame;
++	xvtrans->sendFrame(f, sync);
++}
++
++#endif
++
++
++void VirtualWin::makeAnaglyph(Frame *f, int drawBuf, int stereoMode)
++{
++	int rbuf = LEYE(drawBuf), gbuf = REYE(drawBuf),  bbuf = REYE(drawBuf);
++	if(stereoMode == RRSTEREO_GREENMAGENTA)
++	{
++		rbuf = REYE(drawBuf);  gbuf = LEYE(drawBuf);  bbuf = REYE(drawBuf);
++	}
++	else if(stereoMode == RRSTEREO_BLUEYELLOW)
++	{
++		rbuf = REYE(drawBuf);  gbuf = REYE(drawBuf);  bbuf = LEYE(drawBuf);
++	}
++	rFrame.init(f->hdr, PF_COMP, f->flags, false);
++	readPixels(0, 0, rFrame.hdr.framew, rFrame.pitch, rFrame.hdr.frameh, GL_RED,
++		rFrame.pf, rFrame.bits, rbuf, false);
++	gFrame.init(f->hdr, PF_COMP, f->flags, false);
++	readPixels(0, 0, gFrame.hdr.framew, gFrame.pitch, gFrame.hdr.frameh,
++		GL_GREEN, gFrame.pf, gFrame.bits, gbuf, false);
++	bFrame.init(f->hdr, PF_COMP, f->flags, false);
++	readPixels(0, 0, bFrame.hdr.framew, bFrame.pitch, bFrame.hdr.frameh, GL_BLUE,
++		bFrame.pf, bFrame.bits, bbuf, false);
++	profAnaglyph.startFrame();
++	f->makeAnaglyph(rFrame, gFrame, bFrame);
++	profAnaglyph.endFrame(f->hdr.framew * f->hdr.frameh, 0, 1);
++}
++
++
++void VirtualWin::makePassive(Frame *f, int drawBuf, GLenum glFormat,
++	int stereoMode)
++{
++	stereoFrame.init(f->hdr, f->pf->id, f->flags, true);
++	readPixels(0, 0, stereoFrame.hdr.framew, stereoFrame.pitch,
++		stereoFrame.hdr.frameh, glFormat, stereoFrame.pf, stereoFrame.bits,
++		LEYE(drawBuf), true);
++	readPixels(0, 0, stereoFrame.hdr.framew, stereoFrame.pitch,
++		stereoFrame.hdr.frameh, glFormat, stereoFrame.pf, stereoFrame.rbits,
++		REYE(drawBuf), true);
++	profPassive.startFrame();
++	f->makePassive(stereoFrame, stereoMode);
++	profPassive.endFrame(f->hdr.framew * f->hdr.frameh, 0, 1);
++}
++
++
++bool VirtualWin::readPixels(GLint x, GLint y, GLint width, GLint pitch,
++	GLint height, GLenum glFormat, PF *pf, GLubyte *bits, GLint buf, bool stereo,
++	bool topDown)
++{
++	bool packInvert = VirtualDrawable::readPixels(x, y, width, pitch, height,
++		glFormat, pf, bits, buf, stereo, topDown);
++
++	// Gamma correction
++	if(fconfig.gamma != 0.0 && fconfig.gamma != 1.0 && fconfig.gamma != -1.0)
++	{
++		profGamma.startFrame();
++		static bool first = true;
++		if(first)
++		{
++			first = false;
++			if(fconfig.verbose)
++				vglout.println("[VGL] Using software gamma correction (correction factor=%f)\n",
++					fconfig.gamma);
++		}
++		if(pf->bpc == 10)
++		{
++			int h = height;
++			while(h--)
++			{
++				int w = width;
++				unsigned int *srcPixel = (unsigned int *)bits;
++				while(w--)
++				{
++					unsigned int r =
++						fconfig.gamma_lut10[(*srcPixel >> pf->rshift) & 1023];
++					unsigned int g =
++						fconfig.gamma_lut10[(*srcPixel >> pf->gshift) & 1023];
++					unsigned int b =
++						fconfig.gamma_lut10[(*srcPixel >> pf->bshift) & 1023];
++					*srcPixel++ =
++						(r << pf->rshift) | (g << pf->gshift) | (b << pf->bshift);
++				}
++				bits += pitch;
++			}
++		}
++		else
++		{
++			unsigned short *ptr1, *ptr2 = (unsigned short *)(&bits[pitch * height]);
++			for(ptr1 = (unsigned short *)bits; ptr1 < ptr2; ptr1++)
++				*ptr1 = fconfig.gamma_lut16[*ptr1];
++			if((pitch * height) % 2 != 0)
++				bits[pitch * height - 1] = fconfig.gamma_lut[bits[pitch * height - 1]];
++		}
++		profGamma.endFrame(width * height, 0, stereo ? 0.5 : 1);
++	}
++
++	return packInvert;
+ }
+ 
+ 
