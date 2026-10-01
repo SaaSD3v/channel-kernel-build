@@ -25,6 +25,22 @@ done
 
 test -r "$PATCH"
 
+BASE_PATCH_SHA256="$(sha256sum "$PATCH" | awk '{print $1}')"
+PACK_INVERT_PATCH_SHA256=none
+ASYNC_XSHM_PATCH_SHA256=none
+if [[ "$PACK_INVERT" == 1 ]]; then
+  PACK_INVERT_PATCH_SHA256="$(sha256sum "$PACK_INVERT_PATCH" | awk '{print $1}')"
+fi
+if [[ "$ASYNC_XSHM" == 1 ]]; then
+  ASYNC_XSHM_PATCH_SHA256="$(sha256sum "$ASYNC_XSHM_PATCH" | awk '{print $1}')"
+fi
+
+PROJECT_COMMIT="${GITHUB_SHA:-}"
+if [[ -z "$PROJECT_COMMIT" ]] && git -C "$ROOT" rev-parse HEAD >/dev/null 2>&1; then
+  PROJECT_COMMIT="$(git -C "$ROOT" rev-parse HEAD)"
+fi
+[[ -n "$PROJECT_COMMIT" ]] || PROJECT_COMMIT=unknown
+
 rm -rf "$SRC" "$BUILD"
 git init -q "$SRC"
 git -C "$SRC" remote add origin "$VGL_REPO"
@@ -65,10 +81,29 @@ cmake --build "$BUILD" -j"${JOBS:-2}"
 
 if [[ "$INSTALL" == 1 ]]; then
   cmake --install "$BUILD"
+
+  buildinfo_dir="$PREFIX/share/rctools-gpu"
+  mkdir -p "$buildinfo_dir"
+  cat >"$buildinfo_dir/virtualgl-kgsl.buildinfo" <<EOF
+runtime=virtualgl-kgsl
+virtualgl_source_commit=$VGL_COMMIT
+project_commit=$PROJECT_COMMIT
+eglkgsl_patch_sha256=$BASE_PATCH_SHA256
+pack_invert=$PACK_INVERT
+pack_invert_patch_sha256=$PACK_INVERT_PATCH_SHA256
+async_xshm=$ASYNC_XSHM
+async_xshm_patch_sha256=$ASYNC_XSHM_PATCH_SHA256
+install_prefix=$PREFIX
+install_libdir=lib
+EOF
 fi
 
 echo "VirtualGL KGSL build OK"
 echo "source_commit=$VGL_COMMIT"
+echo "project_commit=$PROJECT_COMMIT"
+echo "eglkgsl_patch_sha256=$BASE_PATCH_SHA256"
+echo "pack_invert_patch_sha256=$PACK_INVERT_PATCH_SHA256"
+echo "async_xshm_patch_sha256=$ASYNC_XSHM_PATCH_SHA256"
 echo "build=$BUILD"
 echo "prefix=$PREFIX"
 echo "installed=$INSTALL"
