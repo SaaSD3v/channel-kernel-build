@@ -162,16 +162,16 @@ jobs:
           mkdir -p "$OUT"
 
           find bundle -type f -name '*.tar.gz' -exec cp -v {} "$OUT/" \;
+          find bundle/mesa -maxdepth 1 -type f \
+            \( -name '*.buildinfo' -o -name '*.needed' \) \
+            -exec cp -v {} "$OUT/" \;
 
           test "$(find "$OUT" -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 5
+          test "$(find "$OUT" -maxdepth 1 -type f -name '*.buildinfo' | wc -l)" -ge 1
+          test "$(find "$OUT" -maxdepth 1 -type f -name '*.needed' | wc -l)" -ge 1
 
           cp recovery-wifi/install-gpu-runtime.sh "$OUT/install-gpu-runtime.sh"
           chmod 0755 "$OUT/install-gpu-runtime.sh"
-
-          (
-            cd "$OUT"
-            sha256sum ./*.tar.gz ./install-gpu-runtime.sh | sort -k2 > SHA256SUMS
-          )
 
           cat >"$OUT/MANIFEST.txt" <<EOF
           project=SaaSD3v/channel-kernel-build
@@ -193,7 +193,17 @@ jobs:
           CI/source success is not a real-device validation result.
           EOF
 
+          (
+            cd "$OUT"
+            find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 |
+              sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+          )
+
           cat "$OUT/MANIFEST.txt"
+          echo '--- Mesa dependency manifest ---'
+          cat "$OUT"/*.needed
+          echo '--- SHA256SUMS ---'
           cat "$OUT/SHA256SUMS"
 
       - name: Upload complete GPU runtime bundle
