@@ -1,0 +1,194 @@
+From: RCTools GPU audit
+Subject: [PATCH] freedreno/kgsl: harden old-kernel and headless X11 paths
+
+Base: lfdevs/mesa-for-android-container
+Validated runtime commit: 98f3d6229d61452cef80f8563af7c56ae599dc14
+
+This patch collects Channel-specific compatibility fixes that should be
+validated before replacing the known-good Mesa runtime:
+
+* do not run DRM PCI discovery when the explicit loader override is kgsl;
+  the Debian build is not __TERMUX__, so the existing Termux-only guard
+  still emits a misleading DRM warning on /dev/kgsl-3d0;
+* require DRI3 to actually exist before the kgsl x11_dri3_open shortcut,
+  preventing a forced DRI3 path against TigerVNC;
+* fall back to the legacy Android ION ABI (ALLOC handle, SHARE fd, FREE
+  handle) when the fd-returning ION_IOC_ALLOC ABI is rejected by the
+  Channel 4.9 kernel;
+* avoid two NULL dereferences after fd_bo_from_handle() failures and release
+  the kernel allocation/import ID on those error paths.
+
+The legacy ION transaction sequence has already been validated on the real
+device through the temporary LD_PRELOAD compatibility shim.  The source-level
+version still requires real-device regression testing.
+
+diff --git a/src/loader/loader.c b/src/loader/loader.c
+--- a/src/loader/loader.c
++++ b/src/loader/loader.c
+@@
+ bool
+ loader_get_pci_id_for_fd(int fd, int *vendor_id, int *chip_id)
+ {
+-#ifdef __TERMUX__
+    const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
+    if (env && strcmp(env, "kgsl") == 0) {
+       return false;
+    }
+-#endif
+ #ifdef __linux__
+    /* Implementation without causing full enumeration of DRM devices. */
+    if (loader_get_linux_pci_id_for_fd(fd, vendor_id, chip_id))
+       return true;
+diff --git a/src/x11/x11_dri3.c b/src/x11/x11_dri3.c
+--- a/src/x11/x11_dri3.c
++++ b/src/x11/x11_dri3.c
+@@
+    int                          fd;
+    const xcb_query_extension_reply_t *extension;
+ 
+-   const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
+-   if (env && !strcmp(env, "kgsl"))
+-      return open("/dev/kgsl-3d0", O_RDWR);
+-
+    xcb_prefetch_extension_data(conn, &xcb_dri3_id);
+    extension = xcb_get_extension_data(conn, &xcb_dri3_id);
+    if (!(extension && extension->present))
+       return -1;
+ 
++   /*
++    * The KGSL backend does not use xcb_dri3_open() to obtain a DRM fd, but
++    * callers selecting the DRI3 GLX path still require a real DRI3 server.
++    * Do not force that path on X servers such as TigerVNC that do not expose
++    * DRI3.
++    */
++   const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
++   if (env && !strcmp(env, "kgsl"))
++      return open("/dev/kgsl-3d0", O_RDWR);
++
+    cookie = xcb_dri3_open(conn,
+                           root,
+                           provider);
+diff --git a/src/freedreno/drm/kgsl/kgsl_bo.c b/src/freedreno/drm/kgsl/kgsl_bo.c
+--- a/src/freedreno/drm/kgsl/kgsl_bo.c
++++ b/src/freedreno/drm/kgsl/kgsl_bo.c
+@@
+     }
+ 
+     bo = fd_bo_from_handle(dev, req.id, 0);
++    if (!bo) {
++        struct kgsl_gpumem_free_id free_req = {
++            .id = req.id,
++        };
++        kgsl_pipe_safe_ioctl(dev->fd, IOCTL_KGSL_GPUMEM_FREE_ID, &free_req);
++        return NULL;
++    }
+ 
+     struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
+     kgsl_bo->bo_type = KGSL_BO_IMPORT;
+     kgsl_bo->import_fd = os_dupfd_cloexec(fd);
+@@
+       struct ion_allocation_data {
+          __u64 len;
+          __u32 heap_id_mask;
+          __u32 flags;
+          __u32 fd;
+@@
+       ret = kgsl_pipe_safe_ioctl(ion_heap, _IOWR('I', 0, struct ion_allocation_data),
+                       &alloc_data);
+ 
+-      close(ion_heap);
+-
+-      if (ret)
+-         return -1;
+-
+-      return alloc_data.fd;
++      if (!ret) {
++         close(ion_heap);
++         return alloc_data.fd;
++      }
++
++      /*
++       * Older Android ION (including the Channel 4.9 kernel) returns a handle
++       * from ALLOC and requires SHARE to obtain a dma-buf fd.  Newer userspace
++       * uses an fd-returning ALLOC structure with the same ioctl number but a
++       * different size, which the old kernel rejects with ENOTTY/EINVAL.
++       */
++      if (errno != ENOTTY && errno != EINVAL) {
++         close(ion_heap);
++         return -1;
++      }
++
++      struct ion_allocation_data_legacy {
++         __u64 len;
++         __u64 align;
++         __u32 heap_id_mask;
++         __u32 flags;
++         __s32 handle;
++      } legacy_alloc = {
++         .len = size,
++         .align = 0,
++         .heap_id_mask = (1U << 0) | (1U << 25),
++         .flags = 0,
++         .handle = -1,
++      };
++
++      ret = kgsl_pipe_safe_ioctl(
++         ion_heap, _IOWR('I', 0, struct ion_allocation_data_legacy),
++         &legacy_alloc);
++      if (ret) {
++         close(ion_heap);
++         return -1;
++      }
++
++      struct ion_fd_data_legacy {
++         __s32 handle;
++         __s32 fd;
++      } legacy_share = {
++         .handle = legacy_alloc.handle,
++         .fd = -1,
++      };
++
++      int share_ret = kgsl_pipe_safe_ioctl(
++         ion_heap, _IOWR('I', 4, struct ion_fd_data_legacy),
++         &legacy_share);
++
++      struct ion_handle_data_legacy {
++         __s32 handle;
++      } legacy_free = {
++         .handle = legacy_alloc.handle,
++      };
++      kgsl_pipe_safe_ioctl(
++         ion_heap, _IOWR('I', 1, struct ion_handle_data_legacy),
++         &legacy_free);
++
++      close(ion_heap);
++      if (share_ret)
++         return -1;
++
++      return legacy_share.fd;
+    } else {
+       struct dma_heap_allocation_data alloc_data = {
+          .len = size,
+          .fd_flags = O_RDWR | O_CLOEXEC,
+@@
+ 
+     bo = kgsl_bo_from_handle(dev, size, req.id);
++    if (!bo) {
++        struct kgsl_gpumem_free_id free_req = {
++            .id = req.id,
++        };
++        kgsl_pipe_safe_ioctl(dev->fd, IOCTL_KGSL_GPUMEM_FREE_ID, &free_req);
++        ERROR_MSG("Failed to allocate buffer object");
++        return NULL;
++    }
+ 
+     struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
+     kgsl_bo->bo_type = KGSL_BO_NATIVE;
+-
+-    if (!bo) {
+-        ERROR_MSG("Failed to allocate buffer object");
+-        return NULL;
+-    }
+ 
+     return bo;
+ }
