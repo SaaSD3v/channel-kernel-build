@@ -31,7 +31,7 @@ diff --git a/server/VirtualDrawable.h b/server/VirtualDrawable.h
 diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 --- a/server/VirtualDrawable.cpp
 +++ b/server/VirtualDrawable.cpp
-@@ -396,162 +396,225 @@
+@@ -396,162 +396,224 @@
  }
  
  
@@ -211,9 +211,8 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +	}
 +
 +	/*
-+	 * Core profiles reject glGetString(GL_EXTENSIONS).  Clear only the
-+	 * error from that compatibility probe, then enumerate extensions with
-+	 * the OpenGL 3.x mechanism.
++	 * Core profiles reject glGetString(GL_EXTENSIONS). Clear only the error
++	 * from that compatibility probe, then use the OpenGL 3.x enumeration API.
 +	 */
 +	while(_glGetError() != GL_NO_ERROR) {}
 +
