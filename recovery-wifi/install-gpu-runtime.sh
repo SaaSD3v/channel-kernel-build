@@ -133,6 +133,11 @@ rollback() {
   if [ "${had_vgl:-0}" -eq 1 ] && [ -e "$OLD_VGL" ]; then
     mv "$OLD_VGL" "$TARGET_VGL" 2>/dev/null || true
   fi
+
+  # A rollback may be requested explicitly and then followed by die(), whose
+  # EXIT trap calls rollback again.  Make the operation idempotent so a second
+  # invocation cannot remove the just-restored runtime.
+  transaction_active=0
 }
 
 on_exit() {
