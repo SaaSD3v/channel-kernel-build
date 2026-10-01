@@ -101,6 +101,15 @@ tar -xzf "$MESA" -C "$STAGE/mesa"
   [ -r "$STAGE/mesa/usr/lib/dri/kgsl_dri.so" ] ||
   die "staged Mesa does not contain kgsl_dri.so"
 
+MESA_INFO="$STAGE/mesa/usr/share/rctools-gpu/mesa-channel-kgsl.buildinfo"
+[ -r "$MESA_INFO" ] || die "staged Mesa buildinfo missing"
+grep -qx 'mesa_source_commit=98f3d6229d61452cef80f8563af7c56ae599dc14' "$MESA_INFO" ||
+  die "Mesa source commit mismatch"
+grep -qx 'architecture=arm64' "$MESA_INFO" ||
+  die "Mesa architecture mismatch"
+grep -qx 'freedreno_kmds=kgsl' "$MESA_INFO" ||
+  die "Mesa runtime was not built for KGSL"
+
 say "[*] Extracting VirtualGL variant $VARIANT into staging"
 tar -xzf "$VGL" -C "$STAGE/vgl"
 NEW_VGL="$STAGE/vgl/opt/VirtualGL-KGSL"
