@@ -327,6 +327,40 @@ The installed runtime identifies its feature set in:
 /opt/VirtualGL-KGSL/share/rctools-gpu/virtualgl-kgsl.buildinfo
 ```
 
+For the generated ARM64 bundle, install the Mesa tarball and exactly one
+VirtualGL variant into a stopped directory rootfs.  Mesa's archive starts at
+`usr/`, so it belongs below the project-specific Mesa prefix.  VirtualGL's
+archive starts at `opt/VirtualGL-KGSL/`, so it is extracted at the rootfs
+root:
+
+```sh
+CFG=/data/local/Droidspaces/Containers/debian/container.config
+ROOT="$(sed -n 's/^rootfs_path=//p' "$CFG" | head -n1)"
+BUNDLE=/path/to/channel-gpu-runtime-arm64
+
+DS=/data/local/Droidspaces/bin/droidspaces
+"$DS" --name=debian stop 2>/dev/null || true
+
+rm -rf "$ROOT/opt/rctools-gpu/mesa"
+mkdir -p "$ROOT/opt/rctools-gpu/mesa"
+tar -xzf "$BUNDLE"/mesa_*_arm64.tar.gz \
+    -C "$ROOT/opt/rctools-gpu/mesa"
+
+# Choose exactly one for each A/B/C test:
+VGL_TAR="$BUNDLE/VirtualGL-KGSL-stable-arm64.tar.gz"                    # A
+# VGL_TAR="$BUNDLE/VirtualGL-KGSL-pack-invert-experimental-arm64.tar.gz" # B
+# VGL_TAR="$BUNDLE/VirtualGL-KGSL-pack-invert-async-xshm-experimental-arm64.tar.gz" # C
+
+rm -rf "$ROOT/opt/VirtualGL-KGSL"
+tar -xzf "$VGL_TAR" -C "$ROOT"
+```
+
+After each A/B/C swap, select **Freedreno / KGSL** again in the unchanged
+RCTools GPU menu before starting the container.  This rewrites the managed
+environment from that runtime's buildinfo, so C receives
+`VGL_KGSL_ASYNC_XSHM=1` and A/B do not.  Do not carry an old container
+process across a runtime swap.
+
 RCTools reads that file.  It exports `VGL_KGSL_ASYNC_XSHM=1` only when the
 installed runtime explicitly contains `async_xshm=1`; switching back to A or B
 removes the variable from the managed environment.  No menu option is added and
