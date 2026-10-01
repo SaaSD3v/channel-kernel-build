@@ -311,6 +311,12 @@ per-frame `XSync()`.  The VirtualGL implementation keeps a frame unavailable
 until the matching shared-memory completion is consumed, so the X server cannot
 read a buffer while the producer is reusing it.
 
+The presentation depth is two SHM requests in flight, but the X11 transport
+pool contains four `FBXFrame` objects in async mode.  Four is intentional:
+two frames can be awaiting `ShmCompletion`, one can be queued/spoilable in
+`GenericQ`, and one must remain available to the producer.  The normal
+VirtualGL X11 path keeps its original three-frame pool.
+
 The `XIfEvent()` predicate itself performs no Xlib calls.  The MIT-SHM event
 base is resolved before entering `XIfEvent()`, then the predicate compares
 only the precomputed event type and the frame's `shmseg`.
