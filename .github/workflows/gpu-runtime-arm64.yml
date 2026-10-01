@@ -95,3 +95,82 @@ jobs:
           name: virtualgl-kgsl-${{ matrix.variant }}-arm64
           path: recovery-wifi/out/virtualgl-kgsl/*
           retention-days: 90
+
+
+  bundle:
+    needs:
+      - mesa-channel-kgsl
+      - virtualgl-kgsl
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Download Mesa runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: mesa-channel-kgsl-debian-trixie-arm64
+          path: bundle/mesa
+
+      - name: Download VirtualGL stable
+        uses: actions/download-artifact@v8
+        with:
+          name: virtualgl-kgsl-stable-arm64
+          path: bundle/virtualgl-stable
+
+      - name: Download VirtualGL pack-invert
+        uses: actions/download-artifact@v8
+        with:
+          name: virtualgl-kgsl-pack-invert-experimental-arm64
+          path: bundle/virtualgl-pack-invert
+
+      - name: Download VirtualGL async-XShm
+        uses: actions/download-artifact@v8
+        with:
+          name: virtualgl-kgsl-pack-invert-async-xshm-experimental-arm64
+          path: bundle/virtualgl-async-xshm
+
+      - name: Assemble reproducible test bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT=channel-gpu-runtime-arm64
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
+
+          find bundle -type f -name '*.tar.gz' -exec cp -v {} "$OUT/" \;
+
+          test "$(find "$OUT" -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 4
+
+          (
+            cd "$OUT"
+            sha256sum ./*.tar.gz | sort -k2 > SHA256SUMS
+          )
+
+          cat >"$OUT/MANIFEST.txt" <<EOF
+          project=SaaSD3v/channel-kernel-build
+          branch=${GITHUB_REF_NAME}
+          project_commit=${GITHUB_SHA}
+          workflow_run_id=${GITHUB_RUN_ID}
+          workflow_run_number=${GITHUB_RUN_NUMBER}
+          architecture=arm64
+          mesa_base=98f3d6229d61452cef80f8563af7c56ae599dc14
+          virtualgl_base=2473cf39bdbe88ca41ecd58ac4007385c9682a9f
+
+          VirtualGL variants:
+          A stable: pack_invert=0 async_xshm=0
+          B pack-invert: pack_invert=1 async_xshm=0
+          C pack-invert + async-XShm: pack_invert=1 async_xshm=1
+
+          Device validation order: A -> B -> C.
+          CI/source success is not a real-device validation result.
+          EOF
+
+          cat "$OUT/MANIFEST.txt"
+          cat "$OUT/SHA256SUMS"
+
+      - name: Upload complete GPU runtime bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: channel-gpu-runtime-arm64-bundle
+          path: channel-gpu-runtime-arm64/*
+          retention-days: 90
