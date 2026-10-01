@@ -650,7 +650,8 @@ sanitize_legacy_gpu_profile() {
         probe=$0
         sub(/^[[:space:]]*export[[:space:]]+/, "", probe)
       }
-      probe ~ /^(GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE)=/ {next}
+      probe ~ /^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK)=/ {next}
+      probe ~ /^LD_PRELOAD=.*libion-legacy\.so/ {next}
       {print}
     ' "$file" >"$tmp" || return 1
 
@@ -685,6 +686,7 @@ strip_gpu_env() {
         sub(/^[[:space:]]*export[[:space:]]+/, "", probe)
       }
       probe ~ /^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|LIBGL_DEBUG|MESA_DEBUG)=/ {next}
+      probe ~ /^LD_PRELOAD=.*libion-legacy\.so/ {next}
       {print}
     ' "$file" >"$tmp" || return 1
 
@@ -1059,11 +1061,18 @@ test_profile() {
             return 1
         fi
 
-        if "$BB" grep -Fqx 'GALLIUM_DRIVER=virpipe' "$pre" ||
-           "$BB" grep -Fqx 'LIBGL_ALWAYS_SOFTWARE=1' "$pre" ||
+        if "$BB" grep -Fq 'GALLIUM_DRIVER=' "$pre" ||
+           "$BB" grep -Fq 'LIBGL_ALWAYS_SOFTWARE=' "$pre" ||
            "$BB" grep -Fq 'VTEST_SOCKET_NAME=' "$pre"; then
             err "DIRECT_GPU_ENV_CONFLICT"
             err "VirGL/llvmpipe variables are still active"
+            "$BB" rm -f "$pre"
+            return 1
+        fi
+
+        if "$BB" grep -Ei '^LD_PRELOAD=.*libion-legacy\.so' "$pre" >/dev/null 2>&1; then
+            err "DIRECT_GPU_LEGACY_ION_SHIM_ACTIVE"
+            err "the temporary libion-legacy preload must not leak into the managed direct backend"
             "$BB" rm -f "$pre"
             return 1
         fi
