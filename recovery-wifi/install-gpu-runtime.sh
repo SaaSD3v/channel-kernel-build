@@ -144,14 +144,6 @@ rm -rf "$OLD_MESA" "$OLD_VGL"
 
 had_mesa=0
 had_vgl=0
-if [ -e "$TARGET_MESA" ]; then
-  mv "$TARGET_MESA" "$OLD_MESA"
-  had_mesa=1
-fi
-if [ -e "$TARGET_VGL" ]; then
-  mv "$TARGET_VGL" "$OLD_VGL"
-  had_vgl=1
-fi
 
 rollback() {
   rm -rf "$TARGET_MESA" "$TARGET_VGL" 2>/dev/null || true
@@ -162,6 +154,21 @@ rollback() {
     mv "$OLD_VGL" "$TARGET_VGL" 2>/dev/null || true
   fi
 }
+
+if [ -e "$TARGET_MESA" ]; then
+  if ! mv "$TARGET_MESA" "$OLD_MESA"; then
+    die "could not back up existing Mesa runtime"
+  fi
+  had_mesa=1
+fi
+
+if [ -e "$TARGET_VGL" ]; then
+  if ! mv "$TARGET_VGL" "$OLD_VGL"; then
+    rollback
+    die "could not back up existing VirtualGL runtime"
+  fi
+  had_vgl=1
+fi
 
 if ! mv "$STAGE/mesa" "$TARGET_MESA"; then
   rollback
