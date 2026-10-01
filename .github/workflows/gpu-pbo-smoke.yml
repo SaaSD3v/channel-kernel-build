@@ -1,0 +1,155 @@
+name: GPU PBO Pipeline Smoke
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - twrp-cli-minimal-gpu-audit
+    paths:
+      - 'recovery-wifi/build-virtualgl-kgsl.sh'
+      - 'recovery-wifi/patches/virtualgl-eglkgsl.patch'
+      - 'recovery-wifi/patches/virtualgl-kgsl-pack-invert.experimental.patch'
+      - 'recovery-wifi/patches/virtualgl-kgsl-async-xshm.experimental.patch'
+      - 'recovery-wifi/patches/virtualgl-kgsl-pbo-pipeline.experimental.patch'
+      - '.github/workflows/gpu-pbo-smoke.yml'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout audit branch
+        uses: actions/checkout@v5
+
+      - name: Install smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git cmake ninja-build g++ \
+            xvfb x11-utils mesa-utils \
+            libturbojpeg0-dev \
+            libx11-dev libxext-dev libxtst-dev \
+            libgl-dev libglu1-mesa-dev libegl-dev \
+            libxcb1-dev libxcb-keysyms1-dev \
+            libxcb-glx0-dev libx11-xcb-dev
+
+      - name: Build and install D variant
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PREFIX="$RUNNER_TEMP/VirtualGL-KGSL-D"
+          chmod +x recovery-wifi/build-virtualgl-kgsl.sh
+
+          PREFIX="$PREFIX" \
+          INSTALL=1 \
+          PACK_INVERT=1 \
+          ASYNC_XSHM=1 \
+          PBO_PIPELINE=1 \
+          JOBS=2 \
+            recovery-wifi/build-virtualgl-kgsl.sh
+
+          grep -Fqx 'pack_invert=1' \
+            "$PREFIX/share/rctools-gpu/virtualgl-kgsl.buildinfo"
+          grep -Fqx 'async_xshm=1' \
+            "$PREFIX/share/rctools-gpu/virtualgl-kgsl.buildinfo"
+          grep -Fqx 'pbo_pipeline=1' \
+            "$PREFIX/share/rctools-gpu/virtualgl-kgsl.buildinfo"
+
+          echo "VGL_D_PREFIX=$PREFIX" >> "$GITHUB_ENV"
+
+      - name: Run surfaceless-to-X11 smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          Xvfb :98 -screen 0 1024x768x24 -nolisten tcp \
+            >"$RUNNER_TEMP/xvfb-pbo.log" 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 50); do
+            if DISPLAY=:98 xdpyinfo >"$RUNNER_TEMP/xdpyinfo-pbo.log" 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat "$RUNNER_TEMP/xvfb-pbo.log"
+            exit 1
+          fi
+
+          DISPLAY=:98 xdpyinfo | grep -Fq 'MIT-SHM'
+
+          # The Xvfb GLX context and VirtualGL's surfaceless EGL readback
+          # context use the same runner Mesa implementation.  This probe tells
+          # us whether the runner can exercise the pack-invert/PBO gate.
+          pack_invert=0
+          if DISPLAY=:98 glxinfo 2>/dev/null | grep -Fq 'GL_MESA_pack_invert'; then
+            pack_invert=1
+          fi
+          echo "RUNNER_PACK_INVERT=$pack_invert"
+
+          log="$RUNNER_TEMP/vgl-pbo-smoke.log"
+          set +e
+          env \
+            DISPLAY=:98 \
+            VGL_DISPLAY=eglkgsl \
+            VGL_FORCEALPHA=1 \
+            VGL_READBACK=sync \
+            VGL_KGSL_ASYNC_XSHM=1 \
+            VGL_KGSL_PBO_PIPELINE=1 \
+            VGL_VERBOSE=1 \
+            timeout --signal=INT 10s \
+              "$VGL_D_PREFIX/bin/vglrun" -d eglkgsl +v \
+              "$VGL_D_PREFIX/bin/glxspheres64" \
+              >"$log" 2>&1
+          rc=$?
+          set -e
+
+          case "$rc" in
+            0|124|130) ;;
+            *)
+              echo "VirtualGL smoke failed rc=$rc"
+              cat "$log"
+              exit "$rc"
+              ;;
+          esac
+
+          grep -Fq 'Opening KGSL surfaceless EGL display' "$log"
+          grep -Eq 'OpenGL Renderer:|Renderer:' "$log"
+
+          if [ "$pack_invert" -eq 1 ]; then
+            grep -Fq '[VGL] KGSL two-PBO readback pipeline active' "$log"
+            echo 'PBO_RUNTIME_SMOKE=PASS'
+          else
+            echo 'PBO_RUNTIME_SMOKE=SKIP_NO_GL_MESA_pack_invert'
+          fi
+
+          echo '=== VirtualGL D smoke ==='
+          grep -E \
+            'Opening KGSL|OpenGL Renderer|Renderer:|KGSL async MIT-SHM|KGSL two-PBO|frames/sec|Mpixels/sec|PBO' \
+            "$log" || true
+
+          {
+            echo '### VirtualGL D surfaceless/X11 smoke'
+            echo
+            echo "Runner GL_MESA_pack_invert: $pack_invert"
+            echo
+            echo '~~~text'
+            grep -E \
+              'Opening KGSL|OpenGL Renderer|Renderer:|KGSL async MIT-SHM|KGSL two-PBO|frames/sec|Mpixels/sec|PBO' \
+              "$log" || true
+            echo '~~~'
+            echo
+            if [ "$pack_invert" -eq 1 ]; then
+              echo 'two-PBO runtime gate: PASS'
+            else
+              echo 'two-PBO runtime gate: not exercised because runner Mesa lacks GL_MESA_pack_invert'
+            fi
+            echo
+            echo 'This is a software-Mesa CI smoke, not FD506/Channel validation.'
+          } >> "$GITHUB_STEP_SUMMARY"
