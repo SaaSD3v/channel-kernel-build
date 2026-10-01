@@ -42,8 +42,65 @@ jobs:
           grep -Fq '[4] Disable' recovery-wifi/rctools-gpu
           grep -Fq '[5] Test' recovery-wifi/rctools-gpu
 
-          if grep -nE 'rctools-gpu-(profile|env\.clean|pretest|test)\.\$"'               recovery-wifi/rctools-gpu; then
-            echo 'Found non-unique temporary-file name'
+          if grep -nE '/tmp/[^"'\''[:space:]]+\.\$("'\''|$)' recovery-wifi/rctools-gpu; then
+            echo 'Found non-unique temporary-file name ending in .
+
+      - name: Validate VirtualGL eglkgsl patch
+        run: |
+          set -euo pipefail
+          chmod +x recovery-wifi/build-virtualgl-kgsl.sh
+          recovery-wifi/build-virtualgl-kgsl.sh
+
+      - name: Compile experimental VirtualGL KGSL pack-invert patch
+        run: |
+          set -euo pipefail
+
+          SRC=/tmp/virtualgl-kgsl-src
+          BUILD=/tmp/virtualgl-kgsl-pack-invert-build
+          PATCH="$GITHUB_WORKSPACE/recovery-wifi/patches/virtualgl-kgsl-pack-invert.experimental.patch"
+
+          git -C "$SRC" apply --check "$PATCH"
+          git -C "$SRC" apply "$PATCH"
+          git -C "$SRC" diff --check
+
+          rm -rf "$BUILD"
+          TJPEG_LIB="$(ldconfig -p | awk '/libturbojpeg\.so/{print $NF; exit}')"
+
+          cmake -S "$SRC" -B "$BUILD" -G Ninja             -DCMAKE_BUILD_TYPE=Release             -DCMAKE_INSTALL_PREFIX=/tmp/VirtualGL-KGSL-experimental             -DTJPEG_INCLUDE_DIR=/usr/include             -DTJPEG_LIBRARY="$TJPEG_LIB"             -DVGL_USEXV=0             -DVGL_FAKEOPENCL=0
+
+          cmake --build "$BUILD" -j2
+
+      - name: Validate Mesa KGSL compatibility patch
+        run: |
+          set -euo pipefail
+          MESA=/tmp/mesa-kgsl-audit
+          rm -rf "$MESA"
+          git init -q "$MESA"
+          git -C "$MESA" remote add origin             https://github.com/lfdevs/mesa-for-android-container.git
+          git -C "$MESA" fetch -q --depth=1 origin             98f3d6229d61452cef80f8563af7c56ae599dc14
+          git -C "$MESA" checkout -q --detach FETCH_HEAD
+
+          git -C "$MESA" apply --check             "$GITHUB_WORKSPACE/recovery-wifi/patches/mesa-kgsl-channel-compat.patch"
+          git -C "$MESA" apply             "$GITHUB_WORKSPACE/recovery-wifi/patches/mesa-kgsl-channel-compat.patch"
+          git -C "$MESA" diff --check
+
+          grep -Fq 'EGL_PLATFORM_SURFACELESS_MESA'             "$GITHUB_WORKSPACE/recovery-wifi/patches/virtualgl-eglkgsl.patch"
+          grep -Fq 'ion_allocation_data_legacy'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'if (!(extension && extension->present))'             "$MESA/src/x11/x11_dri3.c"
+
+      - name: Summarize audit
+        run: |
+          {
+            echo '### GPU source audit'
+            echo
+            echo '- RCTools shell syntax: PASS'
+            echo '- RCTools menu contract: PASS'
+            echo '- VirtualGL eglkgsl patch + build: PASS'
+            echo '- Mesa Channel KGSL patch applies cleanly: PASS'
+            echo
+            echo 'Device validation is still required before merging the Mesa patch.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
             exit 1
           fi
 
