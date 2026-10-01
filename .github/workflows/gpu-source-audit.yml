@@ -63,6 +63,7 @@ jobs:
           grep -Fq "grep -Fqx 'pbo_pipeline=1'" recovery-wifi/rctools-gpu
           grep -Fq "'VGL_KGSL_PBO_PIPELINE=1'" recovery-wifi/rctools-gpu
           grep -Fq 'virtualgl_pbo_pipeline=' recovery-wifi/rctools-gpu
+          grep -Fq 'pbo_pipeline requires pack_invert' recovery-wifi/rctools-gpu
 
       - name: Build stable VirtualGL eglkgsl source
         shell: bash
