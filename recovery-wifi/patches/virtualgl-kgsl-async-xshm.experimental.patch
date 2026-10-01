@@ -267,7 +267,7 @@ diff --git a/server/X11Trans.h b/server/X11Trans.h
 diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 --- a/server/X11Trans.cpp
 +++ b/server/X11Trans.cpp
-@@ -31,75 +31,115 @@
+@@ -31,75 +31,122 @@
  
  X11Trans::X11Trans(void) : thread(NULL), deadYet(false)
  {
@@ -369,6 +369,7 @@ diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 +	Timer timer, sleepTimer;  double err = 0.;  bool first = true;
 +	FBXFrame *pending[2] = { NULL, NULL };
 +	int nPending = 0;
++	bool asyncReported = false;
 +
 +	try
 +	{
@@ -386,6 +387,12 @@ diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 +
 +			profBlit.startFrame();
 +			bool async = kgslAsyncXShm && f->redrawAsync();
++			if(async && !asyncReported)
++			{
++				if(fconfig.verbose)
++					vglout.println("[VGL] KGSL async MIT-SHM presentation active");
++				asyncReported = true;
++			}
 +			if(!async)
 +				f->redraw();
 +			profBlit.endFrame(f->hdr.width * f->hdr.height, 0, 1);
