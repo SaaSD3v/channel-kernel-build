@@ -58,18 +58,24 @@ jobs:
           grep -Fq 'VGL_FORCEALPHA=1' recovery-wifi/rctools-gpu
           grep -Fq 'VGL_READBACK=sync' recovery-wifi/rctools-gpu
 
-      - name: Validate VirtualGL eglkgsl patch
+      - name: Build stable VirtualGL eglkgsl source
         shell: bash
         run: |
           set -euo pipefail
           chmod +x recovery-wifi/build-virtualgl-kgsl.sh
-          PACK_INVERT=0 recovery-wifi/build-virtualgl-kgsl.sh
+          PACK_INVERT=0 ASYNC_XSHM=0             recovery-wifi/build-virtualgl-kgsl.sh
 
-      - name: Compile experimental VirtualGL pack-invert variant
+      - name: Build pack-invert VirtualGL source
         shell: bash
         run: |
           set -euo pipefail
-          PACK_INVERT=1 recovery-wifi/build-virtualgl-kgsl.sh
+          PACK_INVERT=1 ASYNC_XSHM=0             recovery-wifi/build-virtualgl-kgsl.sh
+
+      - name: Build pack-invert plus async-XShm VirtualGL source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACK_INVERT=1 ASYNC_XSHM=1             recovery-wifi/build-virtualgl-kgsl.sh
 
       - name: Validate Mesa KGSL compatibility patch
         shell: bash
@@ -88,8 +94,11 @@ jobs:
           git -C "$MESA" apply "$PATCH"
           git -C "$MESA" diff --check
 
-          grep -Fq '#include <errno.h>'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
-          grep -Fq 'ion_allocation_data_legacy'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq '#include "vulkan/ion/ion.h"'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq '#include "vulkan/ion/ion_4.19.h"'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'ION_IOC_NEW_ALLOC'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'ION_IOC_SHARE'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'DMA_HEAP_IOCTL_ALLOC'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
           grep -Fq 'if (!(extension && extension->present))'             "$MESA/src/x11/x11_dri3.c"
           grep -Fq 'MESA_LOADER_DRIVER_OVERRIDE'             "$MESA/src/loader/loader.c"
 
@@ -102,8 +111,9 @@ jobs:
             echo '- RCTools shell syntax + menu contract: PASS'
             echo '- Temp-file uniqueness guard: PASS'
             echo '- VirtualGL eglkgsl source build: PASS'
-            echo '- VirtualGL pack-invert experimental source build: PASS'
-            echo '- Mesa Channel KGSL patch applies cleanly: PASS'
+            echo '- VirtualGL pack-invert source build: PASS'
+            echo '- VirtualGL two-buffer async-XShm source build: PASS'
+            echo '- Mesa Channel KGSL compatibility patch: PASS'
             echo
-            echo 'Mesa runtime and experimental VirtualGL still require real-device validation.'
+            echo 'Mesa runtime and experimental VirtualGL variants still require real-device validation.'
           } >> "$GITHUB_STEP_SUMMARY"
