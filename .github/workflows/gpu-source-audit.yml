@@ -25,7 +25,7 @@ jobs:
       - name: Install source-audit dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y             dash git cmake ninja-build g++             libturbojpeg0-dev             libx11-dev libxext-dev libxtst-dev             libgl-dev libglu1-mesa-dev libegl-dev             libxcb1-dev libxcb-keysyms1-dev             libxcb-glx0-dev libx11-xcb-dev
+          sudo apt-get install -y             dash git cmake ninja-build g++             xvfb x11-utils             libturbojpeg0-dev             libx11-dev libxext-dev libxtst-dev             libgl-dev libglu1-mesa-dev libegl-dev             libxcb1-dev libxcb-keysyms1-dev             libxcb-glx0-dev libx11-xcb-dev
 
       - name: Validate RCTools shell and UI contract
         shell: bash
@@ -94,6 +94,44 @@ jobs:
             echo 'Xlib call found inside XIfEvent predicate'
             exit 1
           fi
+
+          X11UT="$(find /tmp/virtualgl-kgsl-build -type f -name x11transut -perm -111 -print -quit)"
+          test -n "$X11UT"
+
+          Xvfb :99 -screen 0 1024x768x24 -nolisten tcp >/tmp/rctools-xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 50); do
+            if DISPLAY=:99 xdpyinfo >/tmp/rctools-xdpyinfo.log 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat /tmp/rctools-xvfb.log
+            exit 1
+          fi
+
+          DISPLAY=:99 xdpyinfo | grep -Fq 'MIT-SHM'
+
+          env \
+            DISPLAY=:99 \
+            VGL_DISPLAY=eglkgsl \
+            VGL_KGSL_ASYNC_XSHM=1 \
+            VGL_SYNC=0 \
+            timeout 30s "$X11UT" >/tmp/x11transut-async.log 2>&1
+          grep -Fq 'Megapixels/sec' /tmp/x11transut-async.log
+
+          env \
+            DISPLAY=:99 \
+            VGL_DISPLAY=eglkgsl \
+            VGL_KGSL_ASYNC_XSHM=1 \
+            VGL_SYNC=0 \
+            timeout 30s "$X11UT" -bottomup >/tmp/x11transut-async-bottomup.log 2>&1
+          grep -Fq 'Megapixels/sec' /tmp/x11transut-async-bottomup.log
 
       - name: Validate Mesa KGSL compatibility patch
         shell: bash
