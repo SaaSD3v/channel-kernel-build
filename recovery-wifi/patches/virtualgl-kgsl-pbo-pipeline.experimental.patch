@@ -7,8 +7,9 @@ Requires: virtualgl-kgsl-pack-invert.experimental.patch
 Add an opt-in VGL_KGSL_PBO_PIPELINE=1 path for the project-specific eglkgsl
 backend.  It is intentionally restricted to full-frame mono X11 readback with
 GL_MESA_pack_invert active.  The first frame warms the pipeline synchronously.
-Subsequent calls copy the previous PBO before enqueueing the current glReadPixels
-into the other PBO, introducing one frame of latency while avoiding the
+Subsequent calls enqueue the current glReadPixels into one PBO, then map and
+copy the previous PBO. This introduces one frame of latency while allowing GPU
+readback of frame N to overlap CPU consumption of frame N-1 and avoiding the
 upstream same-PBO immediate-map serialization.
 
 Any layout/read-buffer change resets and reallocates both PBO stores.  Context
@@ -37,7 +38,7 @@ diff --git a/server/VirtualDrawable.h b/server/VirtualDrawable.h
 diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 --- a/server/VirtualDrawable.cpp
 +++ b/server/VirtualDrawable.cpp
-@@ -232,351 +232,486 @@
+@@ -232,351 +232,492 @@
  	ctx = 0;
  	direct = -1;
  	pbo = 0;
@@ -766,6 +767,21 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +		int current = kgslPboNext;
 +		int previous = 1 - current;
 +
++		/*
++		 * Queue the current GPU readback before consuming the previous PBO.
++		 * That is the actual two-buffer pipeline: while the CPU maps/copies
++		 * frame N-1, the driver can make progress on frame N in the other PBO.
++		 */
++		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, kgslPbo[current]);
++		#ifdef GL_PACK_INVERT_MESA
++		_glPixelStorei(GL_PACK_INVERT_MESA, GL_TRUE);
++		#endif
++		backend::readPixels(x, y, width, height, glFormat, type, NULL);
++		#ifdef GL_PACK_INVERT_MESA
++		_glPixelStorei(GL_PACK_INVERT_MESA, oldPackInvert);
++		#endif
++		_glFlush();
++
 +		if(kgslPboPrimed)
 +		{
 +			_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, kgslPbo[previous]);
@@ -777,19 +793,10 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +			if(!_glUnmapBuffer(GL_PIXEL_PACK_BUFFER_EXT))
 +				THROW("Could not unmap previous KGSL PBO");
 +		}
-+
-+		_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, kgslPbo[current]);
-+		#ifdef GL_PACK_INVERT_MESA
-+		_glPixelStorei(GL_PACK_INVERT_MESA, GL_TRUE);
-+		#endif
-+		backend::readPixels(x, y, width, height, glFormat, type, NULL);
-+		#ifdef GL_PACK_INVERT_MESA
-+		_glPixelStorei(GL_PACK_INVERT_MESA, oldPackInvert);
-+		#endif
-+		_glFlush();
-+
-+		if(!kgslPboPrimed)
++		else
 +		{
++			/* First frame has no previous PBO, so warm up synchronously. */
++			_glBindBuffer(GL_PIXEL_PACK_BUFFER_EXT, kgslPbo[current]);
 +			unsigned char *pboBits =
 +				(unsigned char *)_glMapBuffer(GL_PIXEL_PACK_BUFFER_EXT, GL_READ_ONLY);
 +			if(!pboBits)
