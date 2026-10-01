@@ -37,7 +37,7 @@ diff --git a/server/VirtualDrawable.h b/server/VirtualDrawable.h
 diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 --- a/server/VirtualDrawable.cpp
 +++ b/server/VirtualDrawable.cpp
-@@ -232,312 +232,430 @@
+@@ -232,312 +232,436 @@
  	ctx = 0;
  	direct = -1;
  	pbo = 0;
@@ -395,6 +395,9 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +		backend::destroyContext(dpy, ctx);  ctx = 0;
 +		kgslPbo[0] = kgslPbo[1] = 0;
 +		kgslPboNext = 0;
++		kgslPboWidth = kgslPboHeight = kgslPboPitch = -1;
++		kgslPboFormat = kgslPboType = GL_NONE;
++		kgslPboReadBuf = GL_NONE;
 +		kgslPboPrimed = false;
 +	}
 +	config = config_;
@@ -414,6 +417,9 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +		backend::destroyContext(dpy, ctx);  ctx = 0;
 +		kgslPbo[0] = kgslPbo[1] = 0;
 +		kgslPboNext = 0;
++		kgslPboWidth = kgslPboHeight = kgslPboPitch = -1;
++		kgslPboFormat = kgslPboType = GL_NONE;
++		kgslPboReadBuf = GL_NONE;
 +		kgslPboPrimed = false;
 +	}
 +	direct = direct_;
