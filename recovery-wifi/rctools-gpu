@@ -622,7 +622,7 @@ sanitize_legacy_gpu_profile() {
     file="$root/etc/profile.d/virgl.sh"
     [ -e "$file" ] || return 0
 
-    tmp="/tmp/rctools-gpu-profile.$"
+    tmp="/tmp/rctools-gpu-profile.$$"
     "$BB" awk '
       {
         probe=$0
@@ -651,7 +651,7 @@ sanitize_legacy_gpu_profile() {
 
 strip_gpu_env() {
     file="$1"
-    tmp="/tmp/rctools-gpu-env.clean.$"
+    tmp="/tmp/rctools-gpu-env.clean.$$"
     [ -e "$file" ] || : >"$file"
 
     "$BB" awk '
@@ -976,8 +976,8 @@ test_profile() {
     cfg="$1"
     name="$(container_name "$cfg")"
     backend="$(saved_backend "$cfg")"
-    pre="/tmp/rctools-gpu-pretest.$"
-    log="/tmp/rctools-gpu-test.$"
+    pre="/tmp/rctools-gpu-pretest.$$"
+    log="/tmp/rctools-gpu-test.$$"
     env="$(cfg_get "$cfg" env_file 2>/dev/null)"
     [ -n "$env" ] || env="$("$BB" dirname "$cfg")/.env"
 
