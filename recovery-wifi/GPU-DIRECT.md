@@ -293,6 +293,59 @@ VGL_FORCEALPHA=1
 VGL_READBACK=sync
 ```
 
+### Experimental A/B/C presentation validation
+
+The source tree can build three VirtualGL/KGSL variants from the same pinned
+VirtualGL commit.  They are deliberately separate so that each presentation
+optimization can be measured independently:
+
+| Variant | `pack_invert` | `async_xshm` | Purpose |
+| --- | ---: | ---: | --- |
+| A — stable | 0 | 0 | Existing synchronous X11 transport baseline |
+| B — pack-invert | 1 | 0 | Avoid the CPU vertical `fbx_flip()` when `GL_MESA_pack_invert` is available |
+| C — pack-invert + async-XShm | 1 | 1 | Add two in-flight MIT-SHM images with `ShmCompletion`-driven reuse |
+
+Variant C uses the presentation model already proven by the standalone Channel
+bridge: `XShmPutImage(..., True)`, explicit completion events, and no
+per-frame `XSync()`.  The VirtualGL implementation keeps a frame unavailable
+until the matching shared-memory completion is consumed, so the X server cannot
+read a buffer while the producer is reusing it.
+
+The `XIfEvent()` predicate itself performs no Xlib calls.  The MIT-SHM event
+base is resolved before entering `XIfEvent()`, then the predicate compares
+only the precomputed event type and the frame's `shmseg`.
+
+The installed runtime identifies its feature set in:
+
+```text
+/opt/VirtualGL-KGSL/share/rctools-gpu/virtualgl-kgsl.buildinfo
+```
+
+RCTools reads that file.  It exports `VGL_KGSL_ASYNC_XSHM=1` only when the
+installed runtime explicitly contains `async_xshm=1`; switching back to A or B
+removes the variable from the managed environment.  No menu option is added and
+the stable runtime cannot accidentally opt into the experimental transport.
+
+`VGL_READBACK=sync` and `VGL_SYNC` are different controls.  The former keeps
+the KGSL framebuffer readback synchronous.  The latter enables VirtualGL strict
+2D/3D synchronization.  RCTools does not enable `VGL_SYNC`, so the default
+`fconfig.sync=0` still allows variant C to pipeline the X11 presentation step.
+
+Real-device A/B/C validation must use the same Mesa build, geometry, VNC server
+configuration, application, and sample interval.  For each variant record:
+
+- `rctools-gpu status`, including `virtualgl_pack_invert` and
+  `virtualgl_async_xshm`
+- the managed environment, confirming `VGL_KGSL_ASYNC_XSHM=1` only for C
+- `GL_VENDOR=freedreno` and `GL_RENDERER=FD506`
+- visible orientation/correctness, resize behavior, FPS and MPix/s
+- `GL_ERROR`
+- post-test KGSL/Adreno kernel logs for fault, hang, timeout, reset, IOMMU
+  fault, BUG or Oops
+
+A, B, and C remain experimental comparisons until those real-device checks
+pass.  A source build or CI success alone is not a device-validation result.
+
 ## Devfreq note
 
 The working governor is `msm-adreno-tz`.  The driver exposes frequencies from
