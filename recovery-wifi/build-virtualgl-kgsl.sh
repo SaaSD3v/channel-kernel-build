@@ -38,6 +38,7 @@ test -e "$TJPEG_LIB"
 cmake -S "$SRC" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$PREFIX" \
+  -DCMAKE_INSTALL_LIBDIR=lib \
   -DTJPEG_INCLUDE_DIR=/usr/include \
   -DTJPEG_LIBRARY="$TJPEG_LIB" \
   -DVGL_USEXV=0 \
