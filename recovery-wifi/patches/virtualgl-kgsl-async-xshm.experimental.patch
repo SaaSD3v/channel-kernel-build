@@ -268,7 +268,7 @@ diff --git a/server/X11Trans.h b/server/X11Trans.h
 diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 --- a/server/X11Trans.cpp
 +++ b/server/X11Trans.cpp
-@@ -31,76 +31,141 @@
+@@ -31,75 +31,140 @@
  
  X11Trans::X11Trans(void) : thread(NULL), deadYet(false)
  {
@@ -482,7 +482,7 @@ diff --git a/server/X11Trans.cpp b/server/X11Trans.cpp
 diff --git a/server/x11transut.cpp b/server/x11transut.cpp
 --- a/server/x11transut.cpp
 +++ b/server/x11transut.cpp
-@@ -32,75 +32,96 @@
+@@ -32,75 +32,91 @@
  	fprintf(stderr, "Options:\n");
  	fprintf(stderr, "-sync = Test synchronous blitting code\n");
  	fprintf(stderr, "-bottomup = Test bottom-up blitting code\n");
@@ -631,11 +631,6 @@ diff --git a/server/x11transut.cpp b/server/x11transut.cpp
 +
 +			if(asyncfallback && !forcedFallback && timer.elapsed() >= 0.35)
 +			{
-+				/*
-+				 * Force a real transport transition while an async frame may
-+				 * still be pending.  Growing the FBX allocation causes a
-+				 * subsequent frame initialization to observe VGL_USEXSHM=0.
-+				 */
 +				setenv("VGL_USEXSHM", "0", 1);
 +				WIDTH += 64;
 +				HEIGHT += 64;
