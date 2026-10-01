@@ -146,7 +146,17 @@ case "$VARIANT" in
 esac
 
 say "[*] Stopping container $NAME"
-"$DS" --name="$NAME" stop >/dev/null 2>&1 || true
+STOP_LOG="/tmp/rctools-gpu-install-stop.$"
+if "$DS" --name="$NAME" stop >"$STOP_LOG" 2>&1; then
+  :
+elif grep -qi 'not running or invalid' "$STOP_LOG" 2>/dev/null; then
+  say "[*] Container was already stopped"
+else
+  cat "$STOP_LOG" >&2 2>/dev/null || true
+  rm -f "$STOP_LOG"
+  die "container stop failed; runtime was not modified"
+fi
+rm -f "$STOP_LOG"
 
 mkdir -p "$ROOT/opt/rctools-gpu" "$ROOT/opt"
 rm -rf "$OLD_MESA" "$OLD_VGL"
