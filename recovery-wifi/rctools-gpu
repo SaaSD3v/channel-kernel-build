@@ -1238,8 +1238,14 @@ apply_backend() {
 disable_profile() {
     cfg="$1"
 
-    disable_profile_files "$cfg" || return 1
-    stop_virgl_for_cfg "$cfg"
+    detach_virgl_for_cfg "$cfg" || return 1
+
+    if ! disable_profile_files "$cfg"; then
+        restore_detached_virgl || true
+        return 1
+    fi
+
+    commit_detached_virgl
     say 'GPU profile disabled; saved backend preserved'
 }
 
