@@ -81,7 +81,11 @@ jobs:
           PACK_INVERT=1 ASYNC_XSHM=1             recovery-wifi/build-virtualgl-kgsl.sh
 
           FBX=/tmp/virtualgl-kgsl-src/util/fbx.c
+          X11TRANS=/tmp/virtualgl-kgsl-src/server/X11Trans.cpp
+          X11TRANSH=/tmp/virtualgl-kgsl-src/server/X11Trans.h
           grep -Fq 'int eventBase = XShmGetEventBase(fb->wh.dpy);' "$FBX"
+          grep -Fq 'else if(kgslAsyncXShm) nFrames = 4;' "$X11TRANS"
+          grep -Fq 'FBXFrame *frames[4];' "$X11TRANSH"
 
           predicate="$(
             awk '
@@ -117,36 +121,49 @@ jobs:
 
           DISPLAY=:99 xdpyinfo | grep -Fq 'MIT-SHM'
 
-          env \
+          if ! env \
             DISPLAY=:99 \
             VGL_DISPLAY=eglkgsl \
             VGL_SYNC=0 \
             VGL_VERBOSE=1 \
-            timeout 30s "$X11UT" >/tmp/x11transut-sync-baseline.log 2>&1
+            timeout 30s "$X11UT" >/tmp/x11transut-sync-baseline.log 2>&1; then
+            echo '=== sync baseline failed ==='
+            cat /tmp/x11transut-sync-baseline.log
+            exit 1
+          fi
           grep -Fq 'Megapixels/sec' /tmp/x11transut-sync-baseline.log
           if grep -Fq '[VGL] KGSL async MIT-SHM presentation active' \
               /tmp/x11transut-sync-baseline.log; then
             echo 'Async XShm marker leaked into disabled baseline'
+            cat /tmp/x11transut-sync-baseline.log
             exit 1
           fi
 
-          env \
+          if ! env \
             DISPLAY=:99 \
             VGL_DISPLAY=eglkgsl \
             VGL_KGSL_ASYNC_XSHM=1 \
             VGL_SYNC=0 \
             VGL_VERBOSE=1 \
-            timeout 30s "$X11UT" >/tmp/x11transut-async.log 2>&1
+            timeout 30s "$X11UT" >/tmp/x11transut-async.log 2>&1; then
+            echo '=== async XShm test failed ==='
+            cat /tmp/x11transut-async.log
+            exit 1
+          fi
           grep -Fq 'Megapixels/sec' /tmp/x11transut-async.log
           grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async.log
 
-          env \
+          if ! env \
             DISPLAY=:99 \
             VGL_DISPLAY=eglkgsl \
             VGL_KGSL_ASYNC_XSHM=1 \
             VGL_SYNC=0 \
             VGL_VERBOSE=1 \
-            timeout 30s "$X11UT" -bottomup >/tmp/x11transut-async-bottomup.log 2>&1
+            timeout 30s "$X11UT" -bottomup >/tmp/x11transut-async-bottomup.log 2>&1; then
+            echo '=== async XShm bottom-up test failed ==='
+            cat /tmp/x11transut-async-bottomup.log
+            exit 1
+          fi
           grep -Fq 'Megapixels/sec' /tmp/x11transut-async-bottomup.log
           grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async-bottomup.log
 
