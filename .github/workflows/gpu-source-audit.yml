@@ -33,6 +33,7 @@ jobs:
           set -euo pipefail
 
           dash -n recovery-wifi/rctools-gpu
+          sh -n recovery-wifi/install-gpu-runtime.sh
           bash -n recovery-wifi/build-virtualgl-kgsl.sh
           bash -n recovery-wifi/build-mesa-kgsl-channel.sh
 
