@@ -1,48 +1,46 @@
 From: RCTools GPU audit
-Subject: [PATCH] freedreno/kgsl: harden old-kernel and headless X11 paths
+Subject: [PATCH] freedreno/kgsl: harden Channel old-kernel and headless paths
 
 Base: lfdevs/mesa-for-android-container
-Validated runtime commit: 98f3d6229d61452cef80f8563af7c56ae599dc14
+Commit: 98f3d6229d61452cef80f8563af7c56ae599dc14
 
-This patch collects Channel-specific compatibility fixes that should be
-validated before replacing the known-good Mesa runtime:
+Changes:
+* skip generic DRM PCI probing when the explicit loader override is kgsl;
+* require an actual DRI3 X extension before the KGSL DRI3 fd shortcut;
+* support legacy handle-based Android ION after the new fd-returning ALLOC
+  ioctl is rejected with ENOTTY/EINVAL;
+* avoid NULL dereferences and release KGSL allocation IDs if
+  fd_bo_from_handle() fails.
 
-* do not run DRM PCI discovery when the explicit loader override is kgsl;
-  the Debian build is not __TERMUX__, so the existing Termux-only guard
-  still emits a misleading DRM warning on /dev/kgsl-3d0;
-* require DRI3 to actually exist before the kgsl x11_dri3_open shortcut,
-  preventing a forced DRI3 path against TigerVNC;
-* fall back to the legacy Android ION ABI (ALLOC handle, SHARE fd, FREE
-  handle) when the fd-returning ION_IOC_ALLOC ABI is rejected by the
-  Channel 4.9 kernel;
-* avoid two NULL dereferences after fd_bo_from_handle() failures and release
-  the kernel allocation/import ID on those error paths.
-
-The legacy ION transaction sequence has already been validated on the real
-device through the temporary LD_PRELOAD compatibility shim.  The source-level
-version still requires real-device regression testing.
+The legacy ION transaction sequence was validated on the real Channel kernel
+with the temporary libion-legacy preload shim.  This source patch still
+requires full real-device regression testing before replacing the known-good
+Mesa runtime.
 
 diff --git a/src/loader/loader.c b/src/loader/loader.c
 --- a/src/loader/loader.c
 +++ b/src/loader/loader.c
-@@
+@@ -725,12 +725,10 @@
  bool
  loader_get_pci_id_for_fd(int fd, int *vendor_id, int *chip_id)
  {
 -#ifdef __TERMUX__
-    const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
-    if (env && strcmp(env, "kgsl") == 0) {
-       return false;
-    }
+-   const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
+-   if (env && strcmp(env, "kgsl") == 0) {
+-      return false;
+-   }
 -#endif
++   const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
++   if (env && strcmp(env, "kgsl") == 0) {
++      return false;
++   }
  #ifdef __linux__
     /* Implementation without causing full enumeration of DRM devices. */
     if (loader_get_linux_pci_id_for_fd(fd, vendor_id, chip_id))
-       return true;
 diff --git a/src/x11/x11_dri3.c b/src/x11/x11_dri3.c
 --- a/src/x11/x11_dri3.c
 +++ b/src/x11/x11_dri3.c
-@@
+@@ -49,14 +49,20 @@
     int                          fd;
     const xcb_query_extension_reply_t *extension;
  
@@ -50,11 +48,15 @@ diff --git a/src/x11/x11_dri3.c b/src/x11/x11_dri3.c
 -   if (env && !strcmp(env, "kgsl"))
 -      return open("/dev/kgsl-3d0", O_RDWR);
 -
-    xcb_prefetch_extension_data(conn, &xcb_dri3_id);
-    extension = xcb_get_extension_data(conn, &xcb_dri3_id);
-    if (!(extension && extension->present))
-       return -1;
- 
+-   xcb_prefetch_extension_data(conn, &xcb_dri3_id);
+-   extension = xcb_get_extension_data(conn, &xcb_dri3_id);
+-   if (!(extension && extension->present))
+-      return -1;
++   xcb_prefetch_extension_data(conn, &xcb_dri3_id);
++   extension = xcb_get_extension_data(conn, &xcb_dri3_id);
++   if (!(extension && extension->present))
++      return -1;
++
 +   /*
 +    * The KGSL backend does not use xcb_dri3_open() to obtain a DRM fd, but
 +    * callers selecting the DRI3 GLX path still require a real DRI3 server.
@@ -64,17 +66,125 @@ diff --git a/src/x11/x11_dri3.c b/src/x11/x11_dri3.c
 +   const char *env = getenv("MESA_LOADER_DRIVER_OVERRIDE");
 +   if (env && !strcmp(env, "kgsl"))
 +      return open("/dev/kgsl-3d0", O_RDWR);
-+
+ 
     cookie = xcb_dri3_open(conn,
                            root,
-                           provider);
 diff --git a/src/freedreno/drm/kgsl/kgsl_bo.c b/src/freedreno/drm/kgsl/kgsl_bo.c
 --- a/src/freedreno/drm/kgsl/kgsl_bo.c
 +++ b/src/freedreno/drm/kgsl/kgsl_bo.c
-@@
+@@ -185,115 +185,182 @@
      }
  
      bo = fd_bo_from_handle(dev, req.id, 0);
+-
+-    struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
+-    kgsl_bo->bo_type = KGSL_BO_IMPORT;
+-    kgsl_bo->import_fd = os_dupfd_cloexec(fd);
+-
+-    return bo;
+-}
+-
+-static int
+-dma_heap_alloc(uint64_t size)
+-{
+-   int ret;
+-   int dma_heap = open("/dev/dma_heap/system", O_RDONLY);
+-
+-   if (dma_heap < 0) {
+-      int ion_heap = open("/dev/ion", O_RDONLY);
+-
+-      if (ion_heap < 0)
+-         return -1;
+-
+-      struct ion_allocation_data {
+-         __u64 len;
+-         __u32 heap_id_mask;
+-         __u32 flags;
+-         __u32 fd;
+-         __u32 unused;
+-      } alloc_data = {
+-         .len = size,
+-         /* ION_HEAP_SYSTEM | ION_SYSTEM_HEAP_ID */
+-         .heap_id_mask = (1U << 0) | (1U << 25),
+-         .flags = 0, /* uncached */
+-      };
+-
+-      ret = kgsl_pipe_safe_ioctl(ion_heap, _IOWR('I', 0, struct ion_allocation_data),
+-                      &alloc_data);
+-
+-      close(ion_heap);
+-
+-      if (ret)
+-         return -1;
+-
+-      return alloc_data.fd;
+-   } else {
+-      struct dma_heap_allocation_data alloc_data = {
+-         .len = size,
+-         .fd_flags = O_RDWR | O_CLOEXEC,
+-      };
+-
+-      ret = kgsl_pipe_safe_ioctl(dma_heap, DMA_HEAP_IOCTL_ALLOC, &alloc_data);
+-
+-      close(dma_heap);
+-
+-      if (ret)
+-         return -1;
+-
+-      return alloc_data.fd;
+-   }
+-}
+-
+-static struct fd_bo *
+-kgsl_bo_new_dmabuf(struct fd_device *dev, uint32_t size)
+-{
+-   int fd;
+-   struct fd_bo *bo;
+-
+-   fd = dma_heap_alloc(size);
+-   if (fd < 0) {
+-      ERROR_MSG("Failed to allocate dma-buf (%s)", strerror(errno));
+-      return NULL;
+-   }
+-
+-   bo = kgsl_bo_from_dmabuf(dev, fd);
+-
+-   close(fd);
+-   return bo;
+-}
+-
+-struct fd_bo *
+-kgsl_bo_new(struct fd_device *dev, uint32_t size, uint32_t flags)
+-{
+-    if (flags & (FD_BO_SHARED | FD_BO_SCANOUT)) {
+-       return kgsl_bo_new_dmabuf(dev, size);
+-    }
+-
+-    int ret;
+-    struct fd_bo *bo;
+-    struct kgsl_gpumem_alloc_id req = {
+-        .size = size,
+-    };
+-
+-    if (flags & FD_BO_GPUREADONLY)
+-        req.flags |= KGSL_MEMFLAGS_GPUREADONLY;
+-
+-    ret = kgsl_pipe_safe_ioctl(dev->fd, IOCTL_KGSL_GPUMEM_ALLOC_ID, &req);
+-
+-    if (ret) {
+-        ERROR_MSG("GPUMEM_ALLOC_ID failed (%s)", strerror(errno));
+-        return NULL;
+-    }
+-
+-    bo = kgsl_bo_from_handle(dev, size, req.id);
+-
+-    struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
+-    kgsl_bo->bo_type = KGSL_BO_NATIVE;
+-
+-    if (!bo) {
+-        ERROR_MSG("Failed to allocate buffer object");
+-        return NULL;
+-    }
 +    if (!bo) {
 +        struct kgsl_gpumem_free_id free_req = {
 +            .id = req.id,
@@ -82,36 +192,51 @@ diff --git a/src/freedreno/drm/kgsl/kgsl_bo.c b/src/freedreno/drm/kgsl/kgsl_bo.c
 +        kgsl_pipe_safe_ioctl(dev->fd, IOCTL_KGSL_GPUMEM_FREE_ID, &free_req);
 +        return NULL;
 +    }
- 
-     struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
-     kgsl_bo->bo_type = KGSL_BO_IMPORT;
-     kgsl_bo->import_fd = os_dupfd_cloexec(fd);
-@@
-       struct ion_allocation_data {
-          __u64 len;
-          __u32 heap_id_mask;
-          __u32 flags;
-          __u32 fd;
-@@
-       ret = kgsl_pipe_safe_ioctl(ion_heap, _IOWR('I', 0, struct ion_allocation_data),
-                       &alloc_data);
- 
--      close(ion_heap);
--
--      if (ret)
--         return -1;
--
--      return alloc_data.fd;
++
++    struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
++    kgsl_bo->bo_type = KGSL_BO_IMPORT;
++    kgsl_bo->import_fd = os_dupfd_cloexec(fd);
++
++    return bo;
++}
++
++static int
++dma_heap_alloc(uint64_t size)
++{
++   int ret;
++   int dma_heap = open("/dev/dma_heap/system", O_RDONLY);
++
++   if (dma_heap < 0) {
++      int ion_heap = open("/dev/ion", O_RDONLY);
++
++      if (ion_heap < 0)
++         return -1;
++
++      struct ion_allocation_data {
++         __u64 len;
++         __u32 heap_id_mask;
++         __u32 flags;
++         __u32 fd;
++         __u32 unused;
++      } alloc_data = {
++         .len = size,
++         /* ION_HEAP_SYSTEM | ION_SYSTEM_HEAP_ID */
++         .heap_id_mask = (1U << 0) | (1U << 25),
++         .flags = 0, /* uncached */
++      };
++
++      ret = kgsl_pipe_safe_ioctl(ion_heap, _IOWR('I', 0, struct ion_allocation_data),
++                      &alloc_data);
++
 +      if (!ret) {
 +         close(ion_heap);
 +         return alloc_data.fd;
 +      }
 +
 +      /*
-+       * Older Android ION (including the Channel 4.9 kernel) returns a handle
-+       * from ALLOC and requires SHARE to obtain a dma-buf fd.  Newer userspace
-+       * uses an fd-returning ALLOC structure with the same ioctl number but a
-+       * different size, which the old kernel rejects with ENOTTY/EINVAL.
++       * Older Android ION returns a handle from ALLOC and requires SHARE to
++       * obtain a dma-buf fd.  Newer userspace uses an fd-returning ALLOC
++       * structure with the same ioctl number but a different structure size.
 +       */
 +      if (errno != ENOTTY && errno != EINVAL) {
 +         close(ion_heap);
@@ -166,13 +291,65 @@ diff --git a/src/freedreno/drm/kgsl/kgsl_bo.c b/src/freedreno/drm/kgsl/kgsl_bo.c
 +         return -1;
 +
 +      return legacy_share.fd;
-    } else {
-       struct dma_heap_allocation_data alloc_data = {
-          .len = size,
-          .fd_flags = O_RDWR | O_CLOEXEC,
-@@
- 
-     bo = kgsl_bo_from_handle(dev, size, req.id);
++   } else {
++      struct dma_heap_allocation_data alloc_data = {
++         .len = size,
++         .fd_flags = O_RDWR | O_CLOEXEC,
++      };
++
++      ret = kgsl_pipe_safe_ioctl(dma_heap, DMA_HEAP_IOCTL_ALLOC, &alloc_data);
++
++      close(dma_heap);
++
++      if (ret)
++         return -1;
++
++      return alloc_data.fd;
++   }
++}
++
++static struct fd_bo *
++kgsl_bo_new_dmabuf(struct fd_device *dev, uint32_t size)
++{
++   int fd;
++   struct fd_bo *bo;
++
++   fd = dma_heap_alloc(size);
++   if (fd < 0) {
++      ERROR_MSG("Failed to allocate dma-buf (%s)", strerror(errno));
++      return NULL;
++   }
++
++   bo = kgsl_bo_from_dmabuf(dev, fd);
++
++   close(fd);
++   return bo;
++}
++
++struct fd_bo *
++kgsl_bo_new(struct fd_device *dev, uint32_t size, uint32_t flags)
++{
++    if (flags & (FD_BO_SHARED | FD_BO_SCANOUT)) {
++       return kgsl_bo_new_dmabuf(dev, size);
++    }
++
++    int ret;
++    struct fd_bo *bo;
++    struct kgsl_gpumem_alloc_id req = {
++        .size = size,
++    };
++
++    if (flags & FD_BO_GPUREADONLY)
++        req.flags |= KGSL_MEMFLAGS_GPUREADONLY;
++
++    ret = kgsl_pipe_safe_ioctl(dev->fd, IOCTL_KGSL_GPUMEM_ALLOC_ID, &req);
++
++    if (ret) {
++        ERROR_MSG("GPUMEM_ALLOC_ID failed (%s)", strerror(errno));
++        return NULL;
++    }
++
++    bo = kgsl_bo_from_handle(dev, size, req.id);
 +    if (!bo) {
 +        struct kgsl_gpumem_free_id free_req = {
 +            .id = req.id,
@@ -181,14 +358,9 @@ diff --git a/src/freedreno/drm/kgsl/kgsl_bo.c b/src/freedreno/drm/kgsl/kgsl_bo.c
 +        ERROR_MSG("Failed to allocate buffer object");
 +        return NULL;
 +    }
- 
-     struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
-     kgsl_bo->bo_type = KGSL_BO_NATIVE;
--
--    if (!bo) {
--        ERROR_MSG("Failed to allocate buffer object");
--        return NULL;
--    }
++
++    struct kgsl_bo *kgsl_bo = to_kgsl_bo(bo);
++    kgsl_bo->bo_type = KGSL_BO_NATIVE;
  
      return bo;
  }
