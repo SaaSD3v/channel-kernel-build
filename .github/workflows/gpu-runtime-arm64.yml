@@ -8,6 +8,7 @@ on:
     paths:
       - 'recovery-wifi/build-mesa-kgsl-channel.sh'
       - 'recovery-wifi/build-virtualgl-kgsl.sh'
+      - 'recovery-wifi/install-gpu-runtime.sh'
       - 'recovery-wifi/patches/mesa-kgsl-channel-compat.patch'
       - 'recovery-wifi/patches/virtualgl-eglkgsl.patch'
       - 'recovery-wifi/patches/virtualgl-kgsl-pack-invert.experimental.patch'
@@ -119,6 +120,9 @@ jobs:
     timeout-minutes: 15
 
     steps:
+      - name: Checkout project
+        uses: actions/checkout@v5
+
       - name: Download Mesa runtime
         uses: actions/download-artifact@v8
         with:
@@ -161,9 +165,12 @@ jobs:
 
           test "$(find "$OUT" -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 5
 
+          cp recovery-wifi/install-gpu-runtime.sh "$OUT/install-gpu-runtime.sh"
+          chmod 0755 "$OUT/install-gpu-runtime.sh"
+
           (
             cd "$OUT"
-            sha256sum ./*.tar.gz | sort -k2 > SHA256SUMS
+            sha256sum ./*.tar.gz ./install-gpu-runtime.sh | sort -k2 > SHA256SUMS
           )
 
           cat >"$OUT/MANIFEST.txt" <<EOF
