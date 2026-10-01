@@ -50,11 +50,376 @@ jobs:
           grep -Fq '[4] Disable' recovery-wifi/rctools-gpu
           grep -Fq '[5] Test' recovery-wifi/rctools-gpu
 
-          if grep -nF '.$"' recovery-wifi/rctools-gpu ||
-             grep -nF ".$'" recovery-wifi/rctools-gpu; then
-            echo 'Found non-unique temporary-file name ending in a single $'
+          for script in recovery-wifi/rctools-gpu recovery-wifi/install-gpu-runtime.sh; do
+            if grep -nF '.$"' "$script" || grep -nF ".
+
+          grep -Fq 'VGL_DISPLAY=eglkgsl' recovery-wifi/rctools-gpu
+          grep -Fq 'VGL_FORCEALPHA=1' recovery-wifi/rctools-gpu
+          grep -Fq 'VGL_READBACK=sync' recovery-wifi/rctools-gpu
+          grep -Fq "grep -Fqx 'async_xshm=1'" recovery-wifi/rctools-gpu
+          grep -Fq "'VGL_KGSL_ASYNC_XSHM=1'" recovery-wifi/rctools-gpu
+          grep -Fq 'virtualgl_async_xshm=' recovery-wifi/rctools-gpu
+          grep -Fq "grep -Fqx 'pbo_pipeline=1'" recovery-wifi/rctools-gpu
+          grep -Fq "'VGL_KGSL_PBO_PIPELINE=1'" recovery-wifi/rctools-gpu
+          grep -Fq 'virtualgl_pbo_pipeline=' recovery-wifi/rctools-gpu
+          grep -Fq 'pbo_pipeline requires pack_invert' recovery-wifi/rctools-gpu
+
+      - name: Exercise on-device installer rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          T=/tmp/rctools-installer-ut
+          ROOT="$T/rootfs"
+          BUNDLE="$T/bundle"
+          CFG="$T/container.config"
+          FAKE_DS="$T/droidspaces"
+          WRAP="$T/wrap"
+
+          rm -rf "$T"
+          mkdir -p "$BUNDLE" "$WRAP"
+
+          cat >"$FAKE_DS" <<'EOF'
+          #!/bin/sh
+          case "${FAKE_DS_MODE:-success}" in
+            success) exit 0 ;;
+            stopped)
+              echo "Container 'debian' is not running or invalid." >&2
+              exit 1
+              ;;
+            fail)
+              echo "Cannot stop 'debian': another command is managing this container" >&2
+              exit 1
+              ;;
+          esac
+          EOF
+          chmod +x "$FAKE_DS"
+
+          build_bundle() {
+            rm -rf "$T/mesa-stage" "$T/vgl-stage"
+            mkdir -p               "$T/mesa-stage/usr/lib/aarch64-linux-gnu/dri"               "$T/mesa-stage/usr/share/rctools-gpu"               "$T/vgl-stage/opt/VirtualGL-KGSL/bin"               "$T/vgl-stage/opt/VirtualGL-KGSL/lib"               "$T/vgl-stage/opt/VirtualGL-KGSL/share/rctools-gpu"
+
+            : >"$T/mesa-stage/usr/lib/aarch64-linux-gnu/dri/kgsl_dri.so"
+            cat >"$T/mesa-stage/usr/share/rctools-gpu/mesa-channel-kgsl.buildinfo" <<'EOF'
+          mesa_source_commit=98f3d6229d61452cef80f8563af7c56ae599dc14
+          architecture=arm64
+          freedreno_kmds=kgsl
+          EOF
+
+            cat >"$T/vgl-stage/opt/VirtualGL-KGSL/bin/vglrun" <<'EOF'
+          #!/bin/sh
+          exit 0
+          EOF
+            chmod +x "$T/vgl-stage/opt/VirtualGL-KGSL/bin/vglrun"
+            : >"$T/vgl-stage/opt/VirtualGL-KGSL/lib/libvglfaker.so"
+            cat >"$T/vgl-stage/opt/VirtualGL-KGSL/share/rctools-gpu/virtualgl-kgsl.buildinfo" <<'EOF'
+          pack_invert=0
+          async_xshm=0
+          pbo_pipeline=0
+          EOF
+
+            tar -czf "$BUNDLE/mesa_test_arm64.tar.gz" -C "$T/mesa-stage" .
+            tar -czf "$BUNDLE/VirtualGL-KGSL-stable-arm64.tar.gz"               -C "$T/vgl-stage" opt/VirtualGL-KGSL
+            (
+              cd "$BUNDLE"
+              sha256sum                 mesa_test_arm64.tar.gz                 VirtualGL-KGSL-stable-arm64.tar.gz > SHA256SUMS
+            )
+          }
+
+          reset_root() {
+            rm -rf "$ROOT"
+            mkdir -p               "$ROOT/opt/rctools-gpu/mesa"               "$ROOT/opt/VirtualGL-KGSL"
+            echo old-mesa >"$ROOT/opt/rctools-gpu/mesa/OLD"
+            echo old-vgl >"$ROOT/opt/VirtualGL-KGSL/OLD"
+            printf 'name=debian\nrootfs_path=%s\n' "$ROOT" >"$CFG"
+          }
+
+          build_bundle
+
+          # Already-stopped is safe and must install successfully.
+          reset_root
+          FAKE_DS_MODE=stopped           DS_BIN="$FAKE_DS" CFG_PATH="$CFG"             sh recovery-wifi/install-gpu-runtime.sh "$BUNDLE" A debian
+          test -r "$ROOT/opt/rctools-gpu/mesa/usr/share/rctools-gpu/mesa-channel-kgsl.buildinfo"
+          test -r "$ROOT/opt/VirtualGL-KGSL/share/rctools-gpu/virtualgl-kgsl.buildinfo"
+          test ! -e "$ROOT/opt/rctools-gpu/mesa/OLD"
+          test ! -e "$ROOT/opt/VirtualGL-KGSL/OLD"
+
+          # A real stop failure must leave both existing runtimes untouched.
+          reset_root
+          if FAKE_DS_MODE=fail              DS_BIN="$FAKE_DS" CFG_PATH="$CFG"              sh recovery-wifi/install-gpu-runtime.sh "$BUNDLE" A debian; then
+            echo 'installer unexpectedly ignored a real stop failure'
             exit 1
           fi
+          test "$(cat "$ROOT/opt/rctools-gpu/mesa/OLD")" = old-mesa
+          test "$(cat "$ROOT/opt/VirtualGL-KGSL/OLD")" = old-vgl
+
+          # Failure while backing up VirtualGL must restore Mesa and must not
+          # delete the VirtualGL directory that never moved successfully.
+          reset_root
+          cat >"$WRAP/mv" <<'EOF'
+          #!/bin/sh
+          case "$1:$2" in
+            */opt/VirtualGL-KGSL:*/opt/.VirtualGL-KGSL.old.*)
+              echo 'forced VirtualGL backup failure' >&2
+              exit 1
+              ;;
+          esac
+          exec /usr/bin/mv "$@"
+          EOF
+          chmod +x "$WRAP/mv"
+
+          if PATH="$WRAP:$PATH" FAKE_DS_MODE=stopped              DS_BIN="$FAKE_DS" CFG_PATH="$CFG"              sh recovery-wifi/install-gpu-runtime.sh "$BUNDLE" A debian; then
+            echo 'installer unexpectedly survived forced VGL backup failure'
+            exit 1
+          fi
+          test "$(cat "$ROOT/opt/rctools-gpu/mesa/OLD")" = old-mesa
+          test "$(cat "$ROOT/opt/VirtualGL-KGSL/OLD")" = old-vgl
+
+          # A TERM after the new Mesa has been moved into place must restore
+          # both old runtimes.  The mv wrapper performs the real move first
+          # and then signals the installer parent process.
+          reset_root
+          rm -f "$WRAP/mv"
+          cat >"$WRAP/mv" <<'EOF'
+          #!/bin/sh
+          case "$1:$2" in
+            */.rctools-gpu-install.*/mesa:*/opt/rctools-gpu/mesa)
+              /usr/bin/mv "$@" || exit $?
+              kill -TERM "$PPID"
+              sleep 1
+              exit 0
+              ;;
+          esac
+          exec /usr/bin/mv "$@"
+          EOF
+          chmod +x "$WRAP/mv"
+
+          set +e
+          PATH="$WRAP:$PATH" FAKE_DS_MODE=stopped             DS_BIN="$FAKE_DS" CFG_PATH="$CFG"             sh recovery-wifi/install-gpu-runtime.sh "$BUNDLE" A debian
+          signal_rc=$?
+          set -e
+          test "$signal_rc" -ne 0
+          test "$(cat "$ROOT/opt/rctools-gpu/mesa/OLD")" = old-mesa
+          test "$(cat "$ROOT/opt/VirtualGL-KGSL/OLD")" = old-vgl
+          test ! -e "$ROOT/opt/.VirtualGL-KGSL.old."*
+          test ! -e "$ROOT/opt/rctools-gpu/.mesa.old."*
+
+      - name: Build stable VirtualGL eglkgsl source
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x recovery-wifi/build-virtualgl-kgsl.sh
+          PACK_INVERT=0 ASYNC_XSHM=0             recovery-wifi/build-virtualgl-kgsl.sh
+
+      - name: Build pack-invert VirtualGL source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACK_INVERT=1 ASYNC_XSHM=0             recovery-wifi/build-virtualgl-kgsl.sh
+
+      - name: Build pack-invert plus async-XShm VirtualGL source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACK_INVERT=1 ASYNC_XSHM=1             recovery-wifi/build-virtualgl-kgsl.sh
+
+          FBX=/tmp/virtualgl-kgsl-src/util/fbx.c
+          X11TRANS=/tmp/virtualgl-kgsl-src/server/X11Trans.cpp
+          X11TRANSH=/tmp/virtualgl-kgsl-src/server/X11Trans.h
+          grep -Fq 'int eventBase = XShmGetEventBase(fb->wh.dpy);' "$FBX"
+          grep -Fq 'else if(kgslAsyncXShm) nFrames = 4;' "$X11TRANS"
+          grep -Fq 'FBXFrame *frames[4];' "$X11TRANSH"
+
+          predicate="$(
+            awk '
+              /^fbx_shm_completion\(/ {inside=1}
+              inside {print}
+              inside && /^}/ {exit}
+            ' "$FBX"
+          )"
+          if printf '%s\n' "$predicate" | grep -Fq 'XShmGetEventBase'; then
+            echo 'Xlib call found inside XIfEvent predicate'
+            exit 1
+          fi
+
+          X11UT="$(find /tmp/virtualgl-kgsl-build -type f -name x11transut -perm -111 -print -quit)"
+          test -n "$X11UT"
+
+          Xvfb :99 -screen 0 1024x768x24 -nolisten tcp >/tmp/rctools-xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for _ in $(seq 1 50); do
+            if DISPLAY=:99 xdpyinfo >/tmp/rctools-xdpyinfo.log 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 0.1
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat /tmp/rctools-xvfb.log
+            exit 1
+          fi
+
+          DISPLAY=:99 xdpyinfo | grep -Fq 'MIT-SHM'
+
+          if ! env \
+            DISPLAY=:99 \
+            VGL_DISPLAY=eglkgsl \
+            VGL_SYNC=0 \
+            VGL_VERBOSE=1 \
+            timeout 30s "$X11UT" >/tmp/x11transut-sync-baseline.log 2>&1; then
+            echo '=== sync baseline failed ==='
+            cat /tmp/x11transut-sync-baseline.log
+            exit 1
+          fi
+          grep -Fq 'Megapixels/sec' /tmp/x11transut-sync-baseline.log
+          if grep -Fq '[VGL] KGSL async MIT-SHM presentation active' \
+              /tmp/x11transut-sync-baseline.log; then
+            echo 'Async XShm marker leaked into disabled baseline'
+            cat /tmp/x11transut-sync-baseline.log
+            exit 1
+          fi
+
+          if ! env \
+            DISPLAY=:99 \
+            VGL_DISPLAY=eglkgsl \
+            VGL_KGSL_ASYNC_XSHM=1 \
+            VGL_SYNC=0 \
+            VGL_VERBOSE=1 \
+            timeout 30s "$X11UT" >/tmp/x11transut-async.log 2>&1; then
+            echo '=== async XShm test failed ==='
+            cat /tmp/x11transut-async.log
+            exit 1
+          fi
+          grep -Fq 'Megapixels/sec' /tmp/x11transut-async.log
+          grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async.log
+
+          if ! env \
+            DISPLAY=:99 \
+            VGL_DISPLAY=eglkgsl \
+            VGL_KGSL_ASYNC_XSHM=1 \
+            VGL_SYNC=0 \
+            VGL_VERBOSE=1 \
+            timeout 30s "$X11UT" -bottomup >/tmp/x11transut-async-bottomup.log 2>&1; then
+            echo '=== async XShm bottom-up test failed ==='
+            cat /tmp/x11transut-async-bottomup.log
+            exit 1
+          fi
+          grep -Fq 'Megapixels/sec' /tmp/x11transut-async-bottomup.log
+          grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async-bottomup.log
+
+          if ! env \
+            DISPLAY=:99 \
+            VGL_DISPLAY=eglkgsl \
+            VGL_KGSL_ASYNC_XSHM=1 \
+            VGL_SYNC=0 \
+            VGL_VERBOSE=1 \
+            timeout 30s "$X11UT" -asyncfallback >/tmp/x11transut-async-fallback.log 2>&1; then
+            echo '=== async-to-sync XShm fallback test failed ==='
+            cat /tmp/x11transut-async-fallback.log
+            exit 1
+          fi
+          grep -Fq '[VGL] KGSL async MIT-SHM presentation active' /tmp/x11transut-async-fallback.log
+          grep -Fq '[TEST] forced MIT-SHM -> synchronous fallback' /tmp/x11transut-async-fallback.log
+          grep -Fq 'Megapixels/sec' /tmp/x11transut-async-fallback.log
+
+          echo '=== Xvfb sync baseline ==='
+          grep -E 'Testing|Megapixels/sec' /tmp/x11transut-sync-baseline.log
+          echo '=== Xvfb async MIT-SHM ==='
+          grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async.log
+          echo '=== Xvfb async MIT-SHM + bottom-up ==='
+          grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-bottomup.log
+          echo '=== Xvfb async -> sync fallback ==='
+          grep -E 'KGSL async MIT-SHM|forced MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-fallback.log
+
+          {
+            echo '### VirtualGL async-XShm Xvfb smoke'
+            echo
+            echo 'Baseline (async gate disabled):'
+            echo '~~~text'
+            grep -E 'Testing|Megapixels/sec' /tmp/x11transut-sync-baseline.log
+            echo '~~~'
+            echo
+            echo 'Async MIT-SHM:'
+            echo '~~~text'
+            grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async.log
+            echo '~~~'
+            echo
+            echo 'Async MIT-SHM + bottom-up input:'
+            echo '~~~text'
+            grep -E 'KGSL async MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-bottomup.log
+            echo '~~~'
+            echo
+            echo 'Async MIT-SHM -> synchronous fallback:'
+            echo '~~~text'
+            grep -E 'KGSL async MIT-SHM|forced MIT-SHM|Testing|Megapixels/sec' /tmp/x11transut-async-fallback.log
+            echo '~~~'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build two-PBO KGSL VirtualGL source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACK_INVERT=1 ASYNC_XSHM=1 PBO_PIPELINE=1 \
+            recovery-wifi/build-virtualgl-kgsl.sh
+
+          VD=/tmp/virtualgl-kgsl-src/server/VirtualDrawable.cpp
+          VDH=/tmp/virtualgl-kgsl-src/server/VirtualDrawable.h
+          grep -Fq 'KGSL two-PBO readback pipeline active' "$VD"
+          grep -Fq 'VGL_KGSL_PBO_PIPELINE' "$VD"
+          grep -Fq 'GLuint kgslPbo[2];' "$VDH"
+          grep -Fq 'kgslPboPrimed' "$VDH"
+          grep -Fq 'pbo_pipeline=$PBO_PIPELINE' recovery-wifi/build-virtualgl-kgsl.sh
+          grep -Fq 'PBO_PIPELINE=1 requires PACK_INVERT=1' recovery-wifi/build-virtualgl-kgsl.sh
+
+      - name: Validate Mesa KGSL compatibility patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MESA=/tmp/mesa-kgsl-audit
+          rm -rf "$MESA"
+          git init -q "$MESA"
+          git -C "$MESA" remote add origin             https://github.com/lfdevs/mesa-for-android-container.git
+          git -C "$MESA" fetch -q --depth=1 origin             98f3d6229d61452cef80f8563af7c56ae599dc14
+          git -C "$MESA" checkout -q --detach FETCH_HEAD
+
+          PATCH="$GITHUB_WORKSPACE/recovery-wifi/patches/mesa-kgsl-channel-compat.patch"
+          git -C "$MESA" apply --check "$PATCH"
+          git -C "$MESA" apply "$PATCH"
+          git -C "$MESA" diff --check
+
+          grep -Fq '#include "vulkan/ion/ion.h"'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq '#include "vulkan/ion/ion_4.19.h"'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'ION_IOC_NEW_ALLOC'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'ION_IOC_SHARE'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'DMA_HEAP_IOCTL_ALLOC'             "$MESA/src/freedreno/drm/kgsl/kgsl_bo.c"
+          grep -Fq 'if (!(extension && extension->present))'             "$MESA/src/x11/x11_dri3.c"
+          grep -Fq 'MESA_LOADER_DRIVER_OVERRIDE'             "$MESA/src/loader/loader.c"
+
+      - name: Summarize audit
+        shell: bash
+        run: |
+          {
+            echo '### GPU source audit'
+            echo
+            echo '- RCTools shell syntax + menu contract: PASS'
+            echo '- Temp-file uniqueness guard: PASS'
+            echo '- VirtualGL eglkgsl source build: PASS'
+            echo '- VirtualGL pack-invert source build: PASS'
+            echo '- VirtualGL two-buffer async-XShm source build: PASS'
+            echo '- VirtualGL two-PBO readback source build: PASS'
+            echo '- Mesa Channel KGSL compatibility patch: PASS'
+            echo
+            echo 'Mesa runtime and experimental VirtualGL variants still require real-device validation.'
+          } >> "$GITHUB_STEP_SUMMARY"
+" "$script"; then
+              echo "Found non-unique temporary-file name ending in a single $: $script"
+              exit 1
+            fi
+          done
 
           grep -Fq 'VGL_DISPLAY=eglkgsl' recovery-wifi/rctools-gpu
           grep -Fq 'VGL_FORCEALPHA=1' recovery-wifi/rctools-gpu
