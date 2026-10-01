@@ -328,9 +328,10 @@ Variant D keeps C's presentation pipeline and adds a separate, opt-in readback
 pipeline.  It is accepted only for the project-specific `eglkgsl` backend,
 full-frame mono X11 readback, and a top-down layout produced through
 `GL_MESA_pack_invert`.  The first frame warms the pipeline synchronously.
-Subsequent frames copy the previous PBO before queuing the current
-`glReadPixels()` into the other PBO, so D intentionally adds one frame of
-readback latency.  Resize, format, type, pitch, read-buffer, or readback-context
+Subsequent frames queue the current `glReadPixels()` into one PBO first,
+then map/copy the previous PBO.  That allows GPU readback of frame N to overlap
+CPU consumption of frame N-1.  D intentionally adds one frame of readback
+latency.  Resize, format, type, pitch, read-buffer, or readback-context
 changes reset the pipeline rather than reusing incompatible data.
 
 The installed runtime identifies its feature set in:
