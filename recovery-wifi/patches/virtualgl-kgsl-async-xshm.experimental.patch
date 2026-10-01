@@ -199,21 +199,17 @@ diff --git a/common/Frame.h b/common/Frame.h
 diff --git a/common/Frame.cpp b/common/Frame.cpp
 --- a/common/Frame.cpp
 +++ b/common/Frame.cpp
-@@ -672,6 +672,33 @@
+@@ -672,6 +672,29 @@
  }
  
  
 +bool FBXFrame::redrawAsync(void)
 +{
 +	#ifdef _WIN32
-+	redraw();
 +	return false;
 +	#else
 +	if(!fb.shm || fb.pm)
-+	{
-+		redraw();
 +		return false;
-+	}
 +
 +	if(flags & FRAME_BOTTOMUP) TRY_FBX(fbx_flip(&fb, 0, 0, 0, 0));
 +	TRY_FBX(fbx_awrite_event(&fb, 0, 0, 0, 0, fb.width, fb.height));
