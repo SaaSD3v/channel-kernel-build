@@ -605,9 +605,14 @@ container_env_file() {
     # its internal workspace when it is read only from container.config.
     # RCTools therefore treats the config value as metadata and always passes
     # the effective file explicitly through --env.
+    dir="$("$BB" dirname "$cfg")"
     if [ -z "$env" ]; then
-        dir="$("$BB" dirname "$cfg")"
         env="$dir/.env"
+    else
+        case "$env" in
+            /*) ;;
+            *) env="$dir/$env" ;;
+        esac
     fi
 
     printf '%s\n' "$env"
