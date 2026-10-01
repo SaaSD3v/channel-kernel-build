@@ -215,6 +215,24 @@ jobs:
             echo '~~~'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Build two-PBO KGSL VirtualGL source
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACK_INVERT=1 ASYNC_XSHM=1 PBO_PIPELINE=1 \
+            recovery-wifi/build-virtualgl-kgsl.sh
+
+          VD=/tmp/virtualgl-kgsl-src/server/VirtualDrawable.cpp
+          VDH=/tmp/virtualgl-kgsl-src/server/VirtualDrawable.h
+          grep -Fq 'KGSL two-PBO readback pipeline active' "$VD"
+          grep -Fq 'VGL_KGSL_PBO_PIPELINE' "$VD"
+          grep -Fq 'GLuint kgslPbo[2];' "$VDH"
+          grep -Fq 'kgslPboPrimed' "$VDH"
+          grep -Fq 'pbo_pipeline=1' < <(
+            PBO_PIPELINE=1 PACK_INVERT=1 ASYNC_XSHM=1 \
+              INSTALL=0 recovery-wifi/build-virtualgl-kgsl.sh 2>/dev/null
+          )
+
       - name: Validate Mesa KGSL compatibility patch
         shell: bash
         run: |
@@ -251,6 +269,7 @@ jobs:
             echo '- VirtualGL eglkgsl source build: PASS'
             echo '- VirtualGL pack-invert source build: PASS'
             echo '- VirtualGL two-buffer async-XShm source build: PASS'
+            echo '- VirtualGL two-PBO readback source build: PASS'
             echo '- Mesa Channel KGSL compatibility patch: PASS'
             echo
             echo 'Mesa runtime and experimental VirtualGL variants still require real-device validation.'
