@@ -802,6 +802,53 @@ write_gpu_env() {
     say "env_file=$env"
 }
 
+apply_profile_files() {
+    cfg="$1"
+    hw="$2"
+    gpu="$3"
+    virgl="$4"
+    backend="$5"
+    shift 5
+
+    env="$(container_env_file "$cfg")"
+    cfg_bak="/tmp/rctools-gpu-config.bak.$$"
+    env_bak="/tmp/rctools-gpu-env.bak.$$"
+    env_existed=0
+
+    "$BB" cat "$cfg" >"$cfg_bak" 2>/dev/null || {
+        err "could not snapshot container config"
+        "$BB" rm -f "$cfg_bak" "$env_bak"
+        return 1
+    }
+
+    if [ -e "$env" ]; then
+        env_existed=1
+        "$BB" cat "$env" >"$env_bak" 2>/dev/null || {
+            err "could not snapshot GPU environment"
+            "$BB" rm -f "$cfg_bak" "$env_bak"
+            return 1
+        }
+    fi
+
+    if cfg_set_gpu_mode "$cfg" "$hw" "$gpu" "$virgl" &&
+       write_gpu_env "$cfg" "$backend" "$@"; then
+        "$BB" rm -f "$cfg_bak" "$env_bak"
+        return 0
+    fi
+
+    err "GPU profile write failed; restoring previous config and environment"
+    "$BB" cat "$cfg_bak" >"$cfg" 2>/dev/null ||         err "could not restore container config"
+
+    if [ "$env_existed" -eq 1 ]; then
+        "$BB" cat "$env_bak" >"$env" 2>/dev/null ||             err "could not restore GPU environment"
+    else
+        "$BB" rm -f "$env" 2>/dev/null || true
+    fi
+
+    "$BB" rm -f "$cfg_bak" "$env_bak"
+    return 1
+}
+
 clear_gpu_env() {
     cfg="$1"
     env="$(container_env_file "$cfg")"
@@ -919,24 +966,22 @@ prime_direct_kgsl() {
 
 apply_llvmpipe() {
     cfg="$1"
-    stop_virgl_for_cfg "$cfg"
-    cfg_set_gpu_mode "$cfg" 0 0 0 || return 1
-    write_gpu_env "$cfg" llvmpipe \
+
+    apply_profile_files "$cfg" 0 0 0 llvmpipe \
         'LIBGL_ALWAYS_SOFTWARE=1' \
         'GALLIUM_DRIVER=llvmpipe' || return 1
+
+    stop_virgl_for_cfg "$cfg"
     say 'backend=llvmpipe'
 }
 
 apply_freedreno() {
     cfg="$1"
     direct_runtime "$cfg" || return 1
-    stop_virgl_for_cfg "$cfg"
     prime_direct_kgsl || return 1
 
-    cfg_set_gpu_mode "$cfg" 0 1 0 || return 1
-
     if [ "$direct_vgl" -eq 1 ] && [ -n "$direct_json" ]; then
-        write_gpu_env "$cfg" freedreno \
+        apply_profile_files "$cfg" 0 1 0 freedreno \
             'RCTOOLS_GPU_PRESENTATION=surfaceless' \
             'RCTOOLS_GPU_VIRTUALGL=1' \
             "LD_LIBRARY_PATH=$direct_ld" \
@@ -947,7 +992,7 @@ apply_freedreno() {
             'VGL_FORCEALPHA=1' \
             'VGL_READBACK=sync' || return 1
     elif [ "$direct_vgl" -eq 1 ]; then
-        write_gpu_env "$cfg" freedreno \
+        apply_profile_files "$cfg" 0 1 0 freedreno \
             'RCTOOLS_GPU_PRESENTATION=surfaceless' \
             'RCTOOLS_GPU_VIRTUALGL=1' \
             "LD_LIBRARY_PATH=$direct_ld" \
@@ -957,7 +1002,7 @@ apply_freedreno() {
             'VGL_FORCEALPHA=1' \
             'VGL_READBACK=sync' || return 1
     elif [ -n "$direct_json" ]; then
-        write_gpu_env "$cfg" freedreno \
+        apply_profile_files "$cfg" 0 1 0 freedreno \
             'RCTOOLS_GPU_PRESENTATION=surfaceless' \
             'RCTOOLS_GPU_VIRTUALGL=0' \
             "LD_LIBRARY_PATH=$direct_ld" \
@@ -965,13 +1010,15 @@ apply_freedreno() {
             'MESA_LOADER_DRIVER_OVERRIDE=kgsl' \
             "__EGL_VENDOR_LIBRARY_FILENAMES=$direct_json" || return 1
     else
-        write_gpu_env "$cfg" freedreno \
+        apply_profile_files "$cfg" 0 1 0 freedreno \
             'RCTOOLS_GPU_PRESENTATION=surfaceless' \
             'RCTOOLS_GPU_VIRTUALGL=0' \
             "LD_LIBRARY_PATH=$direct_ld" \
             "LIBGL_DRIVERS_PATH=$direct_dri" \
             'MESA_LOADER_DRIVER_OVERRIDE=kgsl' || return 1
     fi
+
+    stop_virgl_for_cfg "$cfg"
 
     say 'backend=freedreno'
     say 'mode=direct KGSL'
@@ -1002,13 +1049,22 @@ apply_virgl() {
         return 1
     fi
 
-    cfg_set_gpu_mode "$cfg" 0 0 0 || return 1
-
-    write_gpu_env "$cfg" virgl \
-        'GALLIUM_DRIVER=virpipe' \
-        'VTEST_SOCKET_NAME=/root/.virgl_test' || return 1
+    was_running=0
+    if [ -n "$otherpid" ] && [ "$current" = "$socket" ] && [ -S "$socket" ]; then
+        was_running=1
+    fi
 
     start_virgl "$socket" || return 1
+
+    if ! apply_profile_files "$cfg" 0 0 0 virgl \
+        'GALLIUM_DRIVER=virpipe' \
+        'VTEST_SOCKET_NAME=/root/.virgl_test'; then
+        if [ "$was_running" -eq 0 ]; then
+            stop_virgl
+        fi
+        return 1
+    fi
+
     say 'backend=virgl'
     say 'validation=context-only'
     say 'warning=Channel VirGL draw/VBO has previously triggered a GPU hang; use this backend for diagnostics only'
