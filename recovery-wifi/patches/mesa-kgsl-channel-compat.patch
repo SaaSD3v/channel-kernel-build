@@ -72,6 +72,14 @@ diff --git a/src/x11/x11_dri3.c b/src/x11/x11_dri3.c
 diff --git a/src/freedreno/drm/kgsl/kgsl_bo.c b/src/freedreno/drm/kgsl/kgsl_bo.c
 --- a/src/freedreno/drm/kgsl/kgsl_bo.c
 +++ b/src/freedreno/drm/kgsl/kgsl_bo.c
+@@ -1,6 +1,7 @@
+ #include "kgsl_priv.h"
+ #include "util/os_file.h"
+ #include "util/os_mman.h"
+ 
++#include <errno.h>
+ #include <linux/dma-heap.h>
+ 
 @@ -185,115 +185,182 @@
      }
  
