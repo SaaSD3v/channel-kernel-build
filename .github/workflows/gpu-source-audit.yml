@@ -7,6 +7,7 @@ on:
       - twrp-cli-minimal-gpu-audit
     paths:
       - 'recovery-wifi/rctools-gpu'
+      - 'recovery-wifi/install-gpu-runtime.sh'
       - 'recovery-wifi/GPU-DIRECT.md'
       - 'recovery-wifi/build-virtualgl-kgsl.sh'
       - 'recovery-wifi/build-mesa-kgsl-channel.sh'
