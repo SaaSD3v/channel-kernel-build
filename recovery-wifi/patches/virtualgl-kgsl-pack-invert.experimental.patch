@@ -31,7 +31,7 @@ diff --git a/server/VirtualDrawable.h b/server/VirtualDrawable.h
 diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 --- a/server/VirtualDrawable.cpp
 +++ b/server/VirtualDrawable.cpp
-@@ -396,162 +396,186 @@
+@@ -396,162 +396,225 @@
  }
  
  
@@ -191,6 +191,49 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 -		setAutotestDisplay(dpy);
 -		setAutotestDrawable(x11Draw);
 -	}
++static bool has_gl_extension(const char *name)
++{
++	if(!name || !name[0]) return false;
++
++	const char *exts = (const char *)_glGetString(GL_EXTENSIONS);
++	if(exts)
++	{
++		size_t len = strlen(name);
++		const char *p = exts;
++		while((p = strstr(p, name)) != NULL)
++		{
++			if((p == exts || p[-1] == ' ')
++				&& (p[len] == 0 || p[len] == ' '))
++				return true;
++			p += len;
++		}
++		return false;
++	}
++
++	/*
++	 * Core profiles reject glGetString(GL_EXTENSIONS).  Clear only the
++	 * error from that compatibility probe, then enumerate extensions with
++	 * the OpenGL 3.x mechanism.
++	 */
++	while(_glGetError() != GL_NO_ERROR) {}
++
++	GLint count = 0;
++	_glGetIntegerv(GL_NUM_EXTENSIONS, &count);
++	if(_glGetError() != GL_NO_ERROR || count < 1)
++		return false;
++
++	for(GLint i = 0; i < count; i++)
++	{
++		const char *ext =
++			(const char *)_glGetStringi(GL_EXTENSIONS, (GLuint)i);
++		if(ext && !strcmp(ext, name))
++			return true;
++	}
++
++	return false;
++}
++
++
 +bool VirtualDrawable::readPixels(GLint x, GLint y, GLint width, GLint pitch,
 +	GLint height, GLenum glFormat, PF *pf, GLubyte *bits, GLint readBuf,
 +	bool stereo, bool topDown)
@@ -228,14 +271,10 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +	backend::readBuffer(readBuf);
 +
 +	#ifdef GL_PACK_INVERT_MESA
-+	if(topDown)
++	if(topDown && has_gl_extension("GL_MESA_pack_invert"))
 +	{
-+		const char *packExt = (const char *)_glGetString(GL_EXTENSIONS);
-+		if(packExt && strstr(packExt, "GL_MESA_pack_invert"))
-+		{
-+			_glGetIntegerv(GL_PACK_INVERT_MESA, &oldPackInvert);
-+			packInvert = true;
-+		}
++		_glGetIntegerv(GL_PACK_INVERT_MESA, &oldPackInvert);
++		packInvert = true;
 +	}
 +	#endif
 +
@@ -248,9 +287,9 @@ diff --git a/server/VirtualDrawable.cpp b/server/VirtualDrawable.cpp
 +	{
 +		if(!ext)
 +		{
-+			ext = (const char *)_glGetString(GL_EXTENSIONS);
-+			if(!ext || !strstr(ext, "GL_ARB_pixel_buffer_object"))
++			if(!has_gl_extension("GL_ARB_pixel_buffer_object"))
 +				THROW("GL_ARB_pixel_buffer_object extension not available");
++			ext = "GL_ARB_pixel_buffer_object";
 +		}
 +		if(!pbo) _glGenBuffers(1, &pbo);
 +		if(!pbo) THROW("Could not generate pixel buffer object");
