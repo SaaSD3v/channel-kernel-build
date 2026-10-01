@@ -380,9 +380,16 @@ show_status() {
     fi
 
     if [ -d "$KGSL" ]; then
-        for f in gpu_model gpuclk max_gpuclk max_pwrlevel min_pwrlevel default_pwrlevel num_pwrlevels; do
+        for f in gpu_model gpuclk max_gpuclk max_pwrlevel min_pwrlevel default_pwrlevel num_pwrlevels gpubusy; do
             [ -r "$KGSL/$f" ] && printf '%s=%s\n' "$f" "$(cat "$KGSL/$f" 2>/dev/null)"
         done
+
+        df="$KGSL/devfreq"
+        if [ -d "$df" ]; then
+            for f in governor cur_freq min_freq max_freq available_frequencies; do
+                [ -r "$df/$f" ] && printf 'devfreq_%s=%s\n' "$f" "$(cat "$df/$f" 2>/dev/null)"
+            done
+        fi
     else
         say 'KGSL sysfs: missing'
     fi
@@ -644,7 +651,7 @@ sanitize_legacy_gpu_profile() {
 
 strip_gpu_env() {
     file="$1"
-    tmp=/tmp/rctools-gpu-env.clean
+    tmp="/tmp/rctools-gpu-env.clean.$"
     [ -e "$file" ] || : >"$file"
 
     "$BB" awk '
@@ -655,7 +662,7 @@ strip_gpu_env() {
         probe=$0
         sub(/^[[:space:]]*export[[:space:]]+/, "", probe)
       }
-      probe ~ /^(RCTOOLS_GPU_BACKEND|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|LIBGL_DEBUG|MESA_DEBUG)=/ {next}
+      probe ~ /^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|MESA_LOADER_DRIVER_OVERRIDE|LIBGL_DRIVERS_PATH|__EGL_VENDOR_LIBRARY_FILENAMES|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|LIBGL_DEBUG|MESA_DEBUG)=/ {next}
       {print}
     ' "$file" >"$tmp" || return 1
 
@@ -747,6 +754,15 @@ direct_runtime() {
     if [ -r "$host_root/share/glvnd/egl_vendor.d/50_mesa.json" ]; then
         direct_json="$guest_root/share/glvnd/egl_vendor.d/50_mesa.json"
     fi
+
+    # Optional patched VirtualGL runtime.  Only the project-specific
+    # /opt/VirtualGL-KGSL prefix is accepted, so a stock VirtualGL install is
+    # never silently switched to the non-standard eglkgsl display.
+    direct_vgl=0
+    if [ -x "$root/opt/VirtualGL-KGSL/bin/vglrun" ] &&
+       [ -r "$root/opt/VirtualGL-KGSL/lib/libvglfaker.so" ]; then
+        direct_vgl=1
+    fi
 }
 
 stop_virgl_for_cfg() {
@@ -815,14 +831,39 @@ apply_freedreno() {
     cfg_set "$cfg" enable_gpu_mode 1 || return 1
     cfg_set "$cfg" enable_virgl 0 || return 1
 
-    if [ -n "$direct_json" ]; then
+    if [ "$direct_vgl" -eq 1 ] && [ -n "$direct_json" ]; then
         write_gpu_env "$cfg" freedreno \
+            'RCTOOLS_GPU_PRESENTATION=surfaceless' \
+            'RCTOOLS_GPU_VIRTUALGL=1' \
+            "LD_LIBRARY_PATH=$direct_ld" \
+            "LIBGL_DRIVERS_PATH=$direct_dri" \
+            'MESA_LOADER_DRIVER_OVERRIDE=kgsl' \
+            "__EGL_VENDOR_LIBRARY_FILENAMES=$direct_json" \
+            'VGL_DISPLAY=eglkgsl' \
+            'VGL_FORCEALPHA=1' \
+            'VGL_READBACK=sync' || return 1
+    elif [ "$direct_vgl" -eq 1 ]; then
+        write_gpu_env "$cfg" freedreno \
+            'RCTOOLS_GPU_PRESENTATION=surfaceless' \
+            'RCTOOLS_GPU_VIRTUALGL=1' \
+            "LD_LIBRARY_PATH=$direct_ld" \
+            "LIBGL_DRIVERS_PATH=$direct_dri" \
+            'MESA_LOADER_DRIVER_OVERRIDE=kgsl' \
+            'VGL_DISPLAY=eglkgsl' \
+            'VGL_FORCEALPHA=1' \
+            'VGL_READBACK=sync' || return 1
+    elif [ -n "$direct_json" ]; then
+        write_gpu_env "$cfg" freedreno \
+            'RCTOOLS_GPU_PRESENTATION=surfaceless' \
+            'RCTOOLS_GPU_VIRTUALGL=0' \
             "LD_LIBRARY_PATH=$direct_ld" \
             "LIBGL_DRIVERS_PATH=$direct_dri" \
             'MESA_LOADER_DRIVER_OVERRIDE=kgsl' \
             "__EGL_VENDOR_LIBRARY_FILENAMES=$direct_json" || return 1
     else
         write_gpu_env "$cfg" freedreno \
+            'RCTOOLS_GPU_PRESENTATION=surfaceless' \
+            'RCTOOLS_GPU_VIRTUALGL=0' \
             "LD_LIBRARY_PATH=$direct_ld" \
             "LIBGL_DRIVERS_PATH=$direct_dri" \
             'MESA_LOADER_DRIVER_OVERRIDE=kgsl' || return 1
@@ -830,6 +871,12 @@ apply_freedreno() {
 
     say 'backend=freedreno'
     say 'mode=direct KGSL'
+    say 'presentation=EGL surfaceless'
+    if [ "$direct_vgl" -eq 1 ]; then
+        say 'virtualgl_kgsl=enabled (BGRA alpha, synchronous readback)'
+    else
+        say 'virtualgl_kgsl=not installed'
+    fi
 }
 
 apply_virgl() {
@@ -910,6 +957,15 @@ container_status() {
     if [ "$backend" = freedreno ]; then
         if direct_runtime "$cfg" >/dev/null 2>&1; then
             say 'freedreno_runtime=ready'
+            say "presentation=EGL surfaceless"
+            if [ "$direct_vgl" -eq 1 ]; then
+                say 'virtualgl_kgsl=ready'
+                say 'virtualgl_forcealpha=1'
+                say 'virtualgl_readback=sync'
+            else
+                say 'virtualgl_kgsl=not installed'
+            fi
+            say 'xserver_env=clean (do not start Xtigervnc with KGSL Mesa variables)'
         else
             say 'freedreno_runtime=missing'
         fi
@@ -944,9 +1000,9 @@ test_profile() {
         if (exec 9<>/dev/kgsl-3d0) 2>/dev/null; then echo "KGSL_OPEN=ok"; else echo "KGSL_OPEN=failed"; fi
         if (exec 9<>/dev/ion) 2>/dev/null; then echo "ION_OPEN=ok"; else echo "ION_OPEN=failed"; fi
         echo "=== runtime GPU env file ==="
-        grep -E "^(export )?(RCTOOLS_GPU_BACKEND|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|MESA_LOADER_DRIVER_OVERRIDE|__EGL_VENDOR_LIBRARY_FILENAMES|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE)=" /run/droidspaces.env 2>/dev/null || true
+        grep -E "^(export )?(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|MESA_LOADER_DRIVER_OVERRIDE|__EGL_VENDOR_LIBRARY_FILENAMES|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|LD_PRELOAD)=" /run/droidspaces.env 2>/dev/null || true
         echo "=== GPU environment ==="
-        env | grep -E "^(RCTOOLS_GPU_BACKEND|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|MESA_LOADER_DRIVER_OVERRIDE|__EGL_VENDOR_LIBRARY_FILENAMES|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE)=" || true
+        env | grep -E "^(RCTOOLS_GPU_BACKEND|RCTOOLS_GPU_PRESENTATION|RCTOOLS_GPU_VIRTUALGL|LD_LIBRARY_PATH|LIBGL_DRIVERS_PATH|MESA_LOADER_DRIVER_OVERRIDE|__EGL_VENDOR_LIBRARY_FILENAMES|VGL_DISPLAY|VGL_FORCEALPHA|VGL_READBACK|GALLIUM_DRIVER|VTEST_SOCKET_NAME|LIBGL_ALWAYS_SOFTWARE|LD_PRELOAD)=" || true
     ' >"$pre" 2>&1 || {
         err "could not inspect running container"
         "$BB" tail -n 100 "$pre" >&2
