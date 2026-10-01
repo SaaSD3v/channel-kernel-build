@@ -1418,8 +1418,18 @@ test_profile() {
            [ -n "$LIBGL_DRIVERS_PATH" ] &&
            [ -r "$LIBGL_DRIVERS_PATH/kgsl_dri.so" ] &&
            command -v ldd >/dev/null 2>&1; then
-            ldd "$LIBGL_DRIVERS_PATH/kgsl_dri.so" 2>&1 || true
-            if ldd "$LIBGL_DRIVERS_PATH/kgsl_dri.so" 2>&1 | grep -q "not found"; then
+            mesa_missing=0
+            mesa_libdir=${LIBGL_DRIVERS_PATH%/dri}
+            for target in                 "$LIBGL_DRIVERS_PATH/kgsl_dri.so"                 "$mesa_libdir/libEGL_mesa.so.0"                 "$mesa_libdir/libGLX_mesa.so.0"
+            do
+                [ -r "$target" ] || continue
+                echo "--- $target ---"
+                deps="$(ldd "$target" 2>&1 || true)"
+                printf "%s\n" "$deps"
+                printf "%s\n" "$deps" | grep -q "not found" &&
+                    mesa_missing=1
+            done
+            if [ "$mesa_missing" -eq 1 ]; then
                 echo "MESA_DEPENDENCIES=missing"
             else
                 echo "MESA_DEPENDENCIES=ok"
